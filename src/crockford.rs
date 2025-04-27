@@ -117,11 +117,7 @@ pub fn decode_to_number(s: &str, checksum: bool) -> Result<i64, String> {
     let bytes = decode(Alphabet::Crockford, &encoded)
         .map_err(|e| format!("error during Base32-decoding: {}", e))?;
 
-    // Convert bytes to i64
-    let mut number: i64 = 0;
-    for byte in bytes {
-        number = (number << 8) | byte as i64;
-    }
+    let number = bytes_to_i64(&bytes);
 
     // Validate checksum if needed
     if checksum && !validate(number, cs) {
@@ -129,6 +125,15 @@ pub fn decode_to_number(s: &str, checksum: bool) -> Result<i64, String> {
     }
 
     Ok(number)
+}
+
+/// Convert a byte array to an i64 number.
+fn bytes_to_i64(bytes: &[u8]) -> i64 {
+    let mut number: i64 = 0;
+    for byte in bytes {
+        number = (number << 8) | *byte as i64;
+    }
+    number
 }
 
 /// Normalize returns a normalized encoded string for base32 encoding.
