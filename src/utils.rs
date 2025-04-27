@@ -1,7 +1,8 @@
 use regex::Regex;
 #[macro_use]
-extern crate lazy_static;
-use Crockford::Alphabet;
+use lazy_static::lazy_static;
+use iso_iec_7064::{Mod11_2, PureCheckCharacterSystem};
+use url::Url;
 
 pub fn decode_id(id: &str) -> Result<i64, String> {
     let (identifier, identifier_type) = validate_id(id);
@@ -33,11 +34,9 @@ pub fn decode_id(id: &str) -> Result<i64, String> {
             let original = identifier;
             let cleaned = identifier.replace("-", "");
 
-            // Verify checksum using iso7064
-            let calculator = iso_iec_7064::mod_11_2::Calculator::new();
-            if !calculator.verify(&cleaned) {
-                let cs = &cleaned[cleaned.len() - 1..];
-                return Err(format!("wrong checksum {} for identifier {}", cs, original));
+            // Verify checksum using iso7064 mod 11-2
+            if let Err(e) = Mod11_2::validate(&cleaned) {
+                return Err(format!("Invalid checksum for ORCID {}: {}", original, e));
             }
 
             // Parse the identifier without the checksum
@@ -197,12 +196,7 @@ fn is_in_range(value: &str, start: &str, end: &str) -> bool {
 /// RID is the unique identifier used by the InvenioRDM platform
 pub fn validate_rid(rid: &str) -> Option<&str> {
     lazy_static! {
-        static ref RE: Regex = Regex::new(&format!(
-            r"^[{}]{{5}}-[{}]{{3}}[0-9]{{2}}$",
-            Alphabet::Crockford
-            Alphabet::Crockford
-        ))
-        .unwrap();
+        static ref RE: Regex = Regex::new(r"^[0-9A-Z]{5}-[0-9A-Z]{3}[0-9]{2}$").unwrap();
     }
 
     if RE.is_match(rid) {
@@ -228,39 +222,68 @@ pub fn validate_ror(ror: &str) -> Option<&str> {
 
 /// Validates a URL and checks if it is a DOI
 pub fn validate_url(str: &str) -> &str {
+    // Check if it's a DOI
     if let Some(_) = doiutils::validate_doi(str) {
         return "DOI";
     }
 
     match url::Url::parse(str) {
-        Ok(u) => {
-            // don't allow URLs with certain fragments, e.g. from Software Heritage
-            let disallowed_fragments = [";origin=", ";jsessionid="];
-            for f in &disallowed_fragments {
-                if u.as_str().contains(f) {
-                    return &String::new();
-                }
+        Ok(url) => {
+            // Check for disallowed URL fragments
+            if has_disallowed_fragments(&url) {
+                return &String::new();
             }
 
-            if u.scheme() == "https" && u.host_str() == Some("api.rogue-scholar.org") {
-                let path: Vec<&str> = u.path().split('/').collect();
-                if path.len() == 3 && path[1] == "posts" {
-                    if let Some(_) = validate_uuid(path[2]) {
-                        return "JSONFEEDID";
-                    }
-                } else if path.len() == 4 && path[1] == "posts" {
-                    let doi = format!("{}/{}", path[2], path[3]);
-                    if let Some(_) = doiutils::validate_doi(&doi) {
-                        return "JSONFEEDID";
-                    }
+            // Handle Rogue Scholar URLs
+            if is_rogue_scholar_url(&url) {
+                let path_segments: Vec<&str> = url.path().split('/').collect();
+
+                if is_valid_rogue_scholar_post(&path_segments) {
+                    return "JSONFEEDID";
                 }
-            } else if u.scheme() == "http" || u.scheme() == "https" {
+            }
+            // Handle standard HTTP(S) URLs
+            else if url.scheme() == "http" || url.scheme() == "https" {
                 return "URL";
             }
+
             &String::new()
         }
         Err(_) => &String::new(),
     }
+}
+
+/// Checks if URL has disallowed fragments
+fn has_disallowed_fragments(url: &Url) -> bool {
+    let disallowed_fragments = [";origin=", ";jsessionid="];
+
+    for fragment in &disallowed_fragments {
+        if url.as_str().contains(fragment) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Checks if URL is from Rogue Scholar
+fn is_rogue_scholar_url(url: &Url) -> bool {
+    url.scheme() == "https" && url.host_str() == Some("api.rogue-scholar.org")
+}
+
+/// Validates if path segments represent a valid Rogue Scholar post
+fn is_valid_rogue_scholar_post(path_segments: &[&str]) -> bool {
+    if path_segments.len() >= 2 && path_segments[1] == "posts" {
+        // UUID-based post path
+        if path_segments.len() == 3 {
+            return validate_uuid(path_segments[2]).is_some();
+        }
+        // DOI-based post path
+        else if path_segments.len() == 4 {
+            let doi = format!("{}/{}", path_segments[2], path_segments[3]);
+            return doiutils::validate_doi(&doi).is_some();
+        }
+    }
+    false
 }
 
 /// Validates a UUID
