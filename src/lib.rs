@@ -6,7 +6,6 @@ pub mod utils;
 
 // re-export the modules for easier access
 pub use crockford::*;
-pub use decode::*;
 pub use doiutils::*;
 pub use encode::*;
 pub use utils::*;
