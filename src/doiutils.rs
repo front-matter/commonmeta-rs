@@ -1,5 +1,4 @@
 //! Utilities for working with DOIs
-//! Utilities for working with Digital Object Identifiers (DOIs)
 //!
 //! This module provides functionality for:
 //! - Validating, normalizing and escaping DOIs
@@ -9,8 +8,7 @@
 //! - Generating DOIs for specific blogging platforms like WordPress and Substack
 use lazy_static::lazy_static;
 use regex::Regex;
-use reqwest::{Client, StatusCode};
-use serde::Deserialize;
+use reqwest::{Client};
 use std::error::Error;
 use std::time::Duration;
 use url::Url;
@@ -132,13 +130,4 @@ pub fn doi_resolver(doi: &str, sandbox: bool) -> String {
         }
     }
     "https://doi.org/".to_string()
-}
-
-/// DOI Registration Agency response
-#[derive(Deserialize)]
-struct RAResponse {
-    #[serde(rename = "DOI")]
-    doi: String,
-    #[serde(rename = "RA")]
-    ra: String,
 }
