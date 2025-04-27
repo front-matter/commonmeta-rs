@@ -14,8 +14,9 @@ use serde::Deserialize;
 use std::error::Error;
 use std::time::Duration;
 use url::Url;
+use base32::Alphabet;
+use std::string::ToString;
 
-use crate::commonmeta::crockford;
 
 /// Extracts DOI prefix from URL
 pub fn prefix_from_url(s: &str) -> Result<String, Box<dyn Error>> {

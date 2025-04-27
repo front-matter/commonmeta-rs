@@ -4,6 +4,9 @@ Copyright © 2025 Front Matter <info@front-matter.io>
 
 use base32::{decode, encode, Alphabet};
 
+// NO i, l, o or u
+const ENCODING_CHARS: &str = "0123456789abcdefghjkmnpqrstvwxyz";
+
 /// Generate, encode and decode random base32 identifiers.
 /// This encoder/decoder:
 /// - uses Douglas Crockford Base32 encoding: https://www.crockford.com/base32.html
@@ -11,7 +14,6 @@ use base32::{decode, encode, Alphabet};
 /// - encodes the checksum using only characters in the base32 set
 /// - produces string that are URI-friendly (no '=' or '/' for instance)
 /// This is based on: https://github.com/front-matter/base32-url
-/// Encode a number to a URI-friendly Douglas Crockford base32 string.
 ///
 /// # Arguments
 ///
@@ -112,8 +114,8 @@ pub fn decode_to_number(s: &str, checksum: bool) -> Result<i64, String> {
     }
 
     // Use the base32 crate to decode
-    let bytes =
-        decode(Alphabet::Crockford, &encoded).map_err(|e| format!("decoding error: {:?}", e))?;
+    let bytes = decode(Alphabet::Crockford, &encoded)
+        .map_err(|e| format!("error during Base32-decoding: {}", e))?;
 
     // Convert bytes to i64
     let mut number: i64 = 0;
@@ -138,12 +140,14 @@ pub fn normalize(s: &str) -> String {
         .replace("o", "0")
 }
 
-/// Validate returns true if the encoded string is a valid base32 string with checksum.
+/// Validate returns true if the encoded number is a valid base32 string with checksum.
 pub fn validate(number: i64, checksum: i64) -> bool {
-    checksum == generate_checksum(number)
+    generate_checksum(number) == checksum
 }
 
-/// GenerateChecksum returns the checksum for a number using ISO 7064 (mod 97-10).
+/// Generate checksum for a number using ISO 7064 (mod 97-10).
+/// The algorithm computes: 98 - ((100 * number) mod 97)
 pub fn generate_checksum(number: i64) -> i64 {
-    97 - ((100 * number) % 97) + 1
+    let mod_result = (100 * number) % 97;
+    97 - mod_result + 1
 }

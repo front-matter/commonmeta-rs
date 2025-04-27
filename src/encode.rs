@@ -3,7 +3,6 @@
  */
 
 use clap::{ArgMatches, Command};
-mod doiutils;
 
 /// Build the encode subcommand
 pub fn command() -> Command {
