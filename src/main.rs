@@ -1,14 +1,9 @@
-mod crockford;
-mod decode;
-mod doiutils;
-mod encode;
-mod utils;
-
 use clap::Command;
+use commonmeta::{decode, encode};
 
 fn main() -> Result<(), String> {
     let matches = Command::new("commonmeta")
-        .version("0.1.0")
+        .version(env!("CARGO_PKG_VERSION"))
         .author("Front Matter <info@front-matter.io>")
         .about("CommonMeta tools")
         .subcommand(encode::command())
