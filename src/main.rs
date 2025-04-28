@@ -4,6 +4,7 @@ pub mod crockford;
 pub mod decode;
 pub mod doi_utils;
 pub mod encode;
+pub mod file_utils;
 pub mod utils;
 
 fn main() -> Result<(), String> {

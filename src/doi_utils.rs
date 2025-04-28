@@ -8,11 +8,11 @@
 //! - Generating DOIs for specific blogging platforms like WordPress and Substack
 use lazy_static::lazy_static;
 use regex::Regex;
-use reqwest::{Client};
+use reqwest::Client;
 use std::error::Error;
+use std::string::ToString;
 use std::time::Duration;
 use url::Url;
-use std::string::ToString;
 
 /// Extracts DOI prefix from URL
 pub fn prefix_from_url(s: &str) -> Result<String, Box<dyn Error>> {
