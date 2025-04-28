@@ -187,7 +187,6 @@ version = "0.1.0"
 dependencies = [
  "base32",
  "clap",
- "iso_iec_7064",
  "lazy_static",
  "rand",
  "regex",
@@ -651,12 +650,6 @@ name = "is_terminal_polyfill"
 version = "1.70.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7943c866cc5cd64cbc25b2e01621d07fa8eb2a1a23160ee81ce38704e97b8ecf"
-
-[[package]]
-name = "iso_iec_7064"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b50ce82efa43b36f28a91b8769a458f6f1c0a7e4c493011a1664834147ed6ff5"
 
 [[package]]
 name = "itoa"

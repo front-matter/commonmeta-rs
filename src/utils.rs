@@ -1,10 +1,42 @@
-use iso_iec_7064::iso7064::Mod11_2;
 use lazy_static::lazy_static;
 use regex::Regex;
 use url::Url;
 
 use crate::crockford::decode_to_number;
 use crate::doi_utils::validate_doi;
+
+/// Validates the checksum of a string using the ISO 7064 Mod 11-2 algorithm.
+fn validate_mod11_2(input: &str) -> Result<(), String> {
+    if !input.chars().all(|c| c.is_ascii_digit() || c == 'X') {
+        return Err("Invalid characters in input".to_string());
+    }
+
+    // the last character is the checksum
+    let checksum_char = input.chars().last().unwrap();
+    let body = &input[..input.len() - 1];
+
+    let mut m = 0;
+
+    for c in body.chars() {
+        let d = c.to_digit(10).unwrap() as i32;
+
+        m = ((m + d) * 2) % 11;
+    }
+
+    let check_value = (12 - m) % 11;
+    let expected_char = if check_value == 10 {
+        'X'
+    } else {
+        char::from_digit(check_value as u32, 10).unwrap()
+    };
+
+    // compare with expected checksum
+    if checksum_char == expected_char {
+        Ok(())
+    } else {
+        Err("Invalid checksum".to_string())
+    }
+}
 
 pub fn decode_id(id: &str) -> Result<i64, String> {
     let (identifier, identifier_type) = validate_id(id);
@@ -33,12 +65,11 @@ pub fn decode_id(id: &str) -> Result<i64, String> {
             decode_to_number(&identifier, true).map_err(|e| e.to_string())
         }
         "ORCID" => {
-            let original = identifier;
             let cleaned = identifier.replace("-", "");
 
             // Verify checksum using iso7064 mod 11-2
-            if let Err(e) = Mod11_2::validate(&cleaned) {
-                return Err(format!("Invalid checksum for ORCID {}: {}", original, e));
+            if let Err(e) = validate_mod11_2(&cleaned) {
+                return Err(format!("Invalid checksum for ORCID {}: {}", identifier, e));
             }
 
             // Parse the identifier without the checksum

@@ -4,15 +4,13 @@ Copyright © 2025 Front Matter <info@front-matter.io>
 
 use base32::{decode, encode, Alphabet};
 
-// NO i, l, o or u
-const ENCODING_CHARS: &str = "0123456789abcdefghjkmnpqrstvwxyz";
-
 /// Generate, encode and decode random base32 identifiers.
 /// This encoder/decoder:
 /// - uses Douglas Crockford Base32 encoding: https://www.crockford.com/base32.html
 /// - allows for ISO 7064 checksum
 /// - encodes the checksum using only characters in the base32 set
 /// - produces string that are URI-friendly (no '=' or '/' for instance)
+///
 /// This is based on: https://github.com/front-matter/base32-url
 ///
 /// # Arguments
@@ -114,8 +112,10 @@ pub fn decode_to_number(s: &str, checksum: bool) -> Result<i64, String> {
     }
 
     // Use the base32 crate to decode
-    let bytes = decode(Alphabet::Crockford, &encoded)
-        .map_err(|e| format!("error during Base32-decoding: {}", e))?;
+    let bytes = match decode(Alphabet::Crockford, &encoded) {
+        Some(b) => b,
+        None => return Err(format!("invalid base32 string: {}", s)),
+    };
 
     let number = bytes_to_i64(&bytes);
 
