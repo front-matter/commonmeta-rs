@@ -1,8 +1,10 @@
-use regex::Regex;
-#[macro_use]
+use iso_iec_7064::iso7064::Mod11_2;
 use lazy_static::lazy_static;
-use iso_iec_7064::{Mod11_2, PureCheckCharacterSystem};
+use regex::Regex;
 use url::Url;
+
+use crate::crockford::decode_to_number;
+use crate::doi_utils::validate_doi;
 
 pub fn decode_id(id: &str) -> Result<i64, String> {
     let (identifier, identifier_type) = validate_id(id);
@@ -18,17 +20,17 @@ pub fn decode_id(id: &str) -> Result<i64, String> {
                 return Err(format!("Invalid DOI format: {}", id));
             }
             let suffix = parts[1];
-            crockford::decode(suffix, true).map_err(|e| e.to_string())
+            decode_to_number(suffix, true).map_err(|e| e.to_string())
         }
         "ROR" => {
             // ROR ID is a 9-character string that starts with 0
             // and is a base32-encoded number with a mod 97-1
-            crockford::decode(identifier, true).map_err(|e| e.to_string())
+            decode_to_number(&identifier, true).map_err(|e| e.to_string())
         }
         "RID" => {
             // RID is a 10-character string with a hyphen after five digits.
             // It is a base32-encoded numbers with checksum.
-            crockford::decode(identifier, true).map_err(|e| e.to_string())
+            decode_to_number(&identifier, true).map_err(|e| e.to_string())
         }
         "ORCID" => {
             let original = identifier;
@@ -53,11 +55,11 @@ pub fn decode_id(id: &str) -> Result<i64, String> {
 /// ValidateID validates an identifier and returns the type
 /// Can be DOI, UUID, ISSN, ORCID, ROR, URL, RID, Wikidata, ISNI
 /// or GRID
-pub fn validate_id(id: &str) -> (&str, &str) {
+pub fn validate_id(id: &str) -> (String, &str) {
     if let Some(fundref) = validate_crossref_funder_id(id) {
         return (fundref, "Crossref Funder ID");
     }
-    if let Some(doi) = doiutils::validate_doi(id) {
+    if let Some(doi) = validate_doi(id) {
         return (doi, "DOI");
     }
     if let Some(uuid) = validate_uuid(id) {
@@ -87,14 +89,14 @@ pub fn validate_id(id: &str) -> (&str, &str) {
 
     let url = validate_url(id);
     if !url.is_empty() {
-        return (id, url);
+        return (id.to_string(), "URL");
     }
 
-    (&String::new(), &String::new())
+    (String::new(), "")
 }
 
 /// Validates a Crossref Funder ID
-pub fn validate_crossref_funder_id(fundref: &str) -> Option<&str> {
+pub fn validate_crossref_funder_id(fundref: &str) -> Option<String> {
     lazy_static! {
         static ref RE: Regex =
             Regex::new(r"^(?:https?://doi\.org/)?(?:10\.13039/)?((501)?1000[0-9]{5})$").unwrap();
@@ -102,19 +104,19 @@ pub fn validate_crossref_funder_id(fundref: &str) -> Option<&str> {
 
     RE.captures(fundref)
         .and_then(|captures| captures.get(1))
-        .map(|m| m.as_str())
+        .map(|m| m.as_str().to_string())
 }
 
 /// Validates a GRID ID
 /// GRID ID is a string prefixed with grid followed by dot number dot string
-pub fn validate_grid(grid: &str) -> Option<&str> {
+pub fn validate_grid(grid: &str) -> Option<String> {
     lazy_static! {
       static ref RE: Regex = Regex::new(r"^(?:(?:http|https)://(?:(?:www)?\.)?grid\.ac/)?(?:institutes/)?(grid\.[0-9]+\.[a-f0-9]{1,2})$").unwrap();
   }
 
     RE.captures(grid)
         .and_then(|captures| captures.get(1))
-        .map(|m| m.as_str())
+        .map(|m| m.as_str().to_string())
 }
 
 /// Validates an ISNI
@@ -123,7 +125,7 @@ pub fn validate_grid(grid: &str) -> Option<&str> {
 /// between 0000-0001-5000-0007 and 0000-0003-5000-0001,
 /// or between 0009-0000-0000-0000 and 0009-0010-0000-0000
 /// (the ranged reserved for ORCID).
-pub fn validate_isni(isni: &str) -> Option<&str> {
+pub fn validate_isni(isni: &str) -> Option<String> {
     lazy_static! {
       static ref RE: Regex = Regex::new(r"^(?:(?:http|https)://(?:(?:www)?\.)?isni\.org/)?(?:isni/)?(0000[ -]?00\d{2}[ -]?\d{4}[ -]?\d{3}[0-9X]+)$").unwrap();
     }
@@ -135,7 +137,7 @@ pub fn validate_isni(isni: &str) -> Option<&str> {
 
             // Return None if it's in the ORCID range
             if !check_orcid_number_range(&clean_match) {
-                Some(m.as_str())
+                Some(m.as_str().to_string())
             } else {
                 None
             }
@@ -143,7 +145,7 @@ pub fn validate_isni(isni: &str) -> Option<&str> {
 }
 
 /// Validates an ISSN
-pub fn validate_issn(issn: &str) -> Option<&str> {
+pub fn validate_issn(issn: &str) -> Option<String> {
     lazy_static! {
         static ref RE: Regex =
             Regex::new(r"^(?:https://portal\.issn\.org/resource/ISSN/)?(\d{4}\-\d{3}(\d|x|X))$")
@@ -152,7 +154,7 @@ pub fn validate_issn(issn: &str) -> Option<&str> {
 
     RE.captures(issn)
         .and_then(|captures| captures.get(1))
-        .map(|m| m.as_str())
+        .map(|m| m.as_str().to_string())
 }
 
 /// Validates an ORCID
@@ -160,7 +162,7 @@ pub fn validate_issn(issn: &str) -> Option<&str> {
 /// separated by hyphens between
 /// 0000-0001-5000-0007 and 0000-0003-5000-0001,
 /// or between 0009-0000-0000-0000 and 0009-0010-0000-0000.
-pub fn validate_orcid(orcid: &str) -> Option<&str> {
+pub fn validate_orcid(orcid: &str) -> Option<String> {
     lazy_static! {
         static ref RE: Regex = Regex::new(r"^(?:(?:http|https)://(?:(?:www|sandbox)?\.)?orcid\.org/)?(000[09][ -]000[123][ -]\d{4}[ -]\d{3}[0-9X]+)$").unwrap();
     }
@@ -168,7 +170,7 @@ pub fn validate_orcid(orcid: &str) -> Option<&str> {
     RE.captures(orcid)
         .and_then(|captures| captures.get(1))
         .filter(|m| check_orcid_number_range(m.as_str()))
-        .map(|m| m.as_str())
+        .map(|m| m.as_str().to_string())
 }
 
 /// Check if ORCID is in the range 0000-0001-5000-0007 and 0000-0003-5000-0001
@@ -194,13 +196,13 @@ fn is_in_range(value: &str, start: &str, end: &str) -> bool {
 
 /// Validates a RID
 /// RID is the unique identifier used by the InvenioRDM platform
-pub fn validate_rid(rid: &str) -> Option<&str> {
+pub fn validate_rid(rid: &str) -> Option<String> {
     lazy_static! {
         static ref RE: Regex = Regex::new(r"^[0-9A-Z]{5}-[0-9A-Z]{3}[0-9]{2}$").unwrap();
     }
 
     if RE.is_match(rid) {
-        Some(rid)
+        Some(rid.to_string())
     } else {
         None
     }
@@ -209,7 +211,7 @@ pub fn validate_rid(rid: &str) -> Option<&str> {
 /// Validates a ROR ID
 /// The ROR ID starts with 0 followed by a 6-character
 /// alphanumeric string which is base32-encoded and a 2-digit checksum.
-pub fn validate_ror(ror: &str) -> Option<&str> {
+pub fn validate_ror(ror: &str) -> Option<String> {
     lazy_static! {
         static ref RE: Regex =
             Regex::new(r"^(?:(?:http|https)://ror\.org/)?(0[0-9a-z]{6}\d{2})$").unwrap();
@@ -217,21 +219,23 @@ pub fn validate_ror(ror: &str) -> Option<&str> {
 
     RE.captures(ror)
         .and_then(|captures| captures.get(1))
-        .map(|m| m.as_str())
+        .map(|m| m.as_str().to_string())
 }
 
 /// Validates a URL and checks if it is a DOI
-pub fn validate_url(str: &str) -> &str {
+pub fn validate_url(str: &str) -> String {
     // Check if it's a DOI
-    if let Some(_) = doiutils::validate_doi(str) {
-        return "DOI";
+    if validate_doi(str).is_some() {
+        return "DOI".to_string();
     }
 
+    // Try to parse as URL
     match url::Url::parse(str) {
+        Err(_) => String::new(),
         Ok(url) => {
             // Check for disallowed URL fragments
             if has_disallowed_fragments(&url) {
-                return &String::new();
+                return String::new();
             }
 
             // Handle Rogue Scholar URLs
@@ -239,17 +243,16 @@ pub fn validate_url(str: &str) -> &str {
                 let path_segments: Vec<&str> = url.path().split('/').collect();
 
                 if is_valid_rogue_scholar_post(&path_segments) {
-                    return "JSONFEEDID";
+                    return "JSONFEEDID".to_string();
                 }
             }
             // Handle standard HTTP(S) URLs
             else if url.scheme() == "http" || url.scheme() == "https" {
-                return "URL";
+                return "URL".to_string();
             }
 
-            &String::new()
+            String::new()
         }
-        Err(_) => &String::new(),
     }
 }
 
@@ -280,14 +283,14 @@ fn is_valid_rogue_scholar_post(path_segments: &[&str]) -> bool {
         // DOI-based post path
         else if path_segments.len() == 4 {
             let doi = format!("{}/{}", path_segments[2], path_segments[3]);
-            return doiutils::validate_doi(&doi).is_some();
+            return validate_doi(&doi).is_some();
         }
     }
     false
 }
 
 /// Validates a UUID
-pub fn validate_uuid(uuid: &str) -> Option<&str> {
+pub fn validate_uuid(uuid: &str) -> Option<String> {
     lazy_static! {
         static ref RE: Regex = Regex::new(
             r"^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89aAbB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$"
@@ -296,7 +299,7 @@ pub fn validate_uuid(uuid: &str) -> Option<&str> {
     }
 
     if RE.is_match(uuid) {
-        Some(uuid)
+        Some(uuid.to_string())
     } else {
         None
     }
@@ -304,7 +307,7 @@ pub fn validate_uuid(uuid: &str) -> Option<&str> {
 
 /// Validates a Wikidata item ID
 /// Wikidata item ID is a string prefixed with Q followed by a number
-pub fn validate_wikidata(wikidata: &str) -> Option<&str> {
+pub fn validate_wikidata(wikidata: &str) -> Option<String> {
     lazy_static! {
         static ref RE: Regex =
             Regex::new(r"^(?:(?:http|https)://(?:(?:www)?\.)?wikidata\.org/wiki/)?(Q\d+)$")
@@ -313,5 +316,5 @@ pub fn validate_wikidata(wikidata: &str) -> Option<&str> {
 
     RE.captures(wikidata)
         .and_then(|captures| captures.get(1))
-        .map(|m| m.as_str())
+        .map(|m| m.as_str().to_string())
 }

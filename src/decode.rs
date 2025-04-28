@@ -4,6 +4,8 @@
 
 use clap::{ArgMatches, Command};
 
+use crate::utils::decode_id;
+
 /// Build the decode subcommand
 pub fn command() -> Command {
     Command::new("decode")
@@ -27,7 +29,7 @@ pub fn command() -> Command {
 pub fn execute(matches: &ArgMatches) -> Result<(), String> {
     let input = matches.get_one::<String>("identifier").expect("required");
 
-    match utils::decode_id(input) {
+    match decode_id(input) {
         Ok(number) => {
             println!("{}", number);
             Ok(())

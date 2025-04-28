@@ -4,6 +4,9 @@
 
 use clap::{ArgMatches, Command};
 
+use crate::doi_utils::encode_doi;
+use crate::doi_utils::validate_prefix;
+
 /// Build the encode subcommand
 pub fn command() -> Command {
     Command::new("encode")
@@ -24,12 +27,12 @@ pub fn command() -> Command {
 pub fn execute(matches: &ArgMatches) -> Result<(), String> {
     let input = matches.get_one::<String>("prefix").expect("required");
 
-    let prefix = match doiutils::validate_prefix(input) {
+    let prefix = match validate_prefix(input) {
         Some(p) => p,
         None => return Err("Invalid prefix".to_string()),
     };
 
-    let doi = doiutils::encode_doi(prefix.to_string());
+    let doi = encode_doi(&prefix);
     println!("{}", doi);
 
     Ok(())

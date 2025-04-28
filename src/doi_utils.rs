@@ -12,23 +12,21 @@ use reqwest::{Client};
 use std::error::Error;
 use std::time::Duration;
 use url::Url;
-use base32::Alphabet;
 use std::string::ToString;
-
 
 /// Extracts DOI prefix from URL
 pub fn prefix_from_url(s: &str) -> Result<String, Box<dyn Error>> {
     let url = Url::parse(s)?;
-    
+
     if url.host_str() != Some("doi.org") || !url.path().starts_with("/10.") {
         return Ok(String::new());
     }
-    
+
     let path: Vec<&str> = url.path().split('/').collect();
     if path.len() < 2 {
         return Ok(String::new());
     }
-    
+
     Ok(path[1].to_string())
 }
 
@@ -48,7 +46,7 @@ pub fn validate_doi(doi: &str) -> Option<String> {
             r"^(?:(http|https):/(/)?(dx\.)?(doi\.org|handle\.stage\.datacite\.org|handle\.test\.datacite\.org)/)?(doi:)?(10\.\d{4,5}/[^\s]+)$"
         ).unwrap();
     }
-    
+
     if let Some(captures) = DOI_REGEX.captures(doi) {
         return captures.get(6).map(|m| m.as_str().to_string());
     }
@@ -65,7 +63,7 @@ pub fn escape_doi(doi: &str) -> String {
 
 /// Encodes a DOI with a randomly generated suffix
 pub fn encode_doi(prefix: &str) -> String {
-    let suffix = crockford::generate(10, 5, true);
+    let suffix = crate::crockford::generate(10, 5, true);
     let doi = format!("https://doi.org/{}/{}", prefix, suffix);
     doi
 }
@@ -77,9 +75,9 @@ pub fn decode_doi(doi: &str) -> i64 {
         if parts.len() < 2 {
             return 0;
         }
-        
+
         let suffix = parts[1];
-        match crockford::decode(suffix, true) {
+        match crate::crockford::decode_to_number(suffix, true) {
             Ok(number) => return number,
             Err(e) => {
                 eprintln!("Error decoding DOI suffix: {}", e);
@@ -96,12 +94,12 @@ pub async fn is_registered_doi(doi: &str) -> bool {
     if url.is_empty() {
         return false;
     }
-    
+
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap_or_default();
-        
+
     match client.head(&url).send().await {
         Ok(resp) => resp.status().as_u16() <= 308,
         Err(_) => false,
@@ -115,7 +113,7 @@ pub fn validate_prefix(doi: &str) -> Option<String> {
             r"^(?:(http|https):/(/)?(dx\.)?(doi\.org|handle\.stage\.datacite\.org|handle\.test\.datacite\.org)/)?(doi:)?(10\.\d{4,5})"
         ).unwrap();
     }
-    
+
     if let Some(captures) = PREFIX_REGEX.captures(doi) {
         return captures.get(6).map(|m| m.as_str().to_string());
     }

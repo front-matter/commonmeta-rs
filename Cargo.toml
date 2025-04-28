@@ -5,10 +5,7 @@ edition = "2021"
 authors = ["Front Matter <info@front-matter.io>"]
 description = "CommonMeta tools for metadata conversion"
 license = "MIT"
-
-[lib]
-name = "commonmeta"
-path = "src/lib.rs"
+readme = "README.md"
 
 [[bin]]
 name = "commonmeta"
