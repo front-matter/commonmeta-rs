@@ -77,7 +77,7 @@ pub fn decode_doi(doi: &str) -> i64 {
         }
 
         let suffix = parts[1];
-        match crate::crockford::decode_to_number(suffix, true) {
+        match crate::crockford::decode(suffix, true) {
             Ok(number) => return number,
             Err(e) => {
                 eprintln!("Error decoding DOI suffix: {}", e);

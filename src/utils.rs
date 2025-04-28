@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use url::Url;
 
-use crate::crockford::decode_to_number;
+use crate::crockford::decode;
 use crate::doi_utils::validate_doi;
 
 /// Validates the checksum of a string using the ISO 7064 Mod 11-2 algorithm.
@@ -52,17 +52,17 @@ pub fn decode_id(id: &str) -> Result<i64, String> {
                 return Err(format!("Invalid DOI format: {}", id));
             }
             let suffix = parts[1];
-            decode_to_number(suffix, true).map_err(|e| e.to_string())
+            decode(suffix, true).map_err(|e| e.to_string())
         }
         "ROR" => {
             // ROR ID is a 9-character string that starts with 0
             // and is a base32-encoded number with a mod 97-1
-            decode_to_number(&identifier, true).map_err(|e| e.to_string())
+            decode(&identifier, true).map_err(|e| e.to_string())
         }
         "RID" => {
             // RID is a 10-character string with a hyphen after five digits.
             // It is a base32-encoded numbers with checksum.
-            decode_to_number(&identifier, true).map_err(|e| e.to_string())
+            decode(&identifier, true).map_err(|e| e.to_string())
         }
         "ORCID" => {
             let cleaned = identifier.replace("-", "");

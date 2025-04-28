@@ -1,158 +1,182 @@
-/*
-Copyright © 2025 Front Matter <info@front-matter.io>
-*/
+//! Generate, encode and decode random base32 identifiers.
+//! This encoder/decoder:
+//! - uses Douglas Crockford Base32 encoding: https://www.crockford.com/base32.html
+//! - is based on: https://github.com/front-matter/base32-url
+//! - allows for ISO 7064 checksum
+//! - encodes the checksum using only characters in the base32 set
+//! - produces string that are URI-friendly (no '=' or '/' for instance)
 
-use base32::{decode, encode, Alphabet};
+use rand::Rng;
+use std::fmt;
 
-/// Generate, encode and decode random base32 identifiers.
-/// This encoder/decoder:
-/// - uses Douglas Crockford Base32 encoding: https://www.crockford.com/base32.html
-/// - allows for ISO 7064 checksum
-/// - encodes the checksum using only characters in the base32 set
-/// - produces string that are URI-friendly (no '=' or '/' for instance)
-///
-/// This is based on: https://github.com/front-matter/base32-url
-///
-/// # Arguments
-///
-/// * `number` - The number to encode
-/// * `split_every` - Split the output string every n characters with a dash
-/// * `length` - Pad the output string with leading zeros to reach this length
-/// * `checksum` - Whether to append an ISO 7064 checksum
-pub fn encode_number(number: i64, split_every: usize, length: usize, checksum: bool) -> String {
+// NO i, l, o or u
+const ENCODING_CHARS: &str = "0123456789abcdefghjkmnpqrstvwxyz";
+
+#[derive(Debug)]
+pub enum CrockfordError {
+    InvalidCharacter(char),
+    InvalidChecksum(String, u8),
+    InvalidChecksumFormat(String),
+}
+
+impl fmt::Display for CrockfordError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            CrockfordError::InvalidCharacter(c) => write!(f, "invalid character: {}", c),
+            CrockfordError::InvalidChecksum(s, cs) => {
+                write!(f, "wrong checksum {:02} for identifier {}", cs, s)
+            }
+            CrockfordError::InvalidChecksumFormat(s) => write!(f, "invalid checksum: {}", s),
+        }
+    }
+}
+
+impl std::error::Error for CrockfordError {}
+
+/// Encode a number to a URI-friendly Douglas Crockford base32 string.
+/// optionally split with '-' every n characters, pad with zeros to a minimum length,
+/// and append a checksum using modulo 97-10 (ISO 7064).
+pub fn encode(number: i64, split_every: usize, mut length: usize, checksum: bool) -> String {
     let original_number = number;
+    let mut encoded = if number == 0 {
+        "0".to_string()
+    } else {
+        let mut num = number;
+        let mut result = String::new();
+        while num > 0 {
+            let remainder = (num % 32) as usize;
+            num /= 32;
+            result.insert(0, ENCODING_CHARS.chars().nth(remainder).unwrap());
+        }
+        result
+    };
 
-    // Convert number to bytes
-    let bytes = number.to_be_bytes();
-
-    // Use the base32 crate to encode
-    let mut encoded = encode(Alphabet::Crockford, &bytes);
-
-    // Trim leading zeros but make sure we don't end up with an empty string
-    encoded = encoded.trim_start_matches('0').to_string();
-    if encoded.is_empty() {
-        encoded = "0".to_string();
+    if checksum && length > 2 {
+        length -= 2;
     }
 
-    // Apply padding to meet minimum length
-    let mut final_length = length;
-    if checksum && final_length > 2 {
-        final_length -= 2;
+    if length > 0 && encoded.len() < length {
+        encoded = "0".repeat(length - encoded.len()) + &encoded;
     }
 
-    if final_length > 0 && encoded.len() < final_length {
-        encoded = "0".repeat(final_length - encoded.len()) + &encoded;
-    }
-
-    // Add checksum if requested
     if checksum {
         let computed_checksum = generate_checksum(original_number);
-        encoded += &format!("{:02}", computed_checksum);
+        encoded.push_str(&format!("{:02}", computed_checksum));
     }
 
-    // Add dashes if requested
     if split_every > 0 {
-        let mut splits = Vec::new();
+        let mut result = String::new();
         let mut i = 0;
+
         while i < encoded.len() {
             let end = std::cmp::min(i + split_every, encoded.len());
-            splits.push(&encoded[i..end]);
+            if !result.is_empty() {
+                result.push('-');
+            }
+            result.push_str(&encoded[i..end]);
             i = end;
         }
-        encoded = splits.join("-");
+
+        encoded = result;
     }
 
     encoded
 }
 
 /// Generate a random Crockford base32 string.
-/// Optionally split with '-' every n characters, pad with zeros to a minimum length,
+/// optionally split with '-' every n characters, pad with zeros to a minimum length,
 /// and append a checksum using modulo 97-10 (ISO 7064).
-pub fn generate(length: usize, split_every: usize, checksum: bool) -> String {
+pub fn generate(mut length: usize, split_every: usize, checksum: bool) -> String {
     if checksum && length < 3 {
         panic!("Invalid 'length'. Must be >= 3 if checksum enabled.");
     }
 
     // fixes number size, otherwise decoding checksum check will fail
-    let adjusted_length = if checksum { length - 2 } else { length };
+    if checksum {
+        length -= 2;
+    }
 
     // generate a random number between 0 and 32^length
-    use rand::{thread_rng, Rng};
-    let max = (32_u64).pow(adjusted_length as u32);
-    let number = thread_rng().gen_range(0..max) as i64;
+    let n = (32_f64).powi(length as i32);
+    let number = rand::thread_rng().gen_range(0..n.min(i64::MAX as f64) as i64);
 
-    encode_number(number, split_every, adjusted_length, checksum)
+    encode(number, split_every, length, checksum)
 }
 
 /// Decode a URI-friendly Douglas Crockford base32 string to a number.
-pub fn decode_to_number(s: &str, checksum: bool) -> Result<i64, String> {
-    let mut encoded = normalize(s);
-    let mut cs: i64 = 0;
+pub fn decode(str: &str, checksum: bool) -> Result<i64, CrockfordError> {
+    let normalized = normalize(str);
 
-    // Handle checksum
-    if checksum {
-        // checksum is the last two characters
-        if encoded.len() < 2 {
-            return Err(format!("input string too short for checksum: {}", s));
+    let (encoded, cs) = if checksum {
+        if normalized.len() < 2 {
+            return Err(CrockfordError::InvalidChecksumFormat(normalized.clone()));
         }
 
-        let checksum_str = &encoded[encoded.len() - 2..];
-        cs = match checksum_str.parse::<i64>() {
-            Ok(num) => num,
-            Err(_) => return Err(format!("invalid checksum: {}", checksum_str)),
-        };
-
-        encoded = encoded[..encoded.len() - 2].to_string();
-    }
-
-    // Ensure we have enough padding for base32 decoding
-    let padding_needed = encoded.len() % 8;
-    if padding_needed != 0 {
-        encoded = "0".repeat(8 - padding_needed) + &encoded;
-    }
-
-    // Use the base32 crate to decode
-    let bytes = match decode(Alphabet::Crockford, &encoded) {
-        Some(b) => b,
-        None => return Err(format!("invalid base32 string: {}", s)),
+        // checksum is the last two characters
+        let cs_str = &normalized[normalized.len() - 2..];
+        match cs_str.parse::<u8>() {
+            Ok(cs) => (&normalized[..normalized.len() - 2], Some(cs)),
+            Err(_) => return Err(CrockfordError::InvalidChecksumFormat(cs_str.to_string())),
+        }
+    } else {
+        (&normalized[..], None)
     };
 
-    let number = bytes_to_i64(&bytes);
+    let mut number: i64 = 0;
+    for c in encoded.chars() {
+        number *= 32;
+        match ENCODING_CHARS.find(c) {
+            Some(pos) => number += pos as i64,
+            None => return Err(CrockfordError::InvalidCharacter(c)),
+        }
+    }
 
-    // Validate checksum if needed
-    if checksum && !validate(number, cs) {
-        return Err(format!("wrong checksum {} for identifier {}", cs, s));
+    if let Some(cs) = cs {
+        if !validate(number, cs as i64) {
+            return Err(CrockfordError::InvalidChecksum(str.to_string(), cs));
+        }
     }
 
     Ok(number)
 }
 
-/// Convert a byte array to an i64 number.
-fn bytes_to_i64(bytes: &[u8]) -> i64 {
-    let mut number: i64 = 0;
-    for byte in bytes {
-        number = (number << 8) | *byte as i64;
-    }
-    number
-}
-
 /// Normalize returns a normalized encoded string for base32 encoding.
-pub fn normalize(s: &str) -> String {
-    s.to_lowercase()
+pub fn normalize(str: &str) -> String {
+    str.to_string()
+        .to_lowercase()
         .replace("-", "")
         .replace("i", "1")
         .replace("l", "1")
         .replace("o", "0")
 }
 
-/// Validate returns true if the encoded number is a valid base32 string with checksum.
+/// Validate returns true if the encoded string is a valid base32 string with checksum.
 pub fn validate(number: i64, checksum: i64) -> bool {
-    generate_checksum(number) == checksum
+    checksum == generate_checksum(number)
 }
 
-/// Generate checksum for a number using ISO 7064 (mod 97-10).
-/// The algorithm computes: 98 - ((100 * number) mod 97)
+/// GenerateChecksum returns the checksum for a number using ISO 7064 (mod 97-10).
 pub fn generate_checksum(number: i64) -> i64 {
-    let mod_result = (100 * number) % 97;
-    97 - mod_result + 1
+    97 - ((100 * number) % 97) + 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encode_decode() {
+        let number = 12345;
+        let encoded = encode(number, 0, 0, false);
+        let decoded = decode(&encoded, false).unwrap();
+        assert_eq!(number, decoded);
+    }
+
+    #[test]
+    fn test_with_checksum() {
+        let number = 12345;
+        let encoded = encode(number, 0, 0, true);
+        let decoded = decode(&encoded, true).unwrap();
+        assert_eq!(number, decoded);
+    }
 }
