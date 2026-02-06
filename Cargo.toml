@@ -2,7 +2,7 @@
 name = "commonmeta"
 version = "0.1.0"
 edition = "2021"
-authors = ["Front Matter <info@front-matter.io>"]
+authors = ["Front Matter <info@front-matter.de>"]
 description = "CommonMeta tools for metadata conversion"
 license = "MIT"
 readme = "README.md"
