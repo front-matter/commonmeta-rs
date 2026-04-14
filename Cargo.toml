@@ -15,7 +15,7 @@ path = "src/main.rs"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 tokio = { version = "1", features = ["full"] }
 clap = "4.0"
-rand = "0.8"
+rand = "0.9"
 regex = "1.9"
 base32 = "0.4"
 lazy_static = "1.5.0"
