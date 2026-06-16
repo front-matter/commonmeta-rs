@@ -937,8 +937,10 @@ fn convert(data: &Data) -> Body {
     let citation_list = build_citation_list(data);
 
     match data.type_.as_str() {
-        "Article" | "BlogPost" => {
-            let posted_type = if data.additional_type.is_empty() {
+        "Article" | "BlogPost" | "Preprint" => {
+            let posted_type = if data.type_ == "Preprint" {
+                "preprint".to_string()
+            } else if data.additional_type.is_empty() {
                 "other".to_string()
             } else {
                 data.additional_type.clone()

@@ -516,10 +516,24 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
         entry.set("year", chunks(&date_pub[..4]));
     }
 
-    let mut bibtex_str = entry
+    let raw = entry
         .to_bibtex_string()
         .map_err(|e| Error::Serialize(e.to_string()))?;
-    bibtex_str.push('\n');
+
+    // Indent every field line (all lines except the first `@type{key,` and the closing `}`).
+    let bibtex_str = raw
+        .lines()
+        .enumerate()
+        .map(|(i, line)| {
+            if i == 0 || line == "}" {
+                line.to_string()
+            } else {
+                format!("    {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
 
     Ok(bibtex_str.into_bytes())
 }
