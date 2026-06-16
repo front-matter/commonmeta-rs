@@ -1,0 +1,62 @@
+{
+  "container": {
+    "firstPage": "100",
+    "identifier": "1234-5678",
+    "identifierType": "ISSN",
+    "issue": "3",
+    "lastPage": "110",
+    "title": "Journal of Examples",
+    "type": "Periodical",
+    "volume": "12"
+  },
+  "contributors": [
+    {
+      "contributorRoles": [
+        "Author"
+      ],
+      "familyName": "Lovelace",
+      "givenName": "Ada",
+      "type": "Person"
+    }
+  ],
+  "date": {
+    "published": "2024-03-15"
+  },
+  "descriptions": [
+    {
+      "description": "An abstract about things.",
+      "type": "Abstract"
+    }
+  ],
+  "id": "https://doi.org/10.5555/12345678",
+  "language": "en",
+  "license": {
+    "id": "CC-BY-4.0",
+    "url": "https://creativecommons.org/licenses/by/4.0/legalcode"
+  },
+  "publisher": {
+    "name": "Example Publisher"
+  },
+  "relations": [
+    {
+      "id": "https://portal.issn.org/resource/ISSN/1234-5678",
+      "type": "IsPartOf"
+    }
+  ],
+  "subjects": [
+    {
+      "subject": "science"
+    },
+    {
+      "subject": "research"
+    }
+  ],
+  "titles": [
+    {
+      "title": "A Study of Things"
+    }
+  ],
+  "type": "JournalArticle",
+  "url": "https://example.org/article/1",
+  "version": "1.0"
+}

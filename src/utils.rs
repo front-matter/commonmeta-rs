@@ -1,9 +1,10 @@
 use lazy_static::lazy_static;
 use regex::Regex;
+use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
 use crate::crockford::decode;
-use crate::doi_utils::validate_doi;
+use crate::doi_utils::{normalize_doi, validate_doi};
 
 /// Validates the checksum of a string using the ISO 7064 Mod 11-2 algorithm.
 fn validate_mod11_2(input: &str) -> Result<(), String> {
@@ -83,10 +84,10 @@ pub fn decode_id(id: &str) -> Result<i64, String> {
     }
 }
 
-/// ValidateID validates an identifier and returns the type
-/// Can be DOI, UUID, ISSN, ORCID, ROR, URL, RID, Wikidata, ISNI
-/// or GRID
-pub fn validate_id(id: &str) -> (String, &str) {
+/// Validates an identifier and returns the identifier and its type.
+/// Type can be: DOI, UUID, PMID, PMCID, OpenAlex, ORCID, ROR, GRID,
+/// RID, Wikidata, ISNI, ISSN, Crossref Funder ID, URL, or "".
+pub fn validate_id(id: &str) -> (String, &'static str) {
     if let Some(fundref) = validate_crossref_funder_id(id) {
         return (fundref, "Crossref Funder ID");
     }
@@ -96,8 +97,14 @@ pub fn validate_id(id: &str) -> (String, &str) {
     if let Some(uuid) = validate_uuid(id) {
         return (uuid, "UUID");
     }
-    if let Some(rid) = validate_rid(id) {
-        return (rid, "RID");
+    if let Some(pmid) = validate_pmid(id) {
+        return (pmid, "PMID");
+    }
+    if let Some(pmcid) = validate_pmcid(id) {
+        return (pmcid, "PMCID");
+    }
+    if let Some(openalex) = validate_openalex(id) {
+        return (openalex, "OpenAlex");
     }
     if let Some(orcid) = validate_orcid(id) {
         return (orcid, "ORCID");
@@ -107,6 +114,9 @@ pub fn validate_id(id: &str) -> (String, &str) {
     }
     if let Some(grid) = validate_grid(id) {
         return (grid, "GRID");
+    }
+    if let Some(rid) = validate_rid(id) {
+        return (rid, "RID");
     }
     if let Some(wikidata) = validate_wikidata(id) {
         return (wikidata, "Wikidata");
@@ -124,6 +134,21 @@ pub fn validate_id(id: &str) -> (String, &str) {
     }
 
     (String::new(), "")
+}
+
+/// Validates an identifier and additionally returns its category.
+/// Category: "Work", "Person", "Organization", "Contributor", "All", or "".
+pub fn validate_id_category(id: &str) -> (String, &'static str, &'static str) {
+    let (pid, type_) = validate_id(id);
+    let category = match type_ {
+        "ROR" | "Crossref Funder ID" | "GRID" => "Organization",
+        "ORCID" => "Person",
+        "ISNI" => "Contributor",
+        "DOI" | "PMID" | "PMCID" => "Work",
+        "Wikidata" | "OpenAlex" | "URL" | "UUID" => "All",
+        _ => "",
+    };
+    (pid, type_, category)
 }
 
 /// Validates a Crossref Funder ID
@@ -348,4 +373,733 @@ pub fn validate_wikidata(wikidata: &str) -> Option<String> {
     RE.captures(wikidata)
         .and_then(|captures| captures.get(1))
         .map(|m| m.as_str().to_string())
+}
+
+/// Validates an OpenAlex ID.
+/// First letter indicates resource type (A author, F funder, I institution,
+/// P publisher, S source, W work), followed by 8-10 digits.
+pub fn validate_openalex(openalex: &str) -> Option<String> {
+    lazy_static! {
+        static ref RE: Regex =
+            Regex::new(r"^(?:(?:http|https)://openalex\.org/)?([AFIPSW]\d{8,10})$").unwrap();
+    }
+    RE.captures(openalex)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+/// Validates a PubMed ID (PMID).
+pub fn validate_pmid(pmid: &str) -> Option<String> {
+    lazy_static! {
+        static ref RE: Regex =
+            Regex::new(r"^(?:(?:http|https)://pubmed\.ncbi\.nlm\.nih\.gov/)?(\d{4,8})$").unwrap();
+    }
+    RE.captures(pmid)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+/// Validates a PubMed Central ID (PMCID).
+pub fn validate_pmcid(pmcid: &str) -> Option<String> {
+    lazy_static! {
+        static ref RE: Regex =
+            Regex::new(r"^(?:(?:http|https)://www\.ncbi\.nlm\.nih\.gov/pmc/articles/)?(\d{4,8})$")
+                .unwrap();
+    }
+    RE.captures(pmcid)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+// ── Normalizers ───────────────────────────────────────────────────────────────
+
+/// Normalizes any PID: DOI → canonical URL, UUID, Wikidata, or plain URL.
+pub fn normalize_id(pid: &str) -> String {
+    let doi = normalize_doi(pid);
+    if !doi.is_empty() {
+        return doi;
+    }
+    if let Some(uuid) = validate_uuid(pid) {
+        return uuid;
+    }
+    if let Some(wikidata) = validate_wikidata(pid) {
+        return format!("https://www.wikidata.org/wiki/{}", wikidata);
+    }
+    match Url::parse(pid) {
+        Err(_) => String::new(),
+        Ok(mut u) => {
+            if u.scheme().is_empty() {
+                return String::new();
+            }
+            if u.scheme() == "http" {
+                let _ = u.set_scheme("https");
+            }
+            let s = u.to_string();
+            if s.ends_with('/') {
+                s[..s.len() - 1].to_string()
+            } else {
+                s
+            }
+        }
+    }
+}
+
+/// Normalizes a work identifier (DOI, UUID, URL, Wikidata).
+pub fn normalize_work_id(id: &str) -> String {
+    let (pid, type_, category) = validate_id_category(id);
+    if !["Work", "All"].contains(&category) {
+        return String::new();
+    }
+    match type_ {
+        "DOI" => normalize_doi(&pid),
+        "UUID" | "URL" => pid,
+        "Wikidata" => format!("https://www.wikidata.org/wiki/{}", pid),
+        _ => String::new(),
+    }
+}
+
+/// Normalizes an organization identifier (ROR, Crossref Funder ID, GRID,
+/// Wikidata, ISNI).
+pub fn normalize_organization_id(id: &str) -> String {
+    let (pid, type_, category) = validate_id_category(id);
+    if !["Organization", "Contributor", "All"].contains(&category) {
+        return String::new();
+    }
+    match type_ {
+        "ROR" => format!("https://ror.org/{}", pid),
+        "Crossref Funder ID" => format!("https://doi.org/{}", pid),
+        "GRID" => format!("https://grid.ac/institutes/{}", pid),
+        "Wikidata" => format!("https://www.wikidata.org/wiki/{}", pid),
+        "ISNI" => format!("https://isni.org/isni/{}", pid),
+        _ => String::new(),
+    }
+}
+
+/// Normalizes a person identifier (ORCID, ISNI, Wikidata).
+pub fn normalize_person_id(id: &str) -> String {
+    let (pid, type_, category) = validate_id_category(id);
+    if !["Person", "Contributor", "All"].contains(&category) {
+        return String::new();
+    }
+    match type_ {
+        "ORCID" => format!("https://orcid.org/{}", pid),
+        "ISNI" => format!("https://isni.org/isni/{}", pid),
+        "Wikidata" => format!("https://www.wikidata.org/wiki/{}", pid),
+        _ => String::new(),
+    }
+}
+
+/// Returns a normalized ORCID URL.
+pub fn normalize_orcid(orcid: &str) -> String {
+    match validate_orcid(orcid) {
+        Some(id) => format!("https://orcid.org/{}", id),
+        None => String::new(),
+    }
+}
+
+/// Returns a normalized ROR URL.
+pub fn normalize_ror(ror: &str) -> String {
+    match validate_ror(ror) {
+        Some(id) => format!("https://ror.org/{}", id),
+        None => String::new(),
+    }
+}
+
+/// Normalizes a URL: upgrades http→https when `secure`, lowercases when `lower`.
+pub fn normalize_url(s: &str, secure: bool, lower: bool) -> Option<String> {
+    let mut u = Url::parse(s).ok()?;
+    if u.host_str().is_none() {
+        return None;
+    }
+    if secure && u.scheme() == "http" {
+        let _ = u.set_scheme("https");
+    }
+    let result = u.to_string();
+    Some(if lower {
+        result.to_lowercase()
+    } else {
+        result
+    })
+}
+
+/// Normalizes a Creative Commons license URL to the canonical `/legalcode` form.
+/// Returns `(normalized_url, true)` on success, `("", false)` otherwise.
+pub fn normalize_cc_url(url_: &str) -> (String, bool) {
+    lazy_static! {
+        static ref CC_MAP: std::collections::HashMap<&'static str, &'static str> = {
+            let mut m = std::collections::HashMap::new();
+            m.insert("https://creativecommons.org/licenses/by/1.0",          "https://creativecommons.org/licenses/by/1.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by/2.0",          "https://creativecommons.org/licenses/by/2.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by/2.5",          "https://creativecommons.org/licenses/by/2.5/legalcode");
+            m.insert("https://creativecommons.org/licenses/by/3.0",          "https://creativecommons.org/licenses/by/3.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by/3.0/us",       "https://creativecommons.org/licenses/by/3.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by/4.0",          "https://creativecommons.org/licenses/by/4.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc/1.0",       "https://creativecommons.org/licenses/by-nc/1.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc/2.0",       "https://creativecommons.org/licenses/by-nc/2.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc/2.5",       "https://creativecommons.org/licenses/by-nc/2.5/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc/3.0",       "https://creativecommons.org/licenses/by-nc/3.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc/4.0",       "https://creativecommons.org/licenses/by-nc/4.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nd-nc/1.0",    "https://creativecommons.org/licenses/by-nd-nc/1.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nd-nc/2.0",    "https://creativecommons.org/licenses/by-nd-nc/2.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nd-nc/2.5",    "https://creativecommons.org/licenses/by-nd-nc/2.5/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nd-nc/3.0",    "https://creativecommons.org/licenses/by-nd-nc/3.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nd-nc/4.0",    "https://creativecommons.org/licenses/by-nd-nc/4.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc-sa/1.0",    "https://creativecommons.org/licenses/by-nc-sa/1.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc-sa/2.0",    "https://creativecommons.org/licenses/by-nc-sa/2.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc-sa/2.5",    "https://creativecommons.org/licenses/by-nc-sa/2.5/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc-sa/3.0",    "https://creativecommons.org/licenses/by-nc-sa/3.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc-sa/3.0/us", "https://creativecommons.org/licenses/by-nc-sa/3.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc-sa/4.0",    "https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nd/1.0",       "https://creativecommons.org/licenses/by-nd/1.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nd/2.0",       "https://creativecommons.org/licenses/by-nd/2.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nd/2.5",       "https://creativecommons.org/licenses/by-nd/2.5/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nd/3.0",       "https://creativecommons.org/licenses/by-nd/3.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nd/4.0",       "https://creativecommons.org/licenses/by-nd/2.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-sa/1.0",       "https://creativecommons.org/licenses/by-sa/1.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-sa/2.0",       "https://creativecommons.org/licenses/by-sa/2.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-sa/2.5",       "https://creativecommons.org/licenses/by-sa/2.5/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-sa/3.0",       "https://creativecommons.org/licenses/by-sa/3.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-sa/4.0",       "https://creativecommons.org/licenses/by-sa/4.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc-nd/1.0",    "https://creativecommons.org/licenses/by-nc-nd/1.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc-nd/2.0",    "https://creativecommons.org/licenses/by-nc-nd/2.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc-nd/2.5",    "https://creativecommons.org/licenses/by-nc-nd/2.5/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc-nd/3.0",    "https://creativecommons.org/licenses/by-nc-nd/3.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/by-nc-nd/4.0",    "https://creativecommons.org/licenses/by-nc-nd/4.0/legalcode");
+            m.insert("https://creativecommons.org/licenses/publicdomain",    "https://creativecommons.org/licenses/publicdomain/");
+            m.insert("https://creativecommons.org/publicdomain/zero/1.0",    "https://creativecommons.org/publicdomain/zero/1.0/legalcode");
+            m
+        };
+    }
+
+    if url_.is_empty() {
+        return (String::new(), false);
+    }
+    let normalized = match normalize_url(url_, true, false) {
+        Some(u) => u,
+        None => return (String::new(), false),
+    };
+    let mut u = match Url::parse(&normalized) {
+        Ok(u) => u,
+        Err(_) => return (String::new(), false),
+    };
+    // strip trailing slash when no query string
+    if u.query().is_none() {
+        let path = u.path().to_string();
+        if path.len() > 1 && path.ends_with('/') {
+            u.set_path(&path[..path.len() - 1]);
+        }
+    }
+    let key = u.to_string();
+    if let Some(v) = CC_MAP.get(key.as_str()) {
+        return (v.to_string(), true);
+    }
+    // Some providers (e.g. DataCite) return URLs that already end with /legalcode.
+    // Strip that suffix and try again.
+    let stripped = key
+        .strip_suffix("/legalcode")
+        .unwrap_or(key.as_str());
+    match CC_MAP.get(stripped) {
+        Some(v) => (v.to_string(), true),
+        None => (String::new(), false),
+    }
+}
+
+/// Maps a Creative Commons license URL (any form) to its SPDX identifier.
+pub fn url_to_spdx(url: &str) -> String {
+    let (canonical, _) = normalize_cc_url(url);
+    if canonical.is_empty() {
+        return String::new();
+    }
+    match canonical.as_str() {
+        "https://creativecommons.org/licenses/by/1.0/legalcode"       => "CC-BY-1.0",
+        "https://creativecommons.org/licenses/by/2.0/legalcode"       => "CC-BY-2.0",
+        "https://creativecommons.org/licenses/by/2.5/legalcode"       => "CC-BY-2.5",
+        "https://creativecommons.org/licenses/by/3.0/legalcode"       => "CC-BY-3.0",
+        "https://creativecommons.org/licenses/by/4.0/legalcode"       => "CC-BY-4.0",
+        "https://creativecommons.org/licenses/by-nc/1.0/legalcode"    => "CC-BY-NC-1.0",
+        "https://creativecommons.org/licenses/by-nc/2.0/legalcode"    => "CC-BY-NC-2.0",
+        "https://creativecommons.org/licenses/by-nc/2.5/legalcode"    => "CC-BY-NC-2.5",
+        "https://creativecommons.org/licenses/by-nc/3.0/legalcode"    => "CC-BY-NC-3.0",
+        "https://creativecommons.org/licenses/by-nc/4.0/legalcode"    => "CC-BY-NC-4.0",
+        "https://creativecommons.org/licenses/by-nc-nd/1.0/legalcode" => "CC-BY-NC-ND-1.0",
+        "https://creativecommons.org/licenses/by-nc-nd/2.0/legalcode" => "CC-BY-NC-ND-2.0",
+        "https://creativecommons.org/licenses/by-nc-nd/2.5/legalcode" => "CC-BY-NC-ND-2.5",
+        "https://creativecommons.org/licenses/by-nc-nd/3.0/legalcode" => "CC-BY-NC-ND-3.0",
+        "https://creativecommons.org/licenses/by-nc-nd/4.0/legalcode" => "CC-BY-NC-ND-4.0",
+        "https://creativecommons.org/licenses/by-nc-sa/1.0/legalcode" => "CC-BY-NC-SA-1.0",
+        "https://creativecommons.org/licenses/by-nc-sa/2.0/legalcode" => "CC-BY-NC-SA-2.0",
+        "https://creativecommons.org/licenses/by-nc-sa/2.5/legalcode" => "CC-BY-NC-SA-2.5",
+        "https://creativecommons.org/licenses/by-nc-sa/3.0/legalcode" => "CC-BY-NC-SA-3.0",
+        "https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode" => "CC-BY-NC-SA-4.0",
+        "https://creativecommons.org/licenses/by-nd/1.0/legalcode"    => "CC-BY-ND-1.0",
+        "https://creativecommons.org/licenses/by-nd/2.0/legalcode"    => "CC-BY-ND-2.0",
+        "https://creativecommons.org/licenses/by-nd/2.5/legalcode"    => "CC-BY-ND-2.5",
+        "https://creativecommons.org/licenses/by-nd/3.0/legalcode"    => "CC-BY-ND-3.0",
+        "https://creativecommons.org/licenses/by-nd/4.0/legalcode"    => "CC-BY-ND-4.0",
+        "https://creativecommons.org/licenses/by-sa/1.0/legalcode"    => "CC-BY-SA-1.0",
+        "https://creativecommons.org/licenses/by-sa/2.0/legalcode"    => "CC-BY-SA-2.0",
+        "https://creativecommons.org/licenses/by-sa/2.5/legalcode"    => "CC-BY-SA-2.5",
+        "https://creativecommons.org/licenses/by-sa/3.0/legalcode"    => "CC-BY-SA-3.0",
+        "https://creativecommons.org/licenses/by-sa/4.0/legalcode"    => "CC-BY-SA-4.0",
+        "https://creativecommons.org/publicdomain/zero/1.0/legalcode" => "CC0-1.0",
+        _ => "",
+    }
+    .to_string()
+}
+
+// ── ISSN / slug / community helpers ──────────────────────────────────────────
+
+/// Returns an ISSN expressed as a portal.issn.org URL.
+pub fn issn_as_url(issn: &str) -> String {
+    if issn.is_empty() {
+        return String::new();
+    }
+    format!("https://portal.issn.org/resource/ISSN/{}", issn)
+}
+
+/// Returns a community slug as a Rogue Scholar API URL.
+pub fn community_slug_as_url(slug: &str, host: &str) -> String {
+    if slug.is_empty() {
+        return String::new();
+    }
+    let h = if host.is_empty() { "rogue-scholar.org" } else { host };
+    format!("https://{}/api/communities/{}", h, slug)
+}
+
+// ── String utilities ──────────────────────────────────────────────────────────
+
+/// Strips HTML, allowing only safe inline elements (mirrors Go's bluemonday policy).
+pub fn sanitize(html: &str) -> String {
+    let allowed: std::collections::HashSet<&str> =
+        ["b", "br", "code", "em", "i", "sub", "sup", "strong"]
+            .iter()
+            .copied()
+            .collect();
+    let clean = ammonia::Builder::new()
+        .tags(allowed)
+        .clean(html)
+        .to_string();
+    clean.trim_matches('\n').to_string()
+}
+
+/// Uppercases only the first character of a string.
+pub fn title_case(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
+/// Removes duplicate elements from a Vec while preserving order.
+pub fn dedupe_slice<T: Eq + std::hash::Hash + Clone>(v: Vec<T>) -> Vec<T> {
+    let mut seen = std::collections::HashSet::new();
+    v.into_iter().filter(|x| seen.insert(x.clone())).collect()
+}
+
+/// Converts a PascalCase / camelCase string to "Title Words" form.
+pub fn camel_case_to_words(s: &str) -> String {
+    lazy_static! {
+        static ref RE1: Regex = Regex::new("(.)([A-Z][a-z]+)").unwrap();
+        static ref RE2: Regex = Regex::new("([a-z0-9])([A-Z])").unwrap();
+    }
+    let words = RE1.replace_all(s, "${1} ${2}");
+    let words = RE2.replace_all(&words, "${1} ${2}");
+    title_case(&words.to_lowercase())
+}
+
+/// Converts "words in a string" to camelCase.
+pub fn words_to_camel_case(s: &str) -> String {
+    lazy_static! {
+        static ref RE1: Regex = Regex::new("(.)([A-Z][a-z]+)").unwrap();
+        static ref RE2: Regex = Regex::new("([a-z0-9])([A-Z])").unwrap();
+    }
+    let words = RE1.replace_all(s, "${1} ${2}");
+    let words = RE2.replace_all(&words, "${1} ${2}");
+    let pascal: String = words
+        .split_whitespace()
+        .map(|w| title_case(w))
+        .collect::<String>();
+    let pascal = pascal.replace(' ', "").replace('-', "");
+    if pascal.is_empty() {
+        return pascal;
+    }
+    let mut chars = pascal.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_lowercase().collect::<String>() + chars.as_str(),
+    }
+}
+
+/// Lowercases the first character of a PascalCase string (PascalCase → camelCase).
+pub fn camel_case_string(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_lowercase().collect::<String>() + chars.as_str(),
+    }
+}
+
+/// Converts kebab-case to camelCase.
+pub fn kebab_case_to_camel_case(s: &str) -> String {
+    lazy_static! {
+        static ref RE: Regex = Regex::new("-([a-z])").unwrap();
+    }
+    RE.replace_all(s, |caps: &regex::Captures| caps[1].to_uppercase())
+        .to_string()
+}
+
+/// Converts kebab-case to PascalCase.
+pub fn kebab_case_to_pascal_case(s: &str) -> String {
+    let camel = kebab_case_to_camel_case(s);
+    title_case(&camel)
+}
+
+/// Unicode-normalizes a string: NFD decomposition, strip combining diacritics, NFC recompose.
+pub fn normalize_string(s: &str) -> String {
+    s.nfd()
+        .filter(|c| !('\u{0300}'..='\u{036F}').contains(c))
+        .nfc()
+        .collect()
+}
+
+/// Converts a string to a URL slug: normalize, keep only lowercase letters/digits.
+pub fn string_to_slug(s: &str) -> String {
+    normalize_string(s)
+        .chars()
+        .filter_map(|c| {
+            if c.is_alphanumeric() {
+                Some(c.to_lowercase().next().unwrap_or(c))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Inserts `sep` every `n` characters.
+pub fn split_string(s: &str, n: usize, sep: &str) -> String {
+    if n == 0 {
+        return s.to_string();
+    }
+    s.as_bytes()
+        .chunks(n)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
+/// Returns a language code in the requested format.
+/// `format`: "iso639-3" for 3-letter code, "name" for English name, otherwise ISO 639-1.
+pub fn get_language(lang: &str, format: &str) -> String {
+    // (iso639-1, iso639-3, name)
+    const LANGS: &[(&str, &str, &str)] = &[
+        ("af", "afr", "Afrikaans"),
+        ("ar", "ara", "Arabic"),
+        ("bg", "bul", "Bulgarian"),
+        ("cs", "ces", "Czech"),
+        ("cy", "cym", "Welsh"),
+        ("da", "dan", "Danish"),
+        ("de", "deu", "German"),
+        ("el", "ell", "Greek"),
+        ("en", "eng", "English"),
+        ("es", "spa", "Spanish"),
+        ("et", "est", "Estonian"),
+        ("fi", "fin", "Finnish"),
+        ("fr", "fra", "French"),
+        ("ga", "gle", "Irish"),
+        ("gl", "glg", "Galician"),
+        ("hr", "hrv", "Croatian"),
+        ("hu", "hun", "Hungarian"),
+        ("id", "ind", "Indonesian"),
+        ("it", "ita", "Italian"),
+        ("ja", "jpn", "Japanese"),
+        ("ko", "kor", "Korean"),
+        ("lt", "lit", "Lithuanian"),
+        ("lv", "lav", "Latvian"),
+        ("mk", "mkd", "Macedonian"),
+        ("ms", "msa", "Malay"),
+        ("mt", "mlt", "Maltese"),
+        ("nl", "nld", "Dutch"),
+        ("no", "nor", "Norwegian"),
+        ("pl", "pol", "Polish"),
+        ("pt", "por", "Portuguese"),
+        ("ro", "ron", "Romanian"),
+        ("ru", "rus", "Russian"),
+        ("sk", "slk", "Slovak"),
+        ("sl", "slv", "Slovenian"),
+        ("sq", "sqi", "Albanian"),
+        ("sr", "srp", "Serbian"),
+        ("sv", "swe", "Swedish"),
+        ("tr", "tur", "Turkish"),
+        ("uk", "ukr", "Ukrainian"),
+        ("vi", "vie", "Vietnamese"),
+        ("zh", "zho", "Chinese"),
+    ];
+
+    let lc = lang.to_lowercase();
+    for &(part1, part3, name) in LANGS {
+        if lc == part1 || lc == part3 || lc.eq_ignore_ascii_case(name) {
+            return match format {
+                "iso639-3" => part3.to_string(),
+                "name" => name.to_string(),
+                _ => part1.to_string(),
+            };
+        }
+    }
+    String::new()
+}
+
+// ── Format detection ──────────────────────────────────────────────────────────
+
+/// Auto-detects the commonmeta reader format from various hints.
+pub fn find_from_format(
+    pid: Option<&str>,
+    str_: Option<&str>,
+    ext: Option<&str>,
+    filename: Option<&str>,
+) -> &'static str {
+    if let Some(p) = pid {
+        if !p.is_empty() {
+            return find_from_format_by_id(p);
+        }
+    }
+    if let (Some(s), Some(e)) = (str_, ext) {
+        if !s.is_empty() && !e.is_empty() {
+            return find_from_format_by_ext(e);
+        }
+    }
+    if let Some(s) = str_ {
+        if !s.is_empty() {
+            return find_from_format_by_string(s);
+        }
+    }
+    if let Some(f) = filename {
+        if !f.is_empty() {
+            return find_from_format_by_filename(f);
+        }
+    }
+    "datacite"
+}
+
+/// Detects format by PID (DOI, URL patterns).
+pub fn find_from_format_by_id(id: &str) -> &'static str {
+    if validate_doi(id).is_some() {
+        // TODO: query DOI RA to distinguish crossref / datacite
+        return "crossref";
+    }
+    if id.ends_with("codemeta.json") {
+        return "codemeta";
+    }
+    if id.ends_with("CITATION.cff") || id.contains("github.com") {
+        return "cff";
+    }
+    if id.contains("jsonfeed") {
+        return "jsonfeed";
+    }
+    lazy_static! {
+        static ref RE_ROGUE: Regex =
+            Regex::new(r"^https:/(/)?api\.rogue-scholar\.org/posts/(.+)$").unwrap();
+        static ref RE_INVENIO: Regex =
+            Regex::new(r"^https:/(/)(.+)/(api/)?records/(.+)$").unwrap();
+    }
+    if RE_ROGUE.is_match(id) {
+        return "jsonfeed";
+    }
+    if RE_INVENIO.is_match(id) {
+        return "inveniordm";
+    }
+    "schemaorg"
+}
+
+/// Detects format by file extension.
+pub fn find_from_format_by_ext(ext: &str) -> &'static str {
+    match ext {
+        ".bib" => "bibtex",
+        ".ris" => "ris",
+        _ => "",
+    }
+}
+
+/// Detects format by parsing the JSON string and examining key fields.
+pub fn find_from_format_by_string(s: &str) -> &'static str {
+    let data: serde_json::Value = match serde_json::from_str(s) {
+        Ok(v) => v,
+        Err(_) => return "",
+    };
+    if let Some(v) = data.get("schema_version").and_then(|v| v.as_str()) {
+        if v.starts_with("https://commonmeta.org") {
+            return "commonmeta";
+        }
+    }
+    if let Some(v) = data.get("@context").and_then(|v| v.as_str()) {
+        if v == "http://schema.org" {
+            return "schemaorg";
+        }
+        if v.contains("codemeta") {
+            return "codemeta";
+        }
+    }
+    if data.get("guid").is_some() {
+        return "jsonfeed";
+    }
+    if let Some(v) = data.get("schemaVersion").and_then(|v| v.as_str()) {
+        if v.starts_with("http://datacite.org/schema/kernel") {
+            return "datacite";
+        }
+    }
+    if data.get("source").and_then(|v| v.as_str()) == Some("Crossref") {
+        return "crossref";
+    }
+    if data.get("conceptdoi").is_some() {
+        return "inveniordm";
+    }
+    if data.get("credit_metadata").is_some() {
+        return "kbase";
+    }
+    ""
+}
+
+/// Detects format by filename.
+pub fn find_from_format_by_filename(filename: &str) -> &'static str {
+    if filename == "CITATION.cff" {
+        return "cff";
+    }
+    ""
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_openalex() {
+        assert_eq!(validate_openalex("W1234567890"), Some("W1234567890".into()));
+        assert_eq!(validate_openalex("https://openalex.org/W1234567890"), Some("W1234567890".into()));
+        assert_eq!(validate_openalex("X123"), None);
+    }
+
+    #[test]
+    fn test_validate_pmid() {
+        assert_eq!(validate_pmid("12345678"), Some("12345678".into()));
+        assert_eq!(validate_pmid("https://pubmed.ncbi.nlm.nih.gov/12345678"), Some("12345678".into()));
+        assert_eq!(validate_pmid("123"), None); // too short
+    }
+
+    #[test]
+    fn test_normalize_orcid() {
+        assert_eq!(
+            normalize_orcid("0000-0001-5000-0007"),
+            "https://orcid.org/0000-0001-5000-0007"
+        );
+        assert_eq!(normalize_orcid("not-an-orcid"), "");
+    }
+
+    #[test]
+    fn test_normalize_ror() {
+        assert_eq!(
+            normalize_ror("https://ror.org/0521rfr06"),
+            "https://ror.org/0521rfr06"
+        );
+    }
+
+    #[test]
+    fn test_issn_as_url() {
+        assert_eq!(
+            issn_as_url("1234-5678"),
+            "https://portal.issn.org/resource/ISSN/1234-5678"
+        );
+        assert_eq!(issn_as_url(""), "");
+    }
+
+    #[test]
+    fn test_community_slug_as_url() {
+        assert_eq!(
+            community_slug_as_url("my-blog", ""),
+            "https://rogue-scholar.org/api/communities/my-blog"
+        );
+        assert_eq!(
+            community_slug_as_url("blog", "example.org"),
+            "https://example.org/api/communities/blog"
+        );
+    }
+
+    #[test]
+    fn test_camel_case_string() {
+        assert_eq!(camel_case_string("IsVersionOf"), "isVersionOf");
+        assert_eq!(camel_case_string("HasPreprint"), "hasPreprint");
+        assert_eq!(camel_case_string(""), "");
+    }
+
+    #[test]
+    fn test_kebab_case_to_camel_case() {
+        assert_eq!(kebab_case_to_camel_case("foo-bar-baz"), "fooBarBaz");
+        assert_eq!(kebab_case_to_pascal_case("foo-bar"), "FooBar");
+    }
+
+    #[test]
+    fn test_normalize_string() {
+        assert_eq!(normalize_string("Héllo Wörld"), "Hello World");
+        assert_eq!(normalize_string("café"), "cafe");
+    }
+
+    #[test]
+    fn test_string_to_slug() {
+        assert_eq!(string_to_slug("Héllo Wörld!"), "helloworld");
+        assert_eq!(string_to_slug("café au lait"), "cafeaulait");
+    }
+
+    #[test]
+    fn test_split_string() {
+        assert_eq!(split_string("1234567890", 4, "-"), "1234-5678-90");
+        assert_eq!(split_string("abcdef", 2, "_"), "ab_cd_ef");
+    }
+
+    #[test]
+    fn test_get_language() {
+        assert_eq!(get_language("en", "iso639-3"), "eng");
+        assert_eq!(get_language("deu", ""), "de");
+        assert_eq!(get_language("French", "iso639-3"), "fra");
+        assert_eq!(get_language("xyz", ""), "");
+    }
+
+    #[test]
+    fn test_normalize_cc_url() {
+        let (url, ok) = normalize_cc_url("https://creativecommons.org/licenses/by/4.0/");
+        assert!(ok);
+        assert_eq!(url, "https://creativecommons.org/licenses/by/4.0/legalcode");
+
+        let (_, ok) = normalize_cc_url("https://example.com/license");
+        assert!(!ok);
+    }
+
+    #[test]
+    fn test_dedupe_slice() {
+        assert_eq!(dedupe_slice(vec![1, 2, 2, 3, 1]), vec![1, 2, 3]);
+        assert_eq!(
+            dedupe_slice(vec!["a", "b", "a"]),
+            vec!["a", "b"]
+        );
+    }
+
+    #[test]
+    fn test_find_from_format_by_string() {
+        let json = r#"{"schema_version":"https://commonmeta.org/commonmeta_v0.14","id":"x"}"#;
+        assert_eq!(find_from_format_by_string(json), "commonmeta");
+
+        let json = r#"{"guid":"abc-123","url":"https://example.com"}"#;
+        assert_eq!(find_from_format_by_string(json), "jsonfeed");
+    }
+
+    #[test]
+    fn test_validate_id_category() {
+        let (id, type_, cat) = validate_id_category("https://ror.org/0521rfr06");
+        assert_eq!(type_, "ROR");
+        assert_eq!(cat, "Organization");
+        assert_eq!(id, "0521rfr06");
+
+        let (_, type_, cat) = validate_id_category("https://orcid.org/0000-0001-5000-0007");
+        assert_eq!(type_, "ORCID");
+        assert_eq!(cat, "Person");
+    }
 }

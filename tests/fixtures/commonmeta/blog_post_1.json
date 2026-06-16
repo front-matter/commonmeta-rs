@@ -1,0 +1,26 @@
+{
+  "id": "https://doi.org/10.59350/abcde-fghij",
+  "type": "Article",
+  "url": "https://blog.example.org/post",
+  "language": "en",
+  "provider": "Crossref",
+  "titles": [
+    { "title": "Hello World" },
+    { "title": "An Introduction", "type": "Subtitle" }
+  ],
+  "contributors": [
+    { "type": "Person", "name": "Jane Doe", "contributorRoles": ["Author"] }
+  ],
+  "publisher": { "name": "Example Blog" },
+  "date": { "published": "2025-02-10" },
+  "descriptions": [
+    { "description": "A short summary of the post.", "type": "Abstract" }
+  ],
+  "contentHTML": "<p>Hello <strong>world</strong>.</p>",
+  "relations": [
+    { "id": "https://doi.org/10.5555/journal", "type": "IsPartOf" }
+  ],
+  "subjects": [
+    { "subject": "Technology" }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "status": "ok",
+  "message-type": "work",
+  "message-version": "1.0.0",
+  "message": {
+    "DOI": "10.5555/12345678",
+    "type": "journal-article",
+    "title": ["A Study of Things"],
+    "author": [
+      {
+        "ORCID": "http://orcid.org/0000-0000-0000-0000",
+        "authenticated-orcid": false,
+        "given": "Ada",
+        "family": "Lovelace",
+        "sequence": "first",
+        "affiliation": [
+          {
+            "name": "Example University",
+            "id": [
+              {
+                "id": "https://ror.org/05dxps055",
+                "id-type": "ROR",
+                "asserted-by": "publisher"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "publisher": "Example Publisher",
+    "container-title": ["Journal of Examples"],
+    "volume": "12",
+    "issue": "3",
+    "page": "100-110",
+    "ISSN": ["1234-5678"],
+    "URL": "http://dx.doi.org/10.5555/12345678",
+    "language": "en",
+    "license": [
+      {
+        "URL": "https://creativecommons.org/licenses/by/4.0/legalcode",
+        "content-version": "vor",
+        "delay-in-days": 0,
+        "start": {
+          "date-parts": [[2024, 3, 15]],
+          "date-time": "2024-03-15T00:00:00Z",
+          "timestamp": 1710460800000
+        }
+      }
+    ],
+    "published": {
+      "date-parts": [[2024, 3, 15]]
+    },
+    "created": {
+      "date-parts": [[2024, 3, 1]],
+      "date-time": "2024-03-01T00:00:00Z",
+      "timestamp": 1709251200000
+    },
+    "reference": [
+      {
+        "key": "ref1",
+        "doi-asserted-by": "publisher",
+        "DOI": "10.1000/xyz",
+        "article-title": "Prior Work",
+        "year": "2020",
+        "first-page": "1",
+        "last-page": "9"
+      }
+    ]
+  }
+}

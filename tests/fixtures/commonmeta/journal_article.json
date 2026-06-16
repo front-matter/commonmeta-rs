@@ -1,0 +1,49 @@
+{
+  "id": "https://doi.org/10.5555/12345678",
+  "type": "JournalArticle",
+  "url": "https://example.org/article/1",
+  "language": "en",
+  "titles": [
+    { "title": "A Study of Things" }
+  ],
+  "contributors": [
+    {
+      "type": "Person",
+      "givenName": "Ada",
+      "familyName": "Lovelace",
+      "contributorRoles": ["Author"],
+      "affiliations": [
+        { "id": "https://ror.org/05dxps055", "name": "Example University" }
+      ]
+    }
+  ],
+  "publisher": { "name": "Example Publisher" },
+  "date": { "published": "2024-03-15" },
+  "container": {
+    "type": "Journal",
+    "title": "Journal of Examples",
+    "identifier": "1234-5678",
+    "identifierType": "ISSN",
+    "volume": "12",
+    "issue": "3",
+    "firstPage": "100",
+    "lastPage": "110"
+  },
+  "identifiers": [
+    { "identifier": "https://doi.org/10.5555/12345678", "identifierType": "DOI" }
+  ],
+  "license": {
+    "id": "CC-BY-4.0",
+    "url": "https://creativecommons.org/licenses/by/4.0/legalcode"
+  },
+  "references": [
+    {
+      "key": "ref1",
+      "id": "https://doi.org/10.1000/xyz",
+      "title": "Prior Work",
+      "publicationYear": "2020",
+      "first_page": "1",
+      "last_page": "9"
+    }
+  ]
+}

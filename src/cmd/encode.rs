@@ -1,5 +1,5 @@
 /*
- * Copyright © 2025 Front Matter <info@front-matter.io>
+ * Copyright © 2026 Front Matter <info@front-matter.de>
  */
 
 use clap::{ArgMatches, Command};

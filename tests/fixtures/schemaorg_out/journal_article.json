@@ -1,0 +1,47 @@
+{
+  "@context": "http://schema.org",
+  "@id": "https://doi.org/10.5555/12345678",
+  "@type": "ScholarlyArticle",
+  "author": [
+    {
+      "@type": "Person",
+      "affiliation": {
+        "@id": "https://ror.org/05dxps055",
+        "@type": "Organization",
+        "name": "Example University"
+      },
+      "familyName": "Lovelace",
+      "givenName": "Ada"
+    }
+  ],
+  "citation": [
+    {
+      "@id": "https://doi.org/10.1000/xyz",
+      "@type": "CreativeWork",
+      "name": "Prior Work"
+    }
+  ],
+  "datePublished": "2024-03-15",
+  "identifier": [
+    "https://doi.org/10.5555/12345678"
+  ],
+  "inLanguage": "en",
+  "license": "https://creativecommons.org/licenses/by/4.0/legalcode",
+  "name": "A Study of Things",
+  "pageEnd": "110",
+  "pageStart": "100",
+  "periodical": {
+    "@type": "Periodical",
+    "issn": "1234-5678",
+    "name": "Journal of Examples"
+  },
+  "provider": {
+    "@type": "Organization",
+    "name": ""
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Example Publisher"
+  },
+  "url": "https://example.org/article/1"
+}

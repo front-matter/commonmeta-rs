@@ -75,7 +75,7 @@ pub fn write_zip_file<P: AsRef<Path>>(filename: P, output: &[u8]) -> Result<()> 
     let zipfile = File::create(zip_path)?;
     let mut zip_writer = zip::ZipWriter::new(zipfile);
 
-    let options = zip::write::FileOptions::default()
+    let options = zip::write::FileOptions::<()>::default()
         .compression_method(zip::CompressionMethod::Stored)
         .unix_permissions(0o755)
         .last_modified_time(zip::DateTime::default_for_write());

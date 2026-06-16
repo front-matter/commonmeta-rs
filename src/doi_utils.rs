@@ -129,3 +129,27 @@ pub fn doi_resolver(doi: &str, sandbox: bool) -> String {
     }
     "https://doi.org/".to_string()
 }
+
+/// Look up the registration agency for a DOI prefix (blocking).
+///
+/// Calls `https://doi.org/ra/{prefix}` and returns the RA name (e.g. "Crossref",
+/// "DataCite") or `None` on failure.
+pub fn get_doi_ra_sync(doi: &str) -> Option<String> {
+    let prefix = validate_prefix(doi)?;
+    let url = format!("https://doi.org/ra/{}", prefix);
+
+    #[derive(serde::Deserialize)]
+    struct RaEntry {
+        #[serde(rename = "RA", default)]
+        ra: String,
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+
+    let entries: Vec<RaEntry> = client.get(&url).send().ok()?.json().ok()?;
+    let ra = entries.into_iter().next()?.ra;
+    if ra.is_empty() { None } else { Some(ra) }
+}

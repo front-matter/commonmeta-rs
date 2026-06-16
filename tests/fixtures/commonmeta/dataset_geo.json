@@ -1,0 +1,41 @@
+{
+  "id": "https://doi.org/10.5555/abcd",
+  "type": "Dataset",
+  "titles": [
+    { "title": "Sensor Readings", "language": "en" }
+  ],
+  "publisher": { "name": "Data Repo" },
+  "date": { "published": "2023-01-01", "updated": "2023-06-01" },
+  "subjects": [
+    { "subject": "Oceanography" }
+  ],
+  "geoLocations": [
+    {
+      "geoLocationPlace": "Pacific Ocean",
+      "geoLocationPoint": { "pointLongitude": -150.0, "pointLatitude": -20.5 },
+      "geoLocationBox": {
+        "eastBoundLongitude": -140.0,
+        "westBoundLongitude": -160.0,
+        "southBoundLatitude": -30.0,
+        "northBoundLatitude": -10.0
+      }
+    }
+  ],
+  "fundingReferences": [
+    {
+      "funderName": "National Science Foundation",
+      "funderIdentifier": "https://ror.org/021nxhr62",
+      "funderIdentifierType": "ROR",
+      "awardNumber": "ABC-123",
+      "awardUri": "https://example.org/award/ABC-123"
+    }
+  ],
+  "files": [
+    {
+      "url": "https://example.org/data.csv",
+      "mimeType": "text/csv",
+      "size": 204800,
+      "checksum": "md5:abcdef0123456789"
+    }
+  ]
+}

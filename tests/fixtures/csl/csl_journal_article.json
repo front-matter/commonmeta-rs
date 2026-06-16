@@ -1,0 +1,22 @@
+{
+  "id": "10.5555/12345678",
+  "type": "article-journal",
+  "DOI": "10.5555/12345678",
+  "URL": "https://example.org/article/1",
+  "title": "A Study of Things",
+  "author": [
+    { "family": "Lovelace", "given": "Ada" }
+  ],
+  "issued": { "date-parts": [[2024, 3, 15]] },
+  "container-title": "Journal of Examples",
+  "ISSN": "1234-5678",
+  "volume": "12",
+  "issue": "3",
+  "page": "100-110",
+  "publisher": "Example Publisher",
+  "language": "en",
+  "abstract": "An abstract about things.",
+  "license": "https://creativecommons.org/licenses/by/4.0/legalcode",
+  "keyword": "science, research",
+  "version": "1.0"
+}
