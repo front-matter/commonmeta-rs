@@ -302,12 +302,11 @@ fn from_csl(content: CslContent) -> Data {
     }
 
     // License
-    if !content.license.is_empty() {
-        if let Some(url) = normalize_url(&content.license, true, true) {
+    if !content.license.is_empty()
+        && let Some(url) = normalize_url(&content.license, true, true) {
             let id = url_to_spdx(&url);
             data.license = License { id, url };
         }
-    }
 
     // Publisher — string or {name: string}
     if let Some(pub_val) = &content.publisher {

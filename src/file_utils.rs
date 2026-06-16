@@ -119,11 +119,10 @@ pub fn download_file(url: &str) -> Result<Vec<u8>> {
 /// Saves the content to a file.
 pub fn write_file<P: AsRef<Path>>(filename: P, output: &[u8]) -> Result<()> {
     // Create parent directories if they don't exist
-    if let Some(parent) = filename.as_ref().parent() {
-        if !parent.exists() {
+    if let Some(parent) = filename.as_ref().parent()
+        && !parent.exists() {
             fs::create_dir_all(parent)?;
         }
-    }
 
     let mut file = File::create(filename)?;
     file.write_all(output)?;

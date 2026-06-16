@@ -508,9 +508,7 @@ pub fn normalize_ror(ror: &str) -> String {
 /// Normalizes a URL: upgrades http→https when `secure`, lowercases when `lower`.
 pub fn normalize_url(s: &str, secure: bool, lower: bool) -> Option<String> {
     let mut u = Url::parse(s).ok()?;
-    if u.host_str().is_none() {
-        return None;
-    }
+    u.host_str()?;
     if secure && u.scheme() == "http" {
         let _ = u.set_scheme("https");
     }
@@ -718,9 +716,9 @@ pub fn words_to_camel_case(s: &str) -> String {
     let words = RE2.replace_all(&words, "${1} ${2}");
     let pascal: String = words
         .split_whitespace()
-        .map(|w| title_case(w))
+        .map(title_case)
         .collect::<String>();
-    let pascal = pascal.replace(' ', "").replace('-', "");
+    let pascal = pascal.replace([' ', '-'], "");
     if pascal.is_empty() {
         return pascal;
     }
@@ -859,26 +857,22 @@ pub fn find_from_format(
     ext: Option<&str>,
     filename: Option<&str>,
 ) -> &'static str {
-    if let Some(p) = pid {
-        if !p.is_empty() {
+    if let Some(p) = pid
+        && !p.is_empty() {
             return find_from_format_by_id(p);
         }
-    }
-    if let (Some(s), Some(e)) = (str_, ext) {
-        if !s.is_empty() && !e.is_empty() {
+    if let (Some(s), Some(e)) = (str_, ext)
+        && !s.is_empty() && !e.is_empty() {
             return find_from_format_by_ext(e);
         }
-    }
-    if let Some(s) = str_ {
-        if !s.is_empty() {
+    if let Some(s) = str_
+        && !s.is_empty() {
             return find_from_format_by_string(s);
         }
-    }
-    if let Some(f) = filename {
-        if !f.is_empty() {
+    if let Some(f) = filename
+        && !f.is_empty() {
             return find_from_format_by_filename(f);
         }
-    }
     "datacite"
 }
 
@@ -927,11 +921,10 @@ pub fn find_from_format_by_string(s: &str) -> &'static str {
         Ok(v) => v,
         Err(_) => return "",
     };
-    if let Some(v) = data.get("schema_version").and_then(|v| v.as_str()) {
-        if v.starts_with("https://commonmeta.org") {
+    if let Some(v) = data.get("schema_version").and_then(|v| v.as_str())
+        && v.starts_with("https://commonmeta.org") {
             return "commonmeta";
         }
-    }
     if let Some(v) = data.get("@context").and_then(|v| v.as_str()) {
         if v == "http://schema.org" {
             return "schemaorg";
@@ -943,11 +936,10 @@ pub fn find_from_format_by_string(s: &str) -> &'static str {
     if data.get("guid").is_some() {
         return "jsonfeed";
     }
-    if let Some(v) = data.get("schemaVersion").and_then(|v| v.as_str()) {
-        if v.starts_with("http://datacite.org/schema/kernel") {
+    if let Some(v) = data.get("schemaVersion").and_then(|v| v.as_str())
+        && v.starts_with("http://datacite.org/schema/kernel") {
             return "datacite";
         }
-    }
     if data.get("source").and_then(|v| v.as_str()) == Some("Crossref") {
         return "crossref";
     }

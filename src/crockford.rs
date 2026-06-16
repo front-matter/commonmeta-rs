@@ -131,11 +131,10 @@ pub fn decode(str: &str, checksum: bool) -> Result<i64, CrockfordError> {
         }
     }
 
-    if let Some(cs) = cs {
-        if !validate(number, cs as i64) {
+    if let Some(cs) = cs
+        && !validate(number, cs as i64) {
             return Err(CrockfordError::InvalidChecksum(str.to_string(), cs));
         }
-    }
 
     Ok(number)
 }

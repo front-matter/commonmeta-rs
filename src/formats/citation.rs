@@ -103,11 +103,10 @@ fn build_entry(data: &Data) -> Entry {
     let mut entry = Entry::new(&key, entry_type);
 
     // Title
-    if let Some(t) = data.titles.first() {
-        if let Some(fs) = fmt_string(&t.title) {
+    if let Some(t) = data.titles.first()
+        && let Some(fs) = fmt_string(&t.title) {
             entry.set_title(fs);
         }
-    }
 
     // Authors
     let authors: Vec<Person> = data
@@ -139,11 +138,10 @@ fn build_entry(data: &Data) -> Entry {
     }
 
     // URL
-    if !data.url.is_empty() {
-        if let Ok(qurl) = QualifiedUrl::from_str(&data.url) {
+    if !data.url.is_empty()
+        && let Ok(qurl) = QualifiedUrl::from_str(&data.url) {
             entry.set_url(qurl);
         }
-    }
 
     // DOI + ISSN/ISBN via serial-number
     let doi = data
@@ -161,11 +159,10 @@ fn build_entry(data: &Data) -> Entry {
     }
 
     // Publisher
-    if !data.publisher.name.is_empty() {
-        if let Ok(p) = Publisher::from_str(&data.publisher.name) {
+    if !data.publisher.name.is_empty()
+        && let Ok(p) = Publisher::from_str(&data.publisher.name) {
             entry.set_publisher(p);
         }
-    }
 
     // Volume, issue, page-range from container
     let container = &data.container;
@@ -180,29 +177,26 @@ fn build_entry(data: &Data) -> Entry {
         (f, "") => f.to_string(),
         (f, l) => format!("{f}-{l}"),
     };
-    if !page_str.is_empty() {
-        if let Ok(pr) = hayagriva::types::PageRanges::from_str(&page_str) {
+    if !page_str.is_empty()
+        && let Ok(pr) = hayagriva::types::PageRanges::from_str(&page_str) {
             entry.set_page_range(MaybeTyped::Typed(pr));
         }
-    }
 
     // Language
-    if !data.language.is_empty() {
-        if let Ok(lang) = data.language.parse::<LanguageIdentifier>() {
+    if !data.language.is_empty()
+        && let Ok(lang) = data.language.parse::<LanguageIdentifier>() {
             entry.set_language(lang);
         }
-    }
 
     // Parent entry (journal / book / proceedings)
-    if let Some(ptype) = parent_type(&data.type_) {
-        if !container.title.is_empty() {
+    if let Some(ptype) = parent_type(&data.type_)
+        && !container.title.is_empty() {
             let mut parent = Entry::new(&format!("{key}-parent"), ptype);
             if let Some(fs) = fmt_string(&container.title) {
                 parent.set_title(fs);
             }
             entry.set_parents(vec![parent]);
         }
-    }
 
     entry
 }

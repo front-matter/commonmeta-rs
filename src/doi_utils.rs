@@ -122,11 +122,10 @@ pub fn validate_prefix(doi: &str) -> Option<String> {
 
 /// Returns a DOI resolver for a given DOI
 pub fn doi_resolver(doi: &str, sandbox: bool) -> String {
-    if let Ok(d) = Url::parse(doi) {
-        if d.host_str() == Some("stage.datacite.org") || sandbox {
+    if let Ok(d) = Url::parse(doi)
+        && (d.host_str() == Some("stage.datacite.org") || sandbox) {
             return "https://handle.stage.datacite.org/".to_string();
         }
-    }
     "https://doi.org/".to_string()
 }
 

@@ -391,13 +391,11 @@ fn get_contributor(v: DcContributor, default_role: &str) -> Contributor {
 
     // Split "Family, Given" format for Person type
     if name_type == "Person" && !name.is_empty() && given_name.is_empty() && family_name.is_empty()
-    {
-        if let Some(comma) = name.find(',') {
+        && let Some(comma) = name.find(',') {
             given_name = name[comma + 1..].trim().to_string();
             family_name = name[..comma].trim().to_string();
             name = String::new();
         }
-    }
 
     // Affiliation: Vec<String> (old) or Vec<struct> (new)
     let affiliations: Vec<Affiliation> = if let Some(aff_val) = v.affiliation {
@@ -519,15 +517,14 @@ fn from_attributes(attr: DcAttributes) -> Data {
         }
     }
     // Fall back to publicationYear
-    if data.date.published.is_empty() {
-        if let Some(py) = attr.publication_year {
+    if data.date.published.is_empty()
+        && let Some(py) = attr.publication_year {
             data.date.published = match py {
                 Value::Number(n) => n.as_i64().map(|y| y.to_string()).unwrap_or_default(),
                 Value::String(s) => s,
                 _ => String::new(),
             };
         }
-    }
 
     // Descriptions
     for d in attr.descriptions {
@@ -606,14 +603,13 @@ fn from_attributes(attr: DcAttributes) -> Data {
     if let Some(pub_val) = attr.publisher {
         if let Some(name) = pub_val.as_str() {
             data.publisher = Publisher { name: name.to_string(), ..Default::default() };
-        } else if let Ok(p) = serde_json::from_value::<DcPublisherStruct>(pub_val) {
-            if !p.name.is_empty() {
+        } else if let Ok(p) = serde_json::from_value::<DcPublisherStruct>(pub_val)
+            && !p.name.is_empty() {
                 data.publisher = Publisher {
                     id: normalize_ror(&p.publisher_identifier),
                     name: p.name,
                 };
             }
-        }
     }
 
     // Subjects (deduplicated)
@@ -640,7 +636,7 @@ fn from_attributes(attr: DcAttributes) -> Data {
         let id = normalize_id(&r.related_identifier);
         if !id.is_empty() && is_reference_relation(&r.relation_type) {
             let type_ = dc_to_cm_type(&r.resource_type_general).to_string();
-            data.references.push(Reference { id, type_: type_, ..Default::default() });
+            data.references.push(Reference { id, type_, ..Default::default() });
         }
     }
 

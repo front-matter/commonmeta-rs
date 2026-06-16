@@ -307,15 +307,15 @@ fn parse_name(name: &str) -> (String, String, String) {
 // ─── Core reader ─────────────────────────────────────────────────────────────
 
 pub fn read(content: &Content) -> Result<Data> {
-    let mut data = Data::default();
-
     // ── URL ──
-    data.url = if content.blog.status == "archived" && !content.archive_url.is_empty() {
+    let url = if content.blog.status == "archived" && !content.archive_url.is_empty() {
         normalize_url(&content.archive_url)
-    } else if matches!(content.blog.status.as_str(), "active" | "expired") {
-        normalize_url(&content.url)
     } else {
         normalize_url(&content.url)
+    };
+    let mut data = Data {
+        url,
+        ..Data::default()
     };
 
     // ── ID ──
@@ -326,13 +326,11 @@ pub fn read(content: &Content) -> Result<Data> {
         // Try treating the GUID as a DOI directly (after stripping last 2 chars checksum)
         let trimmed = if content.guid.len() > 2 { &content.guid[..content.guid.len() - 2] } else { "" };
         let candidate = normalize_doi(trimmed);
-        if !candidate.is_empty() {
-            if let Some(p) = validate_prefix(&candidate) {
-                if p == content.blog.prefix {
+        if !candidate.is_empty()
+            && let Some(p) = validate_prefix(&candidate)
+                && p == content.blog.prefix {
                     data.id = content.guid.clone();
                 }
-            }
-        }
     }
     if data.id.is_empty() && !content.blog.prefix.is_empty() {
         data.id = crate::doi_utils::encode_doi(&content.blog.prefix);
@@ -432,7 +430,7 @@ pub fn read(content: &Content) -> Result<Data> {
     }
 
     // ── Files: feature image + images array (Python style) ──
-    if !content.feature_image.is_empty() && normalize_url(&content.feature_image) != "" {
+    if !content.feature_image.is_empty() && !normalize_url(&content.feature_image).is_empty() {
         data.files.push(File {
             url: content.feature_image.clone(),
             ..Default::default()
@@ -587,7 +585,7 @@ fn get_funding_references(content: &Content) -> Vec<FundingReference> {
             if prefix == "10.3030" || is_cordis {
                 let award_number = url::Url::parse(u)
                     .ok()
-                    .and_then(|p| p.path_segments().and_then(|s| s.last().map(String::from)))
+                    .and_then(|p| p.path_segments().and_then(|mut s| s.next_back().map(String::from)))
                     .unwrap_or_default();
                 refs.push(FundingReference {
                     funder_name: "European Commission".to_string(),
@@ -646,7 +644,7 @@ fn extract_award_number(u: &str) -> String {
             p.query_pairs()
                 .find(|(k, _)| k == "awd_id")
                 .map(|(_, v)| v.into_owned())
-                .or_else(|| p.path_segments().and_then(|s| s.last().map(String::from)))
+                .or_else(|| p.path_segments().and_then(|mut s| s.next_back().map(String::from)))
         })
         .unwrap_or_default()
 }

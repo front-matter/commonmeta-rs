@@ -292,19 +292,20 @@ fn get_contributor(v: SoContributor, default_role: &str) -> Contributor {
 // ── Core conversion ───────────────────────────────────────────────────────────
 
 fn from_content(content: SoContent) -> Data {
-    let mut data = Data::default();
-
-    // ID
-    data.id = normalize_id(&content.id);
-
-    // Type
+    // ID and Type computed up front for struct init
+    let id = normalize_id(&content.id);
     let cm_type = so_to_cm_type(&content.type_);
-    data.type_ = if cm_type.is_empty() {
+    let type_ = if cm_type.is_empty() {
         "WebPage".to_string()
     } else {
         cm_type.to_string()
     };
-    data.additional_type = content.additional_type.clone();
+    let mut data = Data {
+        id,
+        type_,
+        additional_type: content.additional_type.clone(),
+        ..Data::default()
+    };
 
     // Contributors from author/creator (role = Author)
     let author_val = content.author.or(content.creator).unwrap_or(Value::Null);
@@ -414,11 +415,10 @@ fn from_content(content: SoContent) -> Data {
     }
 
     // Publisher
-    if let Some(pub_) = content.publisher {
-        if !pub_.name.is_empty() {
+    if let Some(pub_) = content.publisher
+        && !pub_.name.is_empty() {
             data.publisher = Publisher { name: pub_.name, ..Default::default() };
         }
-    }
 
     // Subjects (keywords — string or array)
     let keywords: Vec<String> = match &content.keywords {
@@ -537,14 +537,12 @@ fn extract_content(html: &str) -> Result<SoContent> {
             "meta[name='bepress_citation_doi']",
         ];
         for sel_str in &meta_names {
-            if let Ok(sel) = Selector::parse(sel_str) {
-                if let Some(el) = doc.select(&sel).next() {
-                    if let Some(val) = el.value().attr("content") {
+            if let Ok(sel) = Selector::parse(sel_str)
+                && let Some(el) = doc.select(&sel).next()
+                    && let Some(val) = el.value().attr("content") {
                         content.id = val.to_string();
                         break;
                     }
-                }
-            }
         }
     }
 
@@ -556,14 +554,12 @@ fn extract_content(html: &str) -> Result<SoContent> {
             "meta[name='DC.type']",
         ];
         for sel_str in &type_metas {
-            if let Ok(sel) = Selector::parse(sel_str) {
-                if let Some(el) = doc.select(&sel).next() {
-                    if let Some(val) = el.value().attr("content") {
+            if let Ok(sel) = Selector::parse(sel_str)
+                && let Some(el) = doc.select(&sel).next()
+                    && let Some(val) = el.value().attr("content") {
                         content.type_ = val.to_string();
                         break;
                     }
-                }
-            }
         }
     }
 
@@ -577,8 +573,8 @@ fn extract_content(html: &str) -> Result<SoContent> {
             "meta[name='twitter:title']",
         ];
         for sel_str in &name_metas {
-            if let Ok(sel) = Selector::parse(sel_str) {
-                if let Some(el) = doc.select(&sel).next() {
+            if let Ok(sel) = Selector::parse(sel_str)
+                && let Some(el) = doc.select(&sel).next() {
                     let val = el
                         .value()
                         .attr("content")
@@ -590,7 +586,6 @@ fn extract_content(html: &str) -> Result<SoContent> {
                         break;
                     }
                 }
-            }
         }
     }
 
@@ -603,8 +598,8 @@ fn extract_content(html: &str) -> Result<SoContent> {
             "meta[name='twitter:description']",
         ];
         for sel_str in &desc_metas {
-            if let Ok(sel) = Selector::parse(sel_str) {
-                if let Some(el) = doc.select(&sel).next() {
+            if let Ok(sel) = Selector::parse(sel_str)
+                && let Some(el) = doc.select(&sel).next() {
                     let val = el
                         .value()
                         .attr("content")
@@ -616,7 +611,6 @@ fn extract_content(html: &str) -> Result<SoContent> {
                         break;
                     }
                 }
-            }
         }
     }
 
@@ -629,14 +623,12 @@ fn extract_content(html: &str) -> Result<SoContent> {
             "meta[property='article:published_time']",
         ];
         for sel_str in &date_metas {
-            if let Ok(sel) = Selector::parse(sel_str) {
-                if let Some(el) = doc.select(&sel).next() {
-                    if let Some(val) = el.value().attr("content") {
+            if let Ok(sel) = Selector::parse(sel_str)
+                && let Some(el) = doc.select(&sel).next()
+                    && let Some(val) = el.value().attr("content") {
                         content.date_published = val.to_string();
                         break;
                     }
-                }
-            }
         }
     }
 
@@ -647,45 +639,36 @@ fn extract_content(html: &str) -> Result<SoContent> {
             "meta[name='article:modified_time']",
         ];
         for sel_str in &mod_metas {
-            if let Ok(sel) = Selector::parse(sel_str) {
-                if let Some(el) = doc.select(&sel).next() {
-                    if let Some(val) = el.value().attr("content") {
+            if let Ok(sel) = Selector::parse(sel_str)
+                && let Some(el) = doc.select(&sel).next()
+                    && let Some(val) = el.value().attr("content") {
                         content.date_modified = val.to_string();
                         break;
                     }
-                }
-            }
         }
     }
 
     // ── Language fallback ─────────────────────────────────────────────────────
-    if content.in_language.is_empty() {
-        if let Ok(sel) = Selector::parse("html") {
-            if let Some(el) = doc.select(&sel).next() {
-                if let Some(lang) = el.value().attr("lang") {
+    if content.in_language.is_empty()
+        && let Ok(sel) = Selector::parse("html")
+            && let Some(el) = doc.select(&sel).next()
+                && let Some(lang) = el.value().attr("lang") {
                     content.in_language = lang.to_string();
                 }
-            }
-        }
-    }
 
     // ── License fallback ──────────────────────────────────────────────────────
-    if content.license.is_empty() {
-        if let Ok(sel) = Selector::parse("link[rel='license']") {
-            if let Some(el) = doc.select(&sel).next() {
-                if let Some(href) = el.value().attr("href") {
+    if content.license.is_empty()
+        && let Ok(sel) = Selector::parse("link[rel='license']")
+            && let Some(el) = doc.select(&sel).next()
+                && let Some(href) = el.value().attr("href") {
                     content.license = href.to_string();
                 }
-            }
-        }
-    }
 
     // ── author/creator synonyms ───────────────────────────────────────────────
-    if content.author.is_none() {
-        if let Some(creator) = content.creator.take() {
+    if content.author.is_none()
+        && let Some(creator) = content.creator.take() {
             content.author = Some(creator);
         }
-    }
 
     Ok(content)
 }

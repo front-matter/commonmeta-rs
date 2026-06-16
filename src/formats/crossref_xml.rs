@@ -1159,6 +1159,7 @@ struct XmlIssn {
 
 #[derive(Deserialize, Default, Clone)]
 struct XmlJournalIssue {
+    #[allow(dead_code)]
     #[serde(default)]
     publication_date: Vec<XmlPublicationDate>,
     #[serde(default)]
@@ -1201,6 +1202,7 @@ struct XmlJournalArticle {
 
 #[derive(Deserialize, Default, Clone)]
 struct XmlPostedContent {
+    #[allow(dead_code)]
     #[serde(rename = "@type", default)]
     type_: String,
     #[serde(rename = "@language", default)]
@@ -1283,6 +1285,7 @@ struct XmlIsbn {
 
 #[derive(Deserialize, Default, Clone)]
 struct XmlContentItem {
+    #[allow(dead_code)]
     #[serde(rename = "@component_type", default)]
     component_type: String,
     #[serde(default)]
@@ -1431,6 +1434,7 @@ struct XmlContributors {
 struct XmlPersonName {
     #[serde(rename = "@contributor_role", default)]
     contributor_role: String,
+    #[allow(dead_code)]
     #[serde(rename = "@sequence", default)]
     sequence: String,
     #[serde(default)]
@@ -1479,6 +1483,7 @@ struct XmlInstitutionId {
 struct XmlInstitutionBlock {
     #[serde(default)]
     institution_name: String,
+    #[allow(dead_code)]
     #[serde(default)]
     institution_id: Option<XmlInstitutionId>,
 }
@@ -1529,6 +1534,7 @@ struct XmlPublisherItem {
 
 #[derive(Deserialize, Default, Clone)]
 struct XmlDOIData {
+    #[allow(dead_code)]
     #[serde(default)]
     doi: String,
     #[serde(default)]
@@ -1567,6 +1573,7 @@ struct XmlCitationList {
 struct XmlCitation {
     #[serde(rename = "@key", default)]
     key: String,
+    #[allow(dead_code)]
     #[serde(rename = "@type", default)]
     type_: String,
     #[serde(default)]
@@ -2269,11 +2276,10 @@ fn from_query(query: XmlQuery) -> Data {
             }
         }
         "Component" => {
-            if let Some(sa) = &meta.sa_component {
-                if let Some(comp) = sa.component_list.component.first() {
+            if let Some(sa) = &meta.sa_component
+                && let Some(comp) = sa.component_list.component.first() {
                     doi_data = comp.doi_data.clone();
                 }
-            }
         }
         _ => {}
     }

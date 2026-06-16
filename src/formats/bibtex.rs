@@ -130,10 +130,10 @@ pub fn read(input: &str) -> Result<Data> {
 }
 
 fn from_entry(entry: &Entry) -> Result<Data> {
-    let mut data = Data::default();
-
-    // Type
-    data.type_ = bib_to_cm_type(&entry.entry_type).to_string();
+    let mut data = Data {
+        type_: bib_to_cm_type(&entry.entry_type).to_string(),
+        ..Data::default()
+    };
 
     // ID: prefer DOI, then URL, then cite key
     let doi_str = entry.doi().unwrap_or_default();
@@ -423,11 +423,10 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
     }
 
     // Abstract – first description.
-    if let Some(desc) = data.descriptions.first() {
-        if !desc.description.is_empty() {
+    if let Some(desc) = data.descriptions.first()
+        && !desc.description.is_empty() {
             entry.set_abstract_(chunks(&desc.description));
         }
-    }
 
     // Copyright / license URL.
     if !data.license.url.is_empty() {
@@ -454,11 +453,10 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
         if !data.publisher.name.is_empty() {
             entry.set_institution(chunks(&data.publisher.name));
         }
-    } else if !is_article {
-        if !data.publisher.name.is_empty() {
+    } else if !is_article
+        && !data.publisher.name.is_empty() {
             entry.set_publisher(vec![chunks(&data.publisher.name)]);
         }
-    }
 
     // Issue number (BibTeX `issue` field to match hand-rolled output).
     if !container.issue.is_empty() {
@@ -488,13 +486,11 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
         "nov", "dec",
     ];
     let date_pub = &data.date.published;
-    if date_pub.len() >= 7 {
-        if let Ok(m) = date_pub[5..7].parse::<usize>() {
-            if (1..=12).contains(&m) {
+    if date_pub.len() >= 7
+        && let Ok(m) = date_pub[5..7].parse::<usize>()
+            && (1..=12).contains(&m) {
                 entry.set("month", chunks(MONTH_ABBREVS[m - 1]));
             }
-        }
-    }
 
     // Pages: `first--last` or just `first`.
     let pages = match (container.first_page.as_str(), container.last_page.as_str()) {
