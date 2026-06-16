@@ -19,6 +19,7 @@ struct Inner {
 #[derive(Deserialize, Default, Debug)]
 struct P {
     #[serde(rename = "$text", default)]
+    #[allow(dead_code)]
     text: String,
 }
 
