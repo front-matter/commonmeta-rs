@@ -37,12 +37,37 @@ _Later_: we plan to implement this format in a later release.
 
 ```sh
 cargo build
-cargo run -- encode 10.5555
-cargo run -- decode 10.54900/d3ck1-skq19
-cargo run -- convert 10.5555/12345678 --from crossref --to csl
-cargo run -- convert record.json --from commonmeta --to csl --file out.json
 cargo test
 ```
+
+The `commonmeta` binary has four subcommands: `convert`, `encode`, `decode`, and `list`.
+
+```sh
+# Encode/decode a Crockford base32 identifier suffix
+cargo run -- encode 10.5555
+cargo run -- decode 10.5555/nwbyp-29t86
+
+# Convert a single record between formats, fetching it by DOI
+cargo run -- convert 10.5555/12345678 --from crossref --to csl
+
+# Convert a local file and write the result to disk
+cargo run -- convert record.json --from commonmeta --to csl --file out.json
+
+# Render a formatted citation (CSL style + locale)
+cargo run -- convert 10.5555/12345678 --from crossref --to citation --style apa --locale en-US
+
+# Fetch a batch of records from an API and write them as a JSON array
+cargo run -- list --from crossref --number 100 --type journal-article --file out.json
+
+# Read VRAIX metadata from a local SQLite file
+cargo run -- list crossref-2026-06-15.sqlite3 --from vraix --number 0 --to commonmeta --file out.json.gz
+
+# Parquet output (.parquet file extension, --to commonmeta only): records are
+# split into batches of 100,000, written in parallel, and zstd-compressed
+cargo run --release -- list crossref-2026-06-15.sqlite3 --from vraix --number 0 --file out.parquet
+```
+
+Use `cargo run -- <subcommand> --help` for the full list of options for each subcommand.
 
 ## Documentation
 
