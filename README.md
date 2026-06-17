@@ -40,7 +40,7 @@ cargo build
 cargo test
 ```
 
-The `commonmeta` binary has four subcommands: `convert`, `encode`, `decode`, and `list`.
+The `commonmeta` binary has seven subcommands: `convert`, `encode`, `decode`, `list`, `push`, `put`, and `match`.
 
 ```sh
 # Encode/decode a Crockford base32 identifier suffix
@@ -64,6 +64,17 @@ cargo run -- list crossref-2026-06-15.sqlite3 --from vraix --number 0 --to commo
 
 # Parquet output (.parquet file extension, --to commonmeta only): records are split into batches of 100,000, written in parallel, and zstd-compressed
 cargo run --release -- list crossref-2026-06-15.sqlite3 --from vraix --number 0 --file out.parquet
+
+# Register records with a live InvenioRDM instance (creates/updates and publishes
+# real records — registration is currently only supported with --to inveniordm)
+cargo run -- push --from crossref --number 10 --to inveniordm --host rogue-scholar.org --token TOKEN
+
+# Same as push, but for a single record (DOI, URL, or file path)
+cargo run -- put 10.5555/12345678 --from crossref --to inveniordm --host rogue-scholar.org --token TOKEN
+
+# Match a free-text affiliation string to a ROR organization
+cargo run -- match "Leibniz Universität Hannover"
+cargo run -- match "Leibniz Universität Hannover" --to inveniordm
 ```
 
 Use `cargo run -- <subcommand> --help` for the full list of options for each subcommand.

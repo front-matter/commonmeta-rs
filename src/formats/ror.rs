@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use crate::data::{Data, Date, Identifier, Relation, Title};
@@ -9,11 +9,21 @@ use crate::utils::{normalize_ror, validate_id, validate_ror};
 
 use crate::formats::ror_countries::ROR_COUNTRIES;
 
+/// The live ROR API sometimes sends explicit JSON `null` for optional string
+/// fields (e.g. `external_ids[].preferred`) rather than omitting them, which
+/// a plain `String` field can't deserialize directly.
+fn null_as_empty<'de, D>(d: D) -> std::result::Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
+}
+
 // ── ROR API structs ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Ror {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub id: String,
     #[serde(default)]
     pub established: Option<i32>,
@@ -27,7 +37,7 @@ pub struct Ror {
     pub names: Vec<Name>,
     #[serde(default)]
     pub relationships: Vec<Relationship>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub status: String,
     #[serde(rename = "types", default)]
     pub types: Vec<String>,
@@ -35,19 +45,19 @@ pub struct Ror {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ExternalId {
-    #[serde(rename = "type", default)]
+    #[serde(rename = "type", default, deserialize_with = "null_as_empty")]
     pub type_: String,
     #[serde(default)]
     pub all: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub preferred: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Link {
-    #[serde(rename = "type", default)]
+    #[serde(rename = "type", default, deserialize_with = "null_as_empty")]
     pub type_: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub value: String,
 }
 
@@ -61,39 +71,39 @@ pub struct Location {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct GeonamesDetails {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub country_code: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub country_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub country_subdivision_code: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub country_subdivision_name: String,
     #[serde(default)]
     pub lat: f64,
     #[serde(default)]
     pub lng: f64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub name: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Name {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub value: String,
     #[serde(rename = "types", default)]
     pub types: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub lang: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Relationship {
-    #[serde(rename = "type", default)]
+    #[serde(rename = "type", default, deserialize_with = "null_as_empty")]
     pub type_: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub label: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub id: String,
 }
 

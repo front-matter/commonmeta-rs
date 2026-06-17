@@ -2120,13 +2120,7 @@ pub fn fetch(url: &str) -> Result<Data> {
         .to_string();
 
     let api_url = format!("https://{}/api/records/{}", host, record_id);
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(format!(
-            "commonmeta-rs/{} (https://github.com/front-matter/commonmeta-rs; mailto:info@front-matter.de)",
-            env!("CARGO_PKG_VERSION")
-        ))
-        .build()
-        .map_err(|e| Error::Http(e.to_string()))?;
+    let client = build_client()?;
     let json = client
         .get(&api_url)
         .send()
@@ -2136,4 +2130,304 @@ pub fn fetch(url: &str) -> Result<Data> {
         .text()
         .map_err(|e| Error::Http(e.to_string()))?;
     read_json(&json)
+}
+
+// ── Push / registration (create, update, publish) ─────────────────────────────
+//
+// This is a deliberately scoped port of Go's `inveniordm.UpsertAll`: it
+// creates-or-updates a draft record and publishes it. It does not implement
+// community auto-association (subject/blog community lookup) or the Rogue
+// Scholar legacy-record callback, both of which depend on Go-only
+// infrastructure (embedded vocabulary files, the `roguescholar` package)
+// that has no equivalent in commonmeta-rs.
+
+/// The outcome of pushing a single record to InvenioRDM.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct PushResult {
+    /// The commonmeta `Data.id` (typically a DOI URL).
+    pub id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub doi: String,
+    /// The InvenioRDM record ID, once known.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub record_id: String,
+    /// "published", "draft", or a "failed_*" status.
+    pub status: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub created: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub updated: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+fn build_client() -> Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .user_agent(format!(
+            "commonmeta-rs/{} (https://github.com/front-matter/commonmeta-rs; mailto:info@front-matter.de)",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .build()
+        .map_err(|e| Error::Http(e.to_string()))
+}
+
+/// Search InvenioRDM for an existing record by DOI. Returns the record ID if found.
+fn search_by_doi(
+    doi: &str,
+    host: &str,
+    client: &reqwest::blocking::Client,
+) -> Result<Option<String>> {
+    let escaped = crate::doi_utils::escape_doi(doi);
+    let url = format!("https://{}/api/records?q=doi:{}", host, escaped);
+    let body: Value = client
+        .get(&url)
+        .header("Content-Type", "application/json")
+        .send()
+        .map_err(|e| Error::Http(e.to_string()))?
+        .json()
+        .map_err(|e| Error::Http(e.to_string()))?;
+
+    let total = body
+        .get("hits")
+        .and_then(|h| h.get("total"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    if total == 0 {
+        return Ok(None);
+    }
+    Ok(body
+        .get("hits")
+        .and_then(|h| h.get("hits"))
+        .and_then(|hits| hits.get(0))
+        .and_then(|first| first.get("id"))
+        .and_then(Value::as_str)
+        .map(|s| s.to_string()))
+}
+
+fn create_draft_record(
+    body: &[u8],
+    host: &str,
+    token: &str,
+    client: &reqwest::blocking::Client,
+) -> Result<(String, String, String)> {
+    let url = format!("https://{}/api/records", host);
+    let resp = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", token))
+        .body(body.to_vec())
+        .send()
+        .map_err(|e| Error::Http(e.to_string()))?;
+
+    let status = resp.status().as_u16();
+    let text = resp.text().map_err(|e| Error::Http(e.to_string()))?;
+    if status == 429 {
+        return Err(Error::Http("rate limited".to_string()));
+    }
+    if status != 201 {
+        return Err(Error::Http(format!("failed to create draft record: {}", text)));
+    }
+    let v: Value = serde_json::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?;
+    Ok((
+        v.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
+        v.get("created").and_then(Value::as_str).unwrap_or_default().to_string(),
+        v.get("updated").and_then(Value::as_str).unwrap_or_default().to_string(),
+    ))
+}
+
+fn edit_published_record(
+    record_id: &str,
+    host: &str,
+    token: &str,
+    client: &reqwest::blocking::Client,
+) -> Result<()> {
+    let url = format!("https://{}/api/records/{}/draft", host, record_id);
+    client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .map_err(|e| Error::Http(e.to_string()))?;
+    Ok(())
+}
+
+fn update_draft_record(
+    record_id: &str,
+    body: &[u8],
+    host: &str,
+    token: &str,
+    client: &reqwest::blocking::Client,
+) -> Result<()> {
+    let url = format!("https://{}/api/records/{}/draft", host, record_id);
+    client
+        .put(&url)
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", token))
+        .body(body.to_vec())
+        .send()
+        .map_err(|e| Error::Http(e.to_string()))?;
+    Ok(())
+}
+
+fn publish_draft_record(
+    record_id: &str,
+    host: &str,
+    token: &str,
+    client: &reqwest::blocking::Client,
+) -> Result<(String, String)> {
+    let url = format!("https://{}/api/records/{}/draft/actions/publish", host, record_id);
+    let resp = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .map_err(|e| Error::Http(e.to_string()))?;
+
+    let status = resp.status().as_u16();
+    let text = resp.text().map_err(|e| Error::Http(e.to_string()))?;
+    if status != 202 {
+        return Err(Error::Http(format!("failed to publish draft record: {}", text)));
+    }
+    let v: Value = serde_json::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?;
+    Ok((
+        v.get("created").and_then(Value::as_str).unwrap_or_default().to_string(),
+        v.get("updated").and_then(Value::as_str).unwrap_or_default().to_string(),
+    ))
+}
+
+/// Create-or-update, then publish, a single record in InvenioRDM.
+///
+/// If a record with the same DOI already exists (checked via the InvenioRDM
+/// search API), its published version is reopened as a draft and updated;
+/// otherwise a new draft is created. Either way, the draft is published
+/// before returning.
+pub fn upsert(data: &Data, host: &str, token: &str) -> PushResult {
+    let mut result = PushResult { id: data.id.clone(), ..Default::default() };
+
+    let doi = match crate::doi_utils::validate_doi(&data.id) {
+        Some(d) => d,
+        None => {
+            result.status = "failed_missing_doi".to_string();
+            return result;
+        }
+    };
+    result.doi = doi.clone();
+
+    let client = match build_client() {
+        Ok(c) => c,
+        Err(e) => {
+            result.status = "failed".to_string();
+            result.message = Some(e.to_string());
+            return result;
+        }
+    };
+
+    let body = match write(data) {
+        Ok(b) => b,
+        Err(e) => {
+            result.status = "failed".to_string();
+            result.message = Some(e.to_string());
+            return result;
+        }
+    };
+
+    let existing = match search_by_doi(&doi, host, &client) {
+        Ok(id) => id,
+        Err(e) => {
+            result.status = "failed_search".to_string();
+            result.message = Some(e.to_string());
+            return result;
+        }
+    };
+
+    let record_id = match existing {
+        None => match create_draft_record(&body, host, token, &client) {
+            Ok((id, created, updated)) => {
+                result.created = created;
+                result.updated = updated;
+                id
+            }
+            Err(e) => {
+                result.status = "failed_create_draft".to_string();
+                result.message = Some(e.to_string());
+                return result;
+            }
+        },
+        Some(id) => {
+            if let Err(e) = edit_published_record(&id, host, token, &client) {
+                result.status = "failed_edit_published".to_string();
+                result.message = Some(e.to_string());
+                return result;
+            }
+            if let Err(e) = update_draft_record(&id, &body, host, token, &client) {
+                result.status = "failed_update_draft".to_string();
+                result.message = Some(e.to_string());
+                return result;
+            }
+            id
+        }
+    };
+    result.record_id = record_id.clone();
+
+    match publish_draft_record(&record_id, host, token, &client) {
+        Ok((created, updated)) => {
+            if !created.is_empty() {
+                result.created = created;
+            }
+            result.updated = updated;
+            result.status = "published".to_string();
+        }
+        Err(e) => {
+            result.status = "failed_publish".to_string();
+            result.message = Some(e.to_string());
+        }
+    }
+
+    result
+}
+
+/// Create-or-update, then publish, a list of records in InvenioRDM.
+pub fn upsert_all(list: &[Data], host: &str, token: &str) -> Vec<PushResult> {
+    list.iter().map(|data| upsert(data, host, token)).collect()
+}
+
+#[cfg(test)]
+mod push_tests {
+    use super::*;
+
+    #[test]
+    fn test_upsert_rejects_missing_doi() {
+        let data = Data { id: "https://example.com/not-a-doi".to_string(), ..Data::default() };
+        let result = upsert(&data, "example.invenio.host", "fake-token");
+        assert_eq!(result.status, "failed_missing_doi");
+        assert!(result.record_id.is_empty());
+    }
+
+    #[test]
+    fn test_upsert_rejects_empty_id() {
+        let data = Data::default();
+        let result = upsert(&data, "example.invenio.host", "fake-token");
+        assert_eq!(result.status, "failed_missing_doi");
+    }
+
+    #[test]
+    fn test_upsert_all_empty_list() {
+        let results = upsert_all(&[], "example.invenio.host", "fake-token");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_push_result_serialization_omits_empty_fields() {
+        let result = PushResult {
+            id: "https://doi.org/10.1/a".to_string(),
+            status: "failed_missing_doi".to_string(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"id\""));
+        assert!(json.contains("\"status\""));
+        assert!(!json.contains("\"doi\""));
+        assert!(!json.contains("\"record_id\""));
+        assert!(!json.contains("\"message\""));
+    }
 }

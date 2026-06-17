@@ -321,7 +321,7 @@ fn render_single(data: &Data, to: &str) -> Result<Vec<u8>, String> {
     commonmeta::convert("commonmeta", to, &input).map_err(|e| e.to_string())
 }
 
-fn fetch_list_from_api(matches: &ArgMatches, from: &str) -> Result<Vec<Data>, String> {
+pub(crate) fn fetch_list_from_api(matches: &ArgMatches, from: &str) -> Result<Vec<Data>, String> {
     let number = *matches.get_one::<usize>("number").unwrap_or(&10);
     let page = *matches.get_one::<usize>("page").unwrap_or(&1);
 
@@ -520,7 +520,7 @@ fn fetch_openalex_list(matches: &ArgMatches, number: usize, page: usize) -> Resu
     Ok(out)
 }
 
-fn load_list_from_file(path: &str, from: &str, matches: &ArgMatches) -> Result<Vec<Data>, String> {
+pub(crate) fn load_list_from_file(path: &str, from: &str, matches: &ArgMatches) -> Result<Vec<Data>, String> {
     match from {
         "crossref" => load_crossref_list_from_file(path),
         "datacite" => load_datacite_list_from_file(path),

@@ -79,7 +79,7 @@ fn ra_for_prefix(prefix: &str) -> Option<String> {
     json.as_array()?.first()?.get("RA")?.as_str().map(|s| s.to_lowercase())
 }
 
-fn detect_format(input: &str) -> String {
+pub(crate) fn detect_format(input: &str) -> String {
     // DOI URL or bare DOI → look up registration agency
     if let Some(prefix) = doi_prefix(input) {
         return ra_for_prefix(&prefix).unwrap_or_else(|| "crossref".to_string());
