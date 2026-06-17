@@ -430,7 +430,7 @@ struct Citation {
     unstructured_citation: String,
 }
 
-// ── Relation type lists (Python's shorter set) ────────────────────────────────
+// ── Relation type lists ────────────────────────────────
 
 const INTER_WORK_RELATION_TYPES: &[&str] = &[
     "IsPartOf",
@@ -2413,7 +2413,7 @@ pub fn fetch(doi: &str) -> Result<Data> {
     );
     let client = reqwest::blocking::Client::builder()
         .user_agent(format!(
-            "commonmeta-rs/{} (https://github.com/front-matter/commonmeta-rs; mailto:info@front-matter.io)",
+            "commonmeta-rs/{} (https://github.com/front-matter/commonmeta-rs; mailto:info@front-matter.de)",
             env!("CARGO_PKG_VERSION")
         ))
         .build()

@@ -1,11 +1,18 @@
 pub mod bibtex;
+pub mod cff;
+pub mod ror;
+pub mod ror_countries;
 pub mod citation;
+pub mod codemeta;
 pub mod commonmeta;
 pub mod crossref;
 pub mod crossref_xml;
 pub mod csl;
 pub mod datacite;
+pub mod inveniordm;
 pub mod jsonfeed;
+pub mod openalex;
+pub mod ris;
 pub mod schemaorg;
 
 use crate::data::Data;
@@ -35,6 +42,13 @@ pub fn read(format: &str, input: &str) -> Result<Data> {
                 datacite::fetch(input)
             }
         }
+        "inveniordm" => {
+            if input.trim_start().starts_with('{') {
+                inveniordm::read_json(input)
+            } else {
+                inveniordm::fetch(input)
+            }
+        }
         "jsonfeed" => {
             if input.trim_start().starts_with('{') {
                 jsonfeed::read_json(input)
@@ -57,6 +71,35 @@ pub fn read(format: &str, input: &str) -> Result<Data> {
             }
         }
         "bibtex" => bibtex::read(input),
+        "cff" => {
+            if input.trim_start().starts_with('{') || input.contains("cff-version") {
+                cff::read_yaml(input)
+            } else {
+                cff::fetch(input)
+            }
+        }
+        "codemeta" => {
+            if input.trim_start().starts_with('{') {
+                codemeta::read_json(input)
+            } else {
+                codemeta::fetch(input)
+            }
+        }
+        "ris" => ris::read(input),
+        "openalex" => {
+            if input.trim_start().starts_with('{') {
+                openalex::read_json(input)
+            } else {
+                openalex::fetch(input)
+            }
+        }
+        "ror" => {
+            if input.trim_start().starts_with('{') {
+                ror::read_json(input)
+            } else {
+                ror::fetch(input)
+            }
+        }
         other => Err(Error::UnsupportedFormat(other.to_string())),
     }
 }
@@ -74,11 +117,14 @@ pub fn write_citation(
     match format {
         "commonmeta" => commonmeta::write(data),
         "crossref_xml" => crossref_xml::write(data),
+        "ris" => ris::write(data),
         "csl" => csl::write(data),
         "datacite" => datacite::write(data),
+        "inveniordm" => inveniordm::write(data),
         "bibtex" => bibtex::write(data),
         "schemaorg" => schemaorg::write(data),
         "citation" => citation::write(data, style, locale),
+        "ror" => ror::write(data),
         other => Err(Error::UnsupportedFormat(other.to_string())),
     }
 }

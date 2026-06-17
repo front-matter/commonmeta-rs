@@ -9,7 +9,7 @@ pub mod utils;
 fn main() -> Result<(), String> {
     let matches = Command::new("commonmeta")
         .version(env!("CARGO_PKG_VERSION"))
-        .author("Front Matter <info@front-matter.io>")
+        .author("Front Matter <info@front-matter.de>")
         .about("Commonmeta")
         .subcommand(cmd::convert::command())
         .subcommand(cmd::encode::command())

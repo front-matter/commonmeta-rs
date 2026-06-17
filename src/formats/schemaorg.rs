@@ -20,30 +20,30 @@ use crate::vocab::CONTRIBUTOR_ROLES;
 
 /// Flexible affiliation — @id (optional) + sameAs (optional) + name.
 #[derive(Deserialize, Default, Clone)]
-struct SoOrganization {
+pub(crate) struct SoOrganization {
     #[serde(rename = "@id", default)]
-    id: String,
+    pub(crate) id: String,
     #[serde(rename = "sameAs", default)]
-    same_as: String,
+    pub(crate) same_as: String,
     #[serde(default)]
-    name: String,
+    pub(crate) name: String,
 }
 
 /// Schema.org contributor (author / creator / editor / contributor).
 #[derive(Deserialize, Default, Clone)]
-struct SoContributor {
+pub(crate) struct SoContributor {
     #[serde(rename = "@id", default)]
-    id: String,
+    pub(crate) id: String,
     #[serde(rename = "@type", default)]
-    type_: String,
+    pub(crate) type_: String,
     #[serde(rename = "givenName", default)]
-    given_name: String,
+    pub(crate) given_name: String,
     #[serde(rename = "familyName", default)]
-    family_name: String,
+    pub(crate) family_name: String,
     #[serde(default)]
-    name: String,
+    pub(crate) name: String,
     #[serde(default)]
-    affiliation: Option<Value>,
+    pub(crate) affiliation: Option<Value>,
 }
 
 /// Citation / reference entry.
@@ -145,7 +145,7 @@ struct SoContent {
 
 // ── Type mapping ──────────────────────────────────────────────────────────────
 
-fn so_to_cm_type(so: &str) -> &'static str {
+pub(crate) fn so_to_cm_type(so: &str) -> &'static str {
     match so {
         "Article"           => "Article",
         "BlogPosting"       => "BlogPost",
@@ -169,7 +169,7 @@ fn so_to_cm_type(so: &str) -> &'static str {
 
 /// Deserialise a `Value` that is either a single SoContributor object or an
 /// array of them.
-fn value_to_contributors(v: &Value) -> Vec<SoContributor> {
+pub(crate) fn value_to_contributors(v: &Value) -> Vec<SoContributor> {
     if v.is_null() {
         return vec![];
     }
@@ -183,7 +183,7 @@ fn value_to_contributors(v: &Value) -> Vec<SoContributor> {
 }
 
 /// Convert a raw JSON affiliation value into an `Affiliation`.
-fn parse_affiliation(v: &Value) -> Option<Affiliation> {
+pub(crate) fn parse_affiliation(v: &Value) -> Option<Affiliation> {
     // affiliation can be an Organization object or a plain string
     if let Some(s) = v.as_str() {
         if !s.is_empty() {
@@ -209,7 +209,7 @@ fn parse_affiliation(v: &Value) -> Option<Affiliation> {
 }
 
 /// Mirror of Go `GetContributor`.
-fn get_contributor(v: SoContributor, default_role: &str) -> Contributor {
+pub(crate) fn get_contributor(v: SoContributor, default_role: &str) -> Contributor {
     let mut type_ = v.type_.clone();
     let mut id = String::new();
 
@@ -476,7 +476,7 @@ pub fn read_json(input: &str) -> Result<Data> {
 pub fn fetch(url: &str) -> Result<Data> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(format!(
-            "commonmeta-rs/{} (https://github.com/front-matter/commonmeta-rs; mailto:info@front-matter.io)",
+            "commonmeta-rs/{} (https://github.com/front-matter/commonmeta-rs; mailto:info@front-matter.de)",
             env!("CARGO_PKG_VERSION")
         ))
         .redirect(reqwest::redirect::Policy::limited(5))

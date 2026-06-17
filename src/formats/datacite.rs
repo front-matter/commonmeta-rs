@@ -690,7 +690,7 @@ pub fn fetch(doi: &str) -> Result<Data> {
     let url = format!("https://api.datacite.org/dois/{}?affiliation=true", bare);
     let client = reqwest::blocking::Client::builder()
         .user_agent(format!(
-            "commonmeta-rs/{} (https://github.com/front-matter/commonmeta-rs; mailto:info@front-matter.io)",
+            "commonmeta-rs/{} (https://github.com/front-matter/commonmeta-rs; mailto:info@front-matter.de)",
             env!("CARGO_PKG_VERSION")
         ))
         .build()
