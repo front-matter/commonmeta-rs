@@ -291,11 +291,10 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
         title.insert(lang, t.title.clone());
     }
     // Ensure at least an English entry using the first title
-    if title.is_empty() {
-        if let Some(t) = data.titles.first() {
+    if title.is_empty()
+        && let Some(t) = data.titles.first() {
             title.insert("en".to_string(), t.title.clone());
         }
-    }
 
     let name = data.titles.first().map(|t| t.title.clone()).unwrap_or_default();
 
@@ -484,11 +483,10 @@ pub fn convert_ror_csv(ror: &Ror) -> RorCsv {
     out.labels = labels.join("; ");
     out.acronyms = acronyms.join("; ");
 
-    if let Some(year) = ror.established {
-        if year != 0 {
+    if let Some(year) = ror.established
+        && year != 0 {
             out.established = year.to_string();
         }
-    }
 
     if let Some(loc) = ror.locations.first() {
         out.latitude = format!("{:.6}", loc.geonames_details.lat);
@@ -715,7 +713,7 @@ pub fn get_country_codes(s: &str) -> Vec<String> {
                     alpha_lower.contains(name)
                 } else {
                     // Single-word: isolated token match
-                    alpha_tokens.iter().any(|&t| t == name)
+                    alpha_tokens.contains(&name)
                 }
             };
 

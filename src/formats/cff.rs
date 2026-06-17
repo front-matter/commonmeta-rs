@@ -38,7 +38,7 @@ fn null_val() -> &'static Value {
 fn get<'a>(v: &'a Value, key: &str) -> &'a Value {
     match v {
         Value::Mapping(m) => m
-            .get(&Value::String(key.to_string()))
+            .get(Value::String(key.to_string()))
             .unwrap_or(null_val()),
         _ => null_val(),
     }
@@ -330,16 +330,14 @@ pub fn fetch(url: &str) -> Result<Data> {
         serde_yaml::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?;
 
     // If repository-code is absent, fill it from the canonical repo URL
-    if get(&doc, "repository-code") == null_val() {
-        if let Some(repo_url) = github_as_repo_url(&cff_url) {
-            if let Value::Mapping(ref mut m) = doc {
+    if get(&doc, "repository-code") == null_val()
+        && let Some(repo_url) = github_as_repo_url(&cff_url)
+            && let Value::Mapping(ref mut m) = doc {
                 m.insert(
                     Value::String("repository-code".to_string()),
                     Value::String(repo_url),
                 );
             }
-        }
-    }
 
     Ok(from_value(&doc))
 }

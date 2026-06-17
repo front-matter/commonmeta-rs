@@ -597,13 +597,11 @@ fn get_contributor(v: &Creator, default_role: &str) -> Contributor {
         && !name_out.is_empty()
         && given_name.is_empty()
         && family_name.is_empty()
-    {
-        if let Some(comma) = name_out.find(',') {
+        && let Some(comma) = name_out.find(',') {
             given_name = name_out[comma + 1..].trim().to_string();
             family_name = name_out[..comma].trim().to_string();
             name_out = String::new();
         }
-    }
 
     let affiliations = v
         .affiliations
@@ -946,10 +944,10 @@ fn from_content(content: Content) -> Data {
     }
 
     // Files from top-level `files` list
-    if let Some(files_val) = &content.files {
-        if let Ok(files_enabled) = serde_json::from_value::<FilesEnabled>(files_val.clone()) {
-            if files_enabled.enabled {
-                if let Ok(entries) = serde_json::from_value::<FilesWithEntries>(files_val.clone())
+    if let Some(files_val) = &content.files
+        && let Ok(files_enabled) = serde_json::from_value::<FilesEnabled>(files_val.clone())
+            && files_enabled.enabled
+                && let Ok(entries) = serde_json::from_value::<FilesWithEntries>(files_val.clone())
                 {
                     for f in entries.entries.values() {
                         if let Ok(cf) = serde_json::from_value::<ContentFile>(f.clone()) {
@@ -976,9 +974,6 @@ fn from_content(content: Content) -> Data {
                         }
                     }
                 }
-            }
-        }
-    }
 
     // Funding references
     if !content.metadata.funding.is_empty() {
@@ -1064,16 +1059,14 @@ fn from_content(content: Content) -> Data {
         });
     }
     // RID from record id field
-    if let Some(id_val) = &content.id {
-        if let Some(s) = id_val.as_str() {
-            if !s.is_empty() {
+    if let Some(id_val) = &content.id
+        && let Some(s) = id_val.as_str()
+            && !s.is_empty() {
                 data.identifiers.push(Identifier {
                     identifier: s.to_string(),
                     identifier_type: "RID".to_string(),
                 });
             }
-        }
-    }
 
     // Language: metadata.language first, then metadata.languages[0].id
     if !content.metadata.language.is_empty() {
@@ -1090,14 +1083,13 @@ fn from_content(content: Content) -> Data {
             id: license_id,
             url: String::new(),
         };
-    } else if let Some(lic) = &content.metadata.license {
-        if !lic.id.is_empty() {
+    } else if let Some(lic) = &content.metadata.license
+        && !lic.id.is_empty() {
             data.license = License {
                 id: license_mapping(&lic.id).to_string(),
                 url: String::new(),
             };
         }
-    }
 
     // Provider
     data.provider = if is_rogue_scholar {
@@ -1751,14 +1743,13 @@ fn convert(data: &Data) -> OutInveniordm {
                 continue;
             }
             let mut identifiers = vec![];
-            if !v.id.is_empty() {
-                if let Some(orcid) = validate_orcid(&v.id) {
+            if !v.id.is_empty()
+                && let Some(orcid) = validate_orcid(&v.id) {
                     identifiers.push(OutIdentifier {
                         identifier: orcid,
                         scheme: "orcid".to_string(),
                     });
                 }
-            }
 
             let mut affiliations = vec![];
             for a in &v.affiliations {
@@ -1818,14 +1809,13 @@ fn convert(data: &Data) -> OutInveniordm {
             }
 
             let mut identifiers = vec![];
-            if !v.id.is_empty() {
-                if let Some(orcid) = validate_orcid(&v.id) {
+            if !v.id.is_empty()
+                && let Some(orcid) = validate_orcid(&v.id) {
                     identifiers.push(OutIdentifier {
                         identifier: orcid,
                         scheme: "orcid".to_string(),
                     });
                 }
-            }
 
             let mut affiliations = vec![];
             if v.type_ == "Person" {

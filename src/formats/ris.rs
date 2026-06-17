@@ -317,11 +317,10 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
     lines.push(format!("TY  - {}", cm_to_ris_type(&data.type_)));
 
     // T1 – title
-    if let Some(t) = data.titles.first() {
-        if !t.title.is_empty() {
+    if let Some(t) = data.titles.first()
+        && !t.title.is_empty() {
             lines.push(format!("T1  - {}", t.title));
         }
-    }
 
     // T2 – container title
     if !data.container.title.is_empty() {
@@ -330,11 +329,10 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
 
     // AU – authors (one line each, Authors only)
     for c in &data.contributors {
-        if c.contributor_roles.contains(&"Author".to_string()) {
-            if let Some(name) = contributor_to_ris(c) {
+        if c.contributor_roles.contains(&"Author".to_string())
+            && let Some(name) = contributor_to_ris(c) {
                 lines.push(format!("AU  - {}", name));
             }
-        }
     }
 
     // DO – DOI (bare, without https://doi.org/ prefix)
@@ -346,11 +344,10 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
     field!("UR", &data.url);
 
     // AB – abstract (first description)
-    if let Some(d) = data.descriptions.first() {
-        if !d.description.is_empty() {
+    if let Some(d) = data.descriptions.first()
+        && !d.description.is_empty() {
             lines.push(format!("AB  - {}", d.description));
         }
-    }
 
     // KW – keywords (one line each)
     for s in &data.subjects {

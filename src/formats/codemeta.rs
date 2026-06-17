@@ -41,15 +41,14 @@ fn github_from_url(url: &str) -> Option<(String, String, Option<String>, Option<
 /// Defaults to the `main` branch.
 fn github_as_codemeta_url(url: &str) -> Option<String> {
     let (owner, repo, release, path) = github_from_url(url)?;
-    if let Some(p) = &path {
-        if p.ends_with("codemeta.json") {
+    if let Some(p) = &path
+        && p.ends_with("codemeta.json") {
             let branch = release.as_deref().unwrap_or("main");
             return Some(format!(
                 "https://raw.githubusercontent.com/{}/{}/{}/{}",
                 owner, repo, branch, p
             ));
         }
-    }
     Some(format!(
         "https://raw.githubusercontent.com/{}/{}/main/codemeta.json",
         owner, repo
@@ -255,11 +254,10 @@ pub fn fetch(url: &str) -> Result<Data> {
         .map_err(|e| Error::Parse(e.to_string()))?;
 
     // If codeRepository is absent, fill from the canonical repo URL
-    if doc.get("codeRepository").map_or(true, |v| v.is_null()) {
-        if let Some(repo_url) = github_as_repo_url(&codemeta_url) {
+    if doc.get("codeRepository").is_none_or(|v| v.is_null())
+        && let Some(repo_url) = github_as_repo_url(&codemeta_url) {
             doc["codeRepository"] = Value::String(repo_url);
         }
-    }
 
     Ok(from_value(&doc))
 }

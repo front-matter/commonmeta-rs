@@ -213,11 +213,10 @@ fn format_date(d: &CrossrefDate) -> String {
 /// is never set for Crossref records.
 fn published_date(issued: &Option<CrossrefDate>, created: &Option<CrossrefDate>) -> String {
     if let Some(issued) = issued {
-        if let Some(dt) = &issued.date_time {
-            if !dt.is_empty() {
+        if let Some(dt) = &issued.date_time
+            && !dt.is_empty() {
                 return dt.clone();
             }
-        }
         let formatted = format_date(issued);
         if !formatted.is_empty() {
             return formatted;

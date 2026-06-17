@@ -309,7 +309,7 @@ fn write_output(data: &[Data], to: &str) -> Result<Vec<u8>, String> {
     for (idx, item) in data.iter().enumerate() {
         let rendered = render_single(item, to)?;
         if idx > 0 {
-            output.push_str("\n");
+            output.push('\n');
         }
         output.push_str(&String::from_utf8_lossy(&rendered));
     }
@@ -375,38 +375,32 @@ fn fetch_datacite_list(matches: &ArgMatches, number: usize, page: usize) -> Resu
         query.append_pair("page[number]", &page.max(1).to_string());
         query.append_pair("affiliation", "true");
 
-        if let Some(client_id) = matches.get_one::<String>("client") {
-            if !client_id.is_empty() {
+        if let Some(client_id) = matches.get_one::<String>("client")
+            && !client_id.is_empty() {
                 query.append_pair("client-id", client_id);
             }
-        }
 
         let mut search_terms: Vec<String> = Vec::new();
-        if let Some(type_) = matches.get_one::<String>("type") {
-            if !type_.is_empty() {
+        if let Some(type_) = matches.get_one::<String>("type")
+            && !type_.is_empty() {
                 search_terms.push(format!("types.resourceTypeGeneral:{}", type_));
             }
-        }
-        if let Some(year) = matches.get_one::<String>("year") {
-            if !year.is_empty() {
+        if let Some(year) = matches.get_one::<String>("year")
+            && !year.is_empty() {
                 search_terms.push(format!("publicationYear:{}", year));
             }
-        }
-        if let Some(language) = matches.get_one::<String>("language") {
-            if !language.is_empty() {
+        if let Some(language) = matches.get_one::<String>("language")
+            && !language.is_empty() {
                 search_terms.push(format!("language:{}", language));
             }
-        }
-        if let Some(orcid) = matches.get_one::<String>("orcid") {
-            if !orcid.is_empty() {
+        if let Some(orcid) = matches.get_one::<String>("orcid")
+            && !orcid.is_empty() {
                 search_terms.push(format!("creators.nameIdentifiers.nameIdentifier:{}", orcid));
             }
-        }
-        if let Some(ror) = matches.get_one::<String>("ror") {
-            if !ror.is_empty() {
+        if let Some(ror) = matches.get_one::<String>("ror")
+            && !ror.is_empty() {
                 search_terms.push(format!("creators.affiliation.affiliationIdentifier:{}", ror));
             }
-        }
         if !search_terms.is_empty() {
             query.append_pair("query", &search_terms.join(" "));
         }
@@ -450,34 +444,29 @@ fn fetch_openalex_list(matches: &ArgMatches, number: usize, page: usize) -> Resu
         let mut query = url.query_pairs_mut();
         query.append_pair("per-page", &number.clamp(1, 200).to_string());
         query.append_pair("page", &page.max(1).to_string());
-        if let Some(email) = matches.get_one::<String>("email") {
-            if !email.is_empty() {
+        if let Some(email) = matches.get_one::<String>("email")
+            && !email.is_empty() {
                 query.append_pair("mailto", email);
             }
-        }
 
         let mut filters: Vec<String> = Vec::new();
-        if let Some(type_) = matches.get_one::<String>("type") {
-            if !type_.is_empty() {
+        if let Some(type_) = matches.get_one::<String>("type")
+            && !type_.is_empty() {
                 filters.push(format!("type_crossref:{}", type_));
             }
-        }
-        if let Some(year) = matches.get_one::<String>("year") {
-            if !year.is_empty() {
+        if let Some(year) = matches.get_one::<String>("year")
+            && !year.is_empty() {
                 filters.push(format!("from_publication_date:{}-01-01", year));
                 filters.push(format!("to_publication_date:{}-12-31", year));
             }
-        }
-        if let Some(orcid) = matches.get_one::<String>("orcid") {
-            if !orcid.is_empty() {
+        if let Some(orcid) = matches.get_one::<String>("orcid")
+            && !orcid.is_empty() {
                 filters.push(format!("author.orcid:{}", orcid));
             }
-        }
-        if let Some(ror) = matches.get_one::<String>("ror") {
-            if !ror.is_empty() {
+        if let Some(ror) = matches.get_one::<String>("ror")
+            && !ror.is_empty() {
                 filters.push(format!("institutions.ror:{}", ror));
             }
-        }
         if matches.get_flag("has-abstract") {
             filters.push("has_abstract:true".to_string());
         }
