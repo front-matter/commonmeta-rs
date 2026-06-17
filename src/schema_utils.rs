@@ -44,12 +44,12 @@ pub fn json_schema_errors(document: &[u8], schema: Option<&str>) -> Result<()> {
 
     let validation_schema = effective_validation_schema(&schema_json);
 
-    let compiled = jsonschema::JSONSchema::compile(&validation_schema)
+    let compiled = jsonschema::validator_for(&validation_schema)
         .map_err(|e| Error::Parse(e.to_string()))?;
 
     let validation_errors: Vec<String> = match compiled.validate(&document_json) {
         Ok(()) => Vec::new(),
-        Err(errors) => errors.map(|e| e.to_string()).collect(),
+        Err(_) => compiled.iter_errors(&document_json).map(|e| e.to_string()).collect(),
     };
 
     if validation_errors.is_empty() {

@@ -6,7 +6,7 @@
 //! - encodes the checksum using only characters in the base32 set
 //! - produces string that are URI-friendly (no '=' or '/' for instance)
 
-use rand::Rng;
+use rand::RngExt;
 use std::fmt;
 
 // NO i, l, o or u
@@ -98,7 +98,7 @@ pub fn generate(mut length: usize, split_every: usize, checksum: bool) -> String
 
     // generate a random number between 0 and 32^length
     let n = (32_f64).powi(length as i32);
-    let number = rand::thread_rng().gen_range(0..n.min(i64::MAX as f64) as i64);
+    let number = rand::rng().random_range(0..n.min(i64::MAX as f64) as i64);
 
     encode(number, split_every, length, checksum)
 }

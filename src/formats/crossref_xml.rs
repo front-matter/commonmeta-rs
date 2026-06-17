@@ -1,7 +1,7 @@
 use chrono::Utc;
 use quick_xml::de::from_str as xml_from_str;
 use quick_xml::se::Serializer;
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
 use crate::data::{
@@ -457,8 +457,8 @@ const ALLOWED_CONTRIBUTOR_ROLES: &[&str] = &["Author", "Editor", "Reviewer", "Tr
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn generate_batch_id() -> String {
-    let mut rng = rand::thread_rng();
-    let b: [u8; 16] = rng.r#gen();
+    let mut rng = rand::rng();
+    let b: [u8; 16] = rng.random();
     format!(
         "{:08x}-{:04x}-4{:03x}-{:04x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         u32::from_be_bytes([b[0], b[1], b[2], b[3]]),
