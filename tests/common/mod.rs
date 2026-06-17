@@ -8,7 +8,7 @@
 //!   * **omitempty-aware**: a field present in one tree but absent in the other
 //!     is only a mismatch if its value is non-empty. An empty string, empty
 //!     array, empty object, null, or numeric zero is treated as equivalent to
-//!     absent — exactly Go's `omitempty` (and our `skip_serializing_if`).
+//!     absent and our `skip_serializing_if`.
 //!   * **numeric-aware**: `52` and `52.0` compare equal, so a fixture authored
 //!     with an integer latitude won't spuriously fail against our `f64` field.
 

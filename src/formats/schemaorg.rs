@@ -1,6 +1,4 @@
 //! Schema.org JSON-LD reader and writer.
-//!
-//! Mirrors Go's `schemaorg/reader.go` and `schemaorg/writer.go`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -470,7 +468,6 @@ pub fn read_json(input: &str) -> Result<Data> {
 
 /// Fetch a URL, extract its JSON-LD, and parse into `Data`.
 ///
-/// Mirrors Go's `Get` + `Fetch` functions: extracts `<script type="application/ld+json">`,
 /// falls back to `<meta>` tags, then dispatches to Crossref or DataCite when the
 /// embedded DOI belongs to one of those registrars.
 pub fn fetch(url: &str) -> Result<Data> {

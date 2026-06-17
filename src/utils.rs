@@ -666,7 +666,7 @@ pub fn community_slug_as_url(slug: &str, host: &str) -> String {
 
 // ── String utilities ──────────────────────────────────────────────────────────
 
-/// Strips HTML, allowing only safe inline elements (mirrors Go's bluemonday policy).
+/// Strips HTML, allowing only safe inline elements.
 pub fn sanitize(html: &str) -> String {
     let allowed: std::collections::HashSet<&str> =
         ["b", "br", "code", "em", "i", "sub", "sup", "strong"]

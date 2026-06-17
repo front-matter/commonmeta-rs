@@ -34,3 +34,9 @@ pub fn convert_citation(
     let data = formats::read(from, input)?;
     formats::write_citation("citation", &data, style, locale)
 }
+
+/// Write a list of commonmeta records as a single Parquet file, using a
+/// flattened, lossy tabular projection of each record's fields.
+pub fn write_parquet(list: &[Data]) -> Result<Vec<u8>> {
+    formats::commonmeta::write_parquet_all(list)
+}
