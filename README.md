@@ -42,27 +42,6 @@ cargo run -- convert record.json --from commonmeta --to csl --file out.json
 cargo test
 ```
 
-## Testing / conformance
-
-`cargo test` runs unit tests plus the conformance harness in
-`crates/commonmeta/tests/`:
-
-- **`commonmeta_roundtrip`** reads every fixture in
-  `tests/fixtures/commonmeta/*.json`, parses it into `Data`, serializes it back,
-  and compares the trees with a semantic JSON diff (`tests/common/mod.rs`). The
-  diff is omitempty-aware (empty ≈ absent) and numeric-aware (`52` == `52.0`), so
-  the only thing it flags is real data loss, spurious output, or changed values —
-  i.e. serde-tag / field-mapping drift. Failures name the exact JSON path.
-- The shipped fixtures deliberately exercise the irregular tags
-  (`contentHTML`, the snake_case `first_page`/`last_page` on references vs the
-  camelCase `firstPage` on containers, `awardUri`, the geo fields, integer
-  `size`). **To broaden coverage, drop real commonmeta-format files from the Go
-  repo's `testdata/` into `tests/fixtures/commonmeta/`** — they're discovered
-  automatically.
-- **`crossref_to_commonmeta_golden`** reads each file under `tests/fixtures/crossref/`,
-  converts it via the Crossref reader, and compares against the same-named file in
-  `tests/fixtures/commonmeta/`. Add pairs there to broaden crossref coverage.
-
 ## Documentation
 
 Documentation (work in progress) for using the library is available at the [commonmeta-rs Documentation](https://rs.commonmeta.org/) website.
