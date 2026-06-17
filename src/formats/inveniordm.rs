@@ -733,13 +733,14 @@ fn map_relation_type(raw: &str) -> String {
 // ── Core conversion ───────────────────────────────────────────────────────────
 
 fn from_content(content: Content) -> Data {
-    let mut data = Data::default();
-
-    // ID
-    data.id = if !content.doi.is_empty() {
-        normalize_doi(&content.doi)
-    } else {
-        normalize_doi(&content.pids.doi.identifier)
+    let mut data = Data {
+        // ID
+        id: if !content.doi.is_empty() {
+            normalize_doi(&content.doi)
+        } else {
+            normalize_doi(&content.pids.doi.identifier)
+        },
+        ..Data::default()
     };
 
     // Type: Python prefers resource_type.type then resource_type.id
