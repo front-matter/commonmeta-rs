@@ -119,6 +119,40 @@ pub fn write_gz_file<P: AsRef<Path>>(filename: P, output: &[u8]) -> Result<()> {
     Ok(())
 }
 
+// ---------- ZSTD-related functions ----------
+
+/// Decompress a Zstandard-compressed byte buffer.
+pub fn unzst_content(input: &[u8]) -> Result<Vec<u8>> {
+    let output = zstd::stream::decode_all(io::Cursor::new(input))?;
+    Ok(output)
+}
+
+/// Opens a ZSTD-compressed file and returns its decompressed content.
+pub fn read_zst_file<P: AsRef<Path>>(filename: P) -> Result<Vec<u8>> {
+    let input = read_file(filename)?;
+    let output = unzst_content(&input)?;
+    Ok(output)
+}
+
+/// Saves the content to a Zstandard-compressed file.
+pub fn write_zst_file<P: AsRef<Path>>(filename: P, output: &[u8]) -> Result<()> {
+    let path = Path::new(filename.as_ref());
+    let mut zst_path = PathBuf::from(path);
+    zst_path.set_extension(format!(
+        "{}zst",
+        path.extension()
+            .map(|ext| format!("{}.", ext.to_string_lossy()))
+            .unwrap_or_default()
+    ));
+
+    let file = File::create(zst_path)?;
+    let mut encoder = zstd::stream::Encoder::new(file, 0)?;
+    encoder.write_all(output)?;
+    encoder.finish()?;
+
+    Ok(())
+}
+
 // ---------- network functions ----------
 
 /// download content of a URL.
@@ -166,8 +200,8 @@ pub fn get_extension<P: AsRef<Path>>(filename: P, ext: &str) -> (PathBuf, String
             .map(|ext| ext.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let compress = if extension == "zip" || extension == "gz" {
-            // Remove trailing compression extension (".zip"/".gz") from filename.
+        let compress = if extension == "zip" || extension == "gz" || extension == "zst" {
+            // Remove trailing compression extension (".zip"/".gz"/".zst") from filename.
             let stem = path.file_stem().unwrap_or_default();
             let parent = path.parent().unwrap_or_else(|| Path::new(""));
             let new_path = parent.join(stem);
@@ -206,4 +240,43 @@ pub fn get_extension<P: AsRef<Path>>(filename: P, ext: &str) -> (PathBuf, String
     };
 
     (path, extension, String::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_zst_roundtrip_content() {
+        let original = b"hello zstd world, hello zstd world, hello zstd world";
+        let compressed = zstd::stream::encode_all(io::Cursor::new(original), 0).unwrap();
+        let decompressed = unzst_content(&compressed).unwrap();
+        assert_eq!(decompressed, original);
+    }
+
+    #[test]
+    fn test_write_and_read_zst_file() {
+        let dir = std::env::temp_dir().join("commonmeta_zst_test");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("data.json");
+
+        let original = b"{\"hello\":\"world\"}";
+        write_zst_file(&path, original).unwrap();
+
+        let zst_path = dir.join("data.json.zst");
+        assert!(zst_path.exists());
+
+        let roundtrip = read_zst_file(&zst_path).unwrap();
+        assert_eq!(roundtrip, original);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_get_extension_zst() {
+        let (path, ext, compress) = get_extension("data.json.zst", ".json");
+        assert_eq!(path, PathBuf::from("data.json"));
+        assert_eq!(ext, ".json");
+        assert_eq!(compress, "zst");
+    }
 }

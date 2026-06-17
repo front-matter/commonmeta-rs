@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use rusqlite::Connection;
 use serde_json::json;
@@ -5,6 +7,9 @@ use url::Url;
 
 use commonmeta::Data;
 use crate::file_utils;
+
+/// Maximum number of records per Parquet batch file.
+const PARQUET_BATCH_SIZE: usize = 100_000;
 
 pub fn command() -> Command {
     Command::new("list")
@@ -16,7 +21,11 @@ pub fn command() -> Command {
             commonmeta list --number 10 --client cern.zenodo --type dataset --from datacite\n\
             commonmeta list --number 10 --from openalex --type journal-article\n\
             commonmeta list crossref-2026-06-15.sqlite3 --from vraix --number 1000 --page 1 --to commonmeta --file out.json.gz\n\
-            commonmeta list --from crossref --file out.json",
+            commonmeta list --from crossref --file out.json\n\
+            commonmeta list --from crossref --number 1000 --file out.parquet\n\
+            (a .parquet --file extension selects Parquet output and is only supported for\n\
+            --to commonmeta, the default; output is always zstd-compressed, with records\n\
+            split into batches of 100,000 written in parallel, e.g. out-00000.parquet.zst, ...)",
         )
         .arg(
             Arg::new("input")
@@ -151,6 +160,23 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         fetch_list_from_api(matches, from)?
     };
 
+    // Parquet is a storage format, not a metadata schema, so it is selected via
+    // the --file extension (e.g. out.parquet) rather than --to. It is only
+    // supported for the native commonmeta schema until other flattened
+    // tabular representations (e.g. for datacite, csl) are added.
+    if let Some(path) = out_file {
+        let (_base, extension, _compress) = file_utils::get_extension(path, ".json");
+        if extension == ".parquet" {
+            if to != "commonmeta" {
+                return Err(format!(
+                    "list: --file *.parquet output is only supported for --to commonmeta (got --to {}), until other flattened formats are added",
+                    to
+                ));
+            }
+            return write_parquet_batches(&data, path);
+        }
+    }
+
     let output = write_output(&data, to)?;
 
     match out_file {
@@ -161,6 +187,8 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
                     .map_err(|e| format!("failed to write gzip '{}': {}", path, e)),
                 "zip" => file_utils::write_zip_file(&file, &output)
                     .map_err(|e| format!("failed to write zip '{}': {}", path, e)),
+                "zst" => file_utils::write_zst_file(&file, &output)
+                    .map_err(|e| format!("failed to write zst '{}': {}", path, e)),
                 _ => file_utils::write_file(&file, &output)
                     .map_err(|e| format!("failed to write '{}': {}", path, e)),
             }
@@ -185,6 +213,84 @@ fn is_supported_output_format(to: &str) -> bool {
             | "ris"
             | "crossref_xml"
     )
+}
+
+/// Write `data` as one or more zstd-compressed Parquet files, splitting into
+/// batches of `PARQUET_BATCH_SIZE` records and writing the batches in parallel.
+/// When there is only one batch, the output is written to `out_path` (with a
+/// `.zst` suffix); otherwise each batch gets a numbered suffix.
+fn write_parquet_batches(data: &[Data], out_path: &str) -> Result<(), String> {
+    if data.is_empty() {
+        return Err("list: no records to write".to_string());
+    }
+
+    let (base_path, _extension, _compress) = file_utils::get_extension(out_path, ".parquet");
+    let chunks: Vec<&[Data]> = data.chunks(PARQUET_BATCH_SIZE).collect();
+    let multi = chunks.len() > 1;
+
+    let results: Vec<Result<(), String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .into_iter()
+            .enumerate()
+            .map(|(idx, chunk)| {
+                let base_path = base_path.clone();
+                scope.spawn(move || {
+                    write_parquet_batch(chunk, &base_path, if multi { Some(idx) } else { None })
+                })
+            })
+            .collect();
+
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err("list: parquet batch thread panicked".to_string()))
+            })
+            .collect()
+    });
+
+    results.into_iter().collect::<Result<Vec<()>, String>>()?;
+    Ok(())
+}
+
+fn write_parquet_batch(chunk: &[Data], base_path: &Path, idx: Option<usize>) -> Result<(), String> {
+    let bytes = commonmeta::write_parquet(chunk).map_err(|e| e.to_string())?;
+    let compressed = zstd::stream::encode_all(std::io::Cursor::new(bytes), 0)
+        .map_err(|e| format!("failed to zstd-compress parquet batch: {}", e))?;
+
+    let path = parquet_batch_path(base_path, idx);
+    file_utils::write_file(&path, &compressed)
+        .map_err(|e| format!("failed to write '{}': {}", path.display(), e))?;
+    println!("wrote {} ({} records)", path.display(), chunk.len());
+    Ok(())
+}
+
+/// Build the output path for a Parquet batch: `{base}.zst` when `idx` is
+/// `None`, or `{stem}-{idx:05}.{ext}.zst` for numbered batches.
+fn parquet_batch_path(base_path: &Path, idx: Option<usize>) -> PathBuf {
+    match idx {
+        None => {
+            let mut path = base_path.to_path_buf();
+            let name = format!("{}.zst", path.file_name().unwrap_or_default().to_string_lossy());
+            path.set_file_name(name);
+            path
+        }
+        Some(i) => {
+            let stem = base_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+            let ext = base_path
+                .extension()
+                .map(|e| e.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let parent = base_path.parent().unwrap_or_else(|| Path::new(""));
+            let filename = if ext.is_empty() {
+                format!("{}-{:05}.zst", stem, i)
+            } else {
+                format!("{}-{:05}.{}.zst", stem, i, ext)
+            };
+            parent.join(filename)
+        }
+    }
 }
 
 fn write_output(data: &[Data], to: &str) -> Result<Vec<u8>, String> {
@@ -723,5 +829,100 @@ fn convert_vraix_row(source_id: i64, raw_metadata: &str) -> Result<Data, String>
                 .map_err(|e| format!("failed to parse commonmeta JSON: {}", e))
         }
         other => Err(format!("unsupported VRAIX source_id: {}", other)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_data(id: &str) -> Data {
+        Data { id: id.to_string(), type_: "JournalArticle".to_string(), ..Data::default() }
+    }
+
+    #[test]
+    fn test_parquet_batch_path_single() {
+        let path = parquet_batch_path(Path::new("/tmp/out.parquet"), None);
+        assert_eq!(path, PathBuf::from("/tmp/out.parquet.zst"));
+    }
+
+    #[test]
+    fn test_parquet_batch_path_numbered() {
+        let path = parquet_batch_path(Path::new("/tmp/out.parquet"), Some(0));
+        assert_eq!(path, PathBuf::from("/tmp/out-00000.parquet.zst"));
+
+        let path = parquet_batch_path(Path::new("/tmp/out.parquet"), Some(12));
+        assert_eq!(path, PathBuf::from("/tmp/out-00012.parquet.zst"));
+    }
+
+    #[test]
+    fn test_parquet_batch_path_no_extension() {
+        let path = parquet_batch_path(Path::new("/tmp/out"), Some(3));
+        assert_eq!(path, PathBuf::from("/tmp/out-00003.zst"));
+    }
+
+    #[test]
+    fn test_write_parquet_batches_single_batch() {
+        let dir = std::env::temp_dir().join("commonmeta_list_parquet_single");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("out.parquet");
+
+        let data = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        write_parquet_batches(&data, out_path.to_str().unwrap()).unwrap();
+
+        let zst_path = dir.join("out.parquet.zst");
+        assert!(zst_path.exists());
+        // no numbered batch file should exist for a single batch
+        assert!(!dir.join("out-00000.parquet.zst").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_write_parquet_batches_multi_batch() {
+        let dir = std::env::temp_dir().join("commonmeta_list_parquet_multi");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("out.parquet");
+
+        // Force multiple chunks by calling the chunking logic directly with a
+        // tiny effective batch size via two manual chunks instead of relying
+        // on PARQUET_BATCH_SIZE (kept at 100_000 for production use).
+        let chunk_a = vec![sample_data("https://doi.org/10.1/a")];
+        let chunk_b = vec![sample_data("https://doi.org/10.1/b")];
+
+        write_parquet_batch(&chunk_a, &out_path, Some(0)).unwrap();
+        write_parquet_batch(&chunk_b, &out_path, Some(1)).unwrap();
+
+        assert!(dir.join("out-00000.parquet.zst").exists());
+        assert!(dir.join("out-00001.parquet.zst").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_write_parquet_batches_empty_data_errors() {
+        let result = write_parquet_batches(&[], "/tmp/whatever.parquet");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_write_parquet_batch_roundtrip_readable() {
+        use parquet::file::reader::{FileReader, SerializedFileReader};
+
+        let dir = std::env::temp_dir().join("commonmeta_list_parquet_readable");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("out.parquet");
+
+        let data = vec![sample_data("https://doi.org/10.1/a")];
+        write_parquet_batches(&data, out_path.to_str().unwrap()).unwrap();
+
+        let zst_path = dir.join("out.parquet.zst");
+        let compressed = std::fs::read(&zst_path).unwrap();
+        let decompressed = zstd::stream::decode_all(std::io::Cursor::new(compressed)).unwrap();
+
+        let reader = SerializedFileReader::new(bytes::Bytes::from(decompressed)).unwrap();
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

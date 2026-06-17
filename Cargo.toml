@@ -41,3 +41,7 @@ ammonia = "4"
 scraper = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }
 flate2 = "1.0"
+zstd = "0.13"
+parquet = { version = "59", default-features = false, features = ["zstd"] }
+parquet_derive = "59"
+bytes = "1"

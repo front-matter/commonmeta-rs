@@ -84,7 +84,7 @@ fn detect_format(input: &str) -> String {
     if let Some(prefix) = doi_prefix(input) {
         return ra_for_prefix(&prefix).unwrap_or_else(|| "crossref".to_string());
     }
-    // JSON content → inspect schema markers (mirrors Go's FindFromFormatByString)
+    // JSON content → inspect schema markers
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(input) {
         if v.get("schema_version")
             .and_then(|s| s.as_str())
@@ -129,7 +129,7 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         commonmeta::convert(&from, to, &input).map_err(|e| e.to_string())?
     };
 
-    // Pretty-print JSON output (mirrors Go's json.Indent call).
+    // Pretty-print JSON output.
     let pretty: Vec<u8> = serde_json::from_slice::<serde_json::Value>(&output)
         .ok()
         .and_then(|v| serde_json::to_vec_pretty(&v).ok())
