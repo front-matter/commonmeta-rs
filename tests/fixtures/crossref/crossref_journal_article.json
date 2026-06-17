@@ -34,6 +34,11 @@
     "page": "100-110",
     "ISSN": ["1234-5678"],
     "URL": "http://dx.doi.org/10.5555/12345678",
+    "resource": {
+      "primary": {
+        "URL": "https://example.com/articles/a-study-of-things"
+      }
+    },
     "language": "en",
     "license": [
       {
@@ -47,7 +52,7 @@
         }
       }
     ],
-    "published": {
+    "issued": {
       "date-parts": [[2024, 3, 15]]
     },
     "created": {

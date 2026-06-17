@@ -178,4 +178,43 @@ mod tests {
         let decoded = decode(&encoded, true).unwrap();
         assert_eq!(number, decoded);
     }
+
+    #[test]
+    fn test_generate() {
+        let generated = generate(12, 4, true);
+        assert!(!generated.is_empty());
+        assert!(generated.contains('-'));
+        assert_eq!(generated.split('-').count(), 3);
+    }
+
+    #[test]
+    fn test_normalize() {
+        assert_eq!(normalize("ABCD-Ilo"), "abcd110");
+    }
+
+    #[test]
+    fn test_generate_checksum_and_validate() {
+        let number = 12345;
+        let checksum = generate_checksum(number);
+        assert!(validate(number, checksum));
+        assert!(!validate(number, checksum + 1));
+    }
+
+    #[test]
+    fn test_decode_invalid_character() {
+        let err = decode("%%%%", false).expect_err("expected invalid character error");
+        match err {
+            CrockfordError::InvalidCharacter('%') => {}
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_decode_invalid_checksum_format() {
+        let err = decode("abcdeXX", true).expect_err("expected invalid checksum format");
+        match err {
+            CrockfordError::InvalidChecksumFormat(_) => {}
+            other => panic!("unexpected error: {other}"),
+        }
+    }
 }

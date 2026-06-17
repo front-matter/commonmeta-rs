@@ -8,7 +8,14 @@ pub fn read(json: &str) -> Result<Data> {
 }
 
 pub fn write(data: &Data) -> Result<Vec<u8>> {
-    serde_json::to_vec(data).map_err(|e| Error::Serialize(e.to_string()))
+    let mut sanitized = data.clone();
+    for contributor in &mut sanitized.contributors {
+        if contributor.type_ == "Person" {
+            contributor.name.clear();
+        }
+    }
+
+    serde_json::to_vec(&sanitized).map_err(|e| Error::Serialize(e.to_string()))
 }
 
 // ── Bulk Parquet writer (catalog dumps) ───────────────────────────────────────

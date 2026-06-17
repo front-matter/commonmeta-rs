@@ -9,7 +9,12 @@
     { "title": "An Introduction", "type": "Subtitle" }
   ],
   "contributors": [
-    { "type": "Person", "name": "Jane Doe", "contributorRoles": ["Author"] }
+    {
+      "type": "Person",
+      "givenName": "Jane",
+      "familyName": "Doe",
+      "contributorRoles": ["Author"]
+    }
   ],
   "publisher": { "name": "Example Blog" },
   "date": { "published": "2025-02-10" },

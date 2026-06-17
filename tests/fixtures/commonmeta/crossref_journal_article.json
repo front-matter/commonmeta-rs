@@ -28,9 +28,14 @@
     }
   ],
   "date": {
-    "created": "2024-03-01",
     "published": "2024-03-15"
   },
+  "identifiers": [
+    {
+      "identifier": "https://doi.org/10.5555/12345678",
+      "identifierType": "DOI"
+    }
+  ],
   "language": "en",
   "license": {
     "id": "CC-BY-4.0",
@@ -56,5 +61,5 @@
       "title": "A Study of Things"
     }
   ],
-  "url": "https://doi.org/10.5555/12345678"
+  "url": "https://example.com/articles/a-study-of-things"
 }

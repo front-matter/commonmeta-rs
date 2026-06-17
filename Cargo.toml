@@ -29,7 +29,7 @@ base32 = "0.4"
 lazy_static = "1.5.0"
 serde = { version = "1.0.219", features = ["derive"] }
 url = "2.5.4"
-serde_json = "1.0.140"
+serde_json = { version = "1.0.140", features = ["preserve_order"] }
 zip = "8"
 thiserror = "2.0.12"
 chrono = { version = "0.4.40", features = ["clock"] }
@@ -49,3 +49,4 @@ zstd = "0.13"
 parquet = { version = "59", default-features = false, features = ["zstd"] }
 parquet_derive = "59"
 bytes = "1"
+jsonschema = "0.18"

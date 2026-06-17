@@ -193,7 +193,7 @@ pub fn validate_isni(isni: &str) -> Option<String> {
 
             // Return None if it's in the ORCID range
             if !check_orcid_number_range(&clean_match) {
-                Some(m.as_str().to_string())
+                Some(clean_match)
             } else {
                 None
             }
@@ -1093,5 +1093,119 @@ mod tests {
         let (_, type_, cat) = validate_id_category("https://orcid.org/0000-0001-5000-0007");
         assert_eq!(type_, "ORCID");
         assert_eq!(cat, "Person");
+    }
+
+    #[test]
+    fn test_validate_orcid_parity_cases() {
+        let cases = [
+            ("http://orcid.org/0000-0002-2590-225X", Some("0000-0002-2590-225X")),
+            (
+                "https://orcid.org/0000-0002-1825-0097",
+                Some("0000-0002-1825-0097"),
+            ),
+            ("0000-0002-1825-0097", Some("0000-0002-1825-0097")),
+            (
+                "https://sandbox.orcid.org/0000-0002-1825-0097",
+                Some("0000-0002-1825-0097"),
+            ),
+            ("0000-0002-1825-009", None),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(validate_orcid(input).as_deref(), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn test_validate_isni_parity_cases() {
+        let cases = [
+            (
+                "https://isni.org/isni/0000000121122291",
+                Some("0000000121122291"),
+            ),
+            (
+                "https://isni.org/isni/0000 0001 2112 2291",
+                Some("0000000121122291"),
+            ),
+            ("0000-0001-2112-2291", Some("0000000121122291")),
+            ("https://isni.org/isni/000000021825009", None),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(validate_isni(input).as_deref(), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn test_validate_wikidata_parity_cases() {
+        let cases = [
+            ("https://www.wikidata.org/wiki/Q7186", Some("Q7186")),
+            ("https://www.wikidata.org/wiki/Q251061", Some("Q251061")),
+            ("Q251061", Some("Q251061")),
+            ("https://www.wikidata.org/wiki/Property:P610", None),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(validate_wikidata(input).as_deref(), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn test_validate_ror_parity_cases() {
+        let cases = [
+            ("https://ror.org/0342dzm54", Some("0342dzm54")),
+            ("0342dzm54", Some("0342dzm54")),
+            ("invalid", None),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(validate_ror(input).as_deref(), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn test_validate_crossref_funder_id_parity_cases() {
+        let cases = [
+            ("https://doi.org/10.13039/501100000155", Some("501100000155")),
+            ("10.13039/501100000155", Some("501100000155")),
+            ("100010540", Some("100010540")),
+            ("not-a-funder-id", None),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                validate_crossref_funder_id(input).as_deref(),
+                expected,
+                "input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_url_and_id_parity_cases() {
+        assert_eq!(validate_url("https://elifesciences.org/articles/91729"), "URL");
+        assert_eq!(validate_url("https://doi.org/10.7554/eLife.91729.3"), "DOI");
+        assert_eq!(validate_url("10.7554/eLife.91729.3"), "DOI");
+        assert_eq!(validate_url("https://doi.org/10.1101"), "URL");
+        assert_eq!(validate_url("10.1101"), "");
+
+        let (_, id_type) = validate_id("https://isni.org/isni/0000000121122291");
+        assert_eq!(id_type, "ISNI");
+
+        let (_, id_type) = validate_id("https://orcid.org/0000-0002-1825-0097");
+        assert_eq!(id_type, "ORCID");
+
+        let (_, id_type) = validate_id("https://datadryad.org/stash/dataset/doi:10.5061/dryad.8515");
+        assert_eq!(id_type, "URL");
+    }
+
+    #[test]
+    fn test_find_from_format_helpers_parity_cases() {
+        assert_eq!(find_from_format_by_ext(".bib"), "bibtex");
+        assert_eq!(find_from_format_by_ext(".ris"), "ris");
+        assert_eq!(find_from_format_by_ext(".json"), "");
+
+        assert_eq!(find_from_format_by_filename("CITATION.cff"), "cff");
+        assert_eq!(find_from_format_by_filename("citation.cff"), "");
     }
 }

@@ -152,3 +152,68 @@ pub fn get_doi_ra_sync(doi: &str) -> Option<String> {
     let ra = entries.into_iter().next()?.ra;
     if ra.is_empty() { None } else { Some(ra) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_doi_parity_cases() {
+        let cases = [
+            ("10.7554/elife.01567", Some("10.7554/elife.01567")),
+            (
+                "https://doi.org/10.7554/elife.01567",
+                Some("10.7554/elife.01567"),
+            ),
+            ("https://doi.org/10.7554", None),
+            ("10.7554", None),
+            ("10.3201/eid1503.081203 10.1083/jcb.1843iti1", None),
+            ("", None),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(validate_doi(input).as_deref(), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn test_validate_prefix_parity_cases() {
+        let cases = [
+            ("10.7554/elife.01567", Some("10.7554")),
+            ("https://doi.org/10.7554/elife.01567", Some("10.7554")),
+            ("https://doi.org/10.7554", Some("10.7554")),
+            ("10.7554", Some("10.7554")),
+            ("", None),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(validate_prefix(input).as_deref(), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn test_normalize_and_escape_doi() {
+        assert_eq!(
+            normalize_doi("10.7554/eLife.01567"),
+            "https://doi.org/10.7554/elife.01567"
+        );
+        assert_eq!(
+            escape_doi("https://doi.org/10.7554/elife.01567"),
+            "10.7554%2Felife.01567"
+        );
+        assert_eq!(normalize_doi("not-a-doi"), "");
+        assert_eq!(escape_doi("not-a-doi"), "");
+    }
+
+    #[test]
+    fn test_prefix_from_url() {
+        assert_eq!(
+            prefix_from_url("https://doi.org/10.7554/elife.01567").ok(),
+            Some("10.7554".to_string())
+        );
+        assert_eq!(
+            prefix_from_url("https://example.org/10.7554/elife.01567").ok(),
+            Some("".to_string())
+        );
+    }
+}

@@ -1,0 +1,62 @@
+{
+  "data": {
+    "attributes": {
+      "container": {
+        "title": "Journal of Examples"
+      },
+      "creators": [
+        {
+          "affiliation": [
+            "Example University"
+          ],
+          "familyName": "Lovelace",
+          "givenName": "Ada",
+          "name": "Ada, Lovelace",
+          "nameType": "Personal"
+        }
+      ],
+      "dates": [
+        {
+          "date": "2024-03-15",
+          "dateType": "Issued"
+        }
+      ],
+      "doi": "10.5555/12345678",
+      "event": "publish",
+      "language": "en",
+      "publicationYear": 2024,
+      "publisher": {
+        "name": "Example Publisher"
+      },
+      "relatedIdentifiers": [
+        {
+          "relatedIdentifier": "10.1000/xyz",
+          "relatedIdentifierType": "DOI",
+          "relationType": "References",
+          "resourceTypeGeneral": "Other"
+        }
+      ],
+      "rightsList": [
+        {
+          "rightsIdentifier": "cc-by-4.0",
+          "rightsIdentifierScheme": "SPDX",
+          "rightsUri": "https://creativecommons.org/licenses/by/4.0/legalcode",
+          "schemeUri": "https://spdx.org/licenses/"
+        }
+      ],
+      "titles": [
+        {
+          "title": "A Study of Things"
+        }
+      ],
+      "types": {
+        "bibtex": "article",
+        "citeproc": "article-journal",
+        "resourceTypeGeneral": "JournalArticle",
+        "ris": "JOUR",
+        "schemaOrg": "ScholarlyArticle"
+      },
+      "url": "https://example.org/article/1"
+    }
+  }
+}

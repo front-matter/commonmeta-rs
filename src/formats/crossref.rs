@@ -4,8 +4,8 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::data::{
-    Affiliation, Container, Contributor, Data, Date, Description, FundingReference, License,
-    Publisher, Reference, Subject, Title,
+    Affiliation, Container, Contributor, Data, Date, Description, File, FundingReference,
+    Identifier, License, Publisher, Reference, Subject, Title,
 };
 use crate::error::{Error, Result};
 
@@ -51,8 +51,6 @@ pub(crate) struct CrossrefWork {
     page: Option<String>,
     #[serde(rename = "ISSN", default)]
     issn: Vec<String>,
-    #[serde(rename = "URL", default)]
-    url: String,
     #[serde(rename = "abstract", default)]
     abstract_text: Option<String>,
     #[serde(default)]
@@ -66,13 +64,53 @@ pub(crate) struct CrossrefWork {
     #[serde(default)]
     reference: Vec<CrossrefReference>,
     #[serde(default)]
-    published: Option<CrossrefDate>,
-    #[serde(rename = "published-print", default)]
-    published_print: Option<CrossrefDate>,
-    #[serde(rename = "published-online", default)]
-    published_online: Option<CrossrefDate>,
+    issued: Option<CrossrefDate>,
     #[serde(default)]
     created: Option<CrossrefDate>,
+    #[serde(default)]
+    subtype: Option<String>,
+    #[serde(rename = "group-title", default)]
+    group_title: Option<String>,
+    #[serde(default)]
+    institution: Vec<CrossrefInstitution>,
+    #[serde(default)]
+    resource: Option<CrossrefResource>,
+    #[serde(default)]
+    version: Option<CrossrefVersion>,
+    #[serde(default)]
+    link: Vec<CrossrefLink>,
+}
+
+#[derive(Deserialize)]
+struct CrossrefInstitution {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct CrossrefResource {
+    #[serde(default)]
+    primary: Option<CrossrefPrimaryResource>,
+}
+
+#[derive(Deserialize)]
+struct CrossrefPrimaryResource {
+    #[serde(rename = "URL", default)]
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct CrossrefVersion {
+    #[serde(default)]
+    version: String,
+}
+
+#[derive(Deserialize)]
+struct CrossrefLink {
+    #[serde(rename = "URL", default)]
+    url: String,
+    #[serde(rename = "content-type", default)]
+    content_type: String,
 }
 
 #[derive(Deserialize)]
@@ -107,6 +145,8 @@ struct CrossrefAffiliationId {
 struct CrossrefDate {
     #[serde(rename = "date-parts", default)]
     date_parts: Vec<Vec<Option<i32>>>,
+    #[serde(rename = "date-time", default)]
+    date_time: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -134,7 +174,13 @@ struct CrossrefReference {
     doi: Option<String>,
     #[serde(rename = "article-title")]
     article_title: Option<String>,
+    #[serde(default)]
+    publisher: Option<String>,
     year: Option<String>,
+    #[serde(default)]
+    volume: Option<String>,
+    #[serde(default)]
+    issue: Option<String>,
     #[serde(rename = "first-page")]
     first_page: Option<String>,
     #[serde(rename = "last-page")]
@@ -162,34 +208,73 @@ fn format_date(d: &CrossrefDate) -> String {
     }
 }
 
+/// `published` derivation: `issued.date-time` (raw timestamp string), else `issued` 
+/// reconstructed from `date-parts`, else `created.date-time`. Note `date.created` 
+/// is never set for Crossref records.
+fn published_date(issued: &Option<CrossrefDate>, created: &Option<CrossrefDate>) -> String {
+    if let Some(issued) = issued {
+        if let Some(dt) = &issued.date_time {
+            if !dt.is_empty() {
+                return dt.clone();
+            }
+        }
+        let formatted = format_date(issued);
+        if !formatted.is_empty() {
+            return formatted;
+        }
+    }
+    created
+        .as_ref()
+        .and_then(|c| c.date_time.clone())
+        .unwrap_or_default()
+}
+
+/// `CR_TO_CM_TRANSLATIONS`.
 fn crossref_type(t: &str) -> &str {
     match t {
-        "journal-article" => "JournalArticle",
         "book-chapter" => "BookChapter",
-        "book" | "monograph" | "edited-book" | "reference-book" => "Book",
-        "proceedings-article" => "ProceedingsArticle",
-        "proceedings" | "conference" => "Proceedings",
+        "book-part" => "BookPart",
+        "book-section" => "BookSection",
+        "book-series" => "BookSeries",
+        "book-set" => "BookSet",
+        "book-track" => "BookTrack",
+        "book" => "Book",
+        "component" => "Component",
+        "database" => "Database",
         "dataset" => "Dataset",
         "dissertation" => "Dissertation",
-        "posted-content" => "Preprint",
-        "report" | "report-series" => "Report",
-        "peer-review" => "PeerReview",
-        "reference-entry" => "Entry",
-        "journal" => "Journal",
-        "journal-volume" => "JournalVolume",
-        "journal-issue" => "JournalIssue",
-        "component" => "Component",
+        "edited-book" => "Book",
         "grant" => "Grant",
+        "journal-article" => "JournalArticle",
+        "journal-issue" => "JournalIssue",
+        "journal-volume" => "JournalVolume",
+        "journal" => "Journal",
+        "monograph" => "Book",
+        "other" => "Other",
+        "peer-review" => "PeerReview",
+        "posted-content" => "Article",
+        "proceedings-article" => "ProceedingsArticle",
+        "proceedings-series" => "ProceedingsSeries",
+        "proceedings" => "Proceedings",
+        "reference-book" => "Book",
+        "reference-entry" => "Entry",
+        "report-component" => "ReportComponent",
+        "report-series" => "ReportSeries",
+        "report" => "Report",
         "standard" => "Standard",
         _ => "Other",
     }
 }
 
+/// `CROSSREF_CONTAINER_TYPES` piped through `CR_TO_CM_CONTAINER_TRANSLATIONS`.
 fn container_type(work_type: &str) -> &str {
     match work_type {
-        "journal-article" => "Journal",
         "book-chapter" => "Book",
+        "dataset" => "DataRepository",
+        "journal-article" | "journal-issue" => "Journal",
+        "monograph" => "BookSeries",
         "proceedings-article" => "Proceedings",
+        "posted-content" => "Periodical",
         _ => "",
     }
 }
@@ -253,8 +338,24 @@ fn split_page(page: &str) -> (String, String) {
 
 fn from_work(w: CrossrefWork) -> Data {
     let id = normalize_doi_url(&w.doi);
-    let type_ = crossref_type(&w.type_).to_string();
-    let url = if w.url.is_empty() { id.clone() } else { normalize_doi_url(&w.url) };
+
+    // posted-content maps to "Article" by default,
+    // but is re-classified as "BlogPost" when published by Front Matter
+    // (i.e. Rogue Scholar-deposited blog posts).
+    let mut type_ = crossref_type(&w.type_).to_string();
+    if type_ == "Article" && w.publisher == "Front Matter" {
+        type_ = "BlogPost".to_string();
+    }
+
+    // url comes from resource.primary.URL, not from the top-level URL 
+    // (which is just the DOI resolver link) or the DOI itself.
+    let url = w
+        .resource
+        .as_ref()
+        .and_then(|r| r.primary.as_ref())
+        .map(|p| p.url.as_str())
+        .and_then(|u| crate::utils::normalize_url(u, false, false))
+        .unwrap_or_default();
 
     let titles: Vec<Title> = w
         .title
@@ -307,17 +408,22 @@ fn from_work(w: CrossrefWork) -> Data {
         })
         .collect();
 
-    let pub_date = w
-        .published
-        .as_ref()
-        .or(w.published_print.as_ref())
-        .or(w.published_online.as_ref())
-        .map(format_date)
-        .unwrap_or_default();
-    let created_date = w.created.as_ref().map(format_date).unwrap_or_default();
-    let date = Date { created: created_date, published: pub_date, ..Default::default() };
+    // part of the Crossref date mapping.
+    let date = Date {
+        published: published_date(&w.issued, &w.created),
+        ..Default::default()
+    };
 
-    let container_name = w.container_title.into_iter().next().unwrap_or_default();
+    // Container title fallback chain:
+    // container-title[0] || group-title || institution[0].name
+    let container_name = w
+        .container_title
+        .into_iter()
+        .next()
+        .filter(|t| !t.is_empty())
+        .or(w.group_title.filter(|t| !t.is_empty()))
+        .or_else(|| w.institution.into_iter().next().map(|i| i.name).filter(|n| !n.is_empty()))
+        .unwrap_or_default();
     let issn = w.issn.into_iter().next().unwrap_or_default();
     let has_issn = !issn.is_empty();
     let (first_page, last_page) =
@@ -400,7 +506,10 @@ fn from_work(w: CrossrefWork) -> Data {
             key: r.key.unwrap_or_default(),
             id: r.doi.as_deref().map(normalize_doi_url).unwrap_or_default(),
             title: r.article_title.unwrap_or_default(),
+            publisher: r.publisher.unwrap_or_default(),
             publication_year: r.year.unwrap_or_default(),
+            volume: r.volume.unwrap_or_default(),
+            issue: r.issue.unwrap_or_default(),
             first_page: r.first_page.unwrap_or_default(),
             last_page: r.last_page.unwrap_or_default(),
             unstructured: r.unstructured.unwrap_or_default(),
@@ -408,6 +517,20 @@ fn from_work(w: CrossrefWork) -> Data {
             ..Default::default()
         })
         .collect();
+
+    // Crossref record gets a redundant DOI identifier entry, even though `id` 
+    // is already that same DOI URL. Used for matching against external identifiers.
+    let identifiers = vec![Identifier { identifier: id.clone(), identifier_type: "DOI".to_string() }];
+
+    let files: Vec<File> = w
+        .link
+        .into_iter()
+        .filter(|l| l.content_type != "unspecified" && !l.url.is_empty())
+        .map(|l| File { url: l.url, mime_type: l.content_type, ..Default::default() })
+        .collect();
+
+    let version = w.version.map(|v| v.version).unwrap_or_default();
+    let additional_type = w.subtype.unwrap_or_default();
 
     Data {
         id,
@@ -425,6 +548,10 @@ fn from_work(w: CrossrefWork) -> Data {
         subjects,
         funding_references,
         references,
+        identifiers,
+        files,
+        version,
+        additional_type,
         ..Default::default()
     }
 }

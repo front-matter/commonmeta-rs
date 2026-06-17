@@ -7,6 +7,7 @@ pub mod crockford;
 pub mod data;
 pub mod doi_utils;
 pub mod error;
+pub mod schema_utils;
 mod formats;
 pub mod traits;
 pub mod utils;
