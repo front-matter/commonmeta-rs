@@ -1,4 +1,4 @@
 target/*
 notes.md
 *.sqlite3
-.zst
+*.zst
