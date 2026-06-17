@@ -14,6 +14,7 @@ pub mod vocab;
 
 pub use data::Data;
 pub use error::{Error, Result};
+pub use formats::crossref;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

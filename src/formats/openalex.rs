@@ -23,17 +23,17 @@ use crate::utils::{normalize_orcid, normalize_ror, validate_id, validate_openale
 struct Work {
     #[serde(default)]
     id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     doi: String,
     #[serde(default)]
     display_name: String,
-    #[serde(rename = "type", default)]
+    #[serde(rename = "type", default, deserialize_with = "null_as_empty")]
     type_: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     type_crossref: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     publication_date: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     created_date: String,
     #[serde(default, deserialize_with = "null_as_empty")]
     language: String,
@@ -69,17 +69,17 @@ struct Authorship {
 
 #[derive(Debug, Default, Deserialize)]
 struct Author {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     display_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     orcid: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct Institution {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     display_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     ror: String,
 }
 
@@ -97,15 +97,15 @@ struct Location {
 
 #[derive(Debug, Default, Deserialize)]
 struct Source {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     id: String,
-    #[serde(rename = "type", default)]
+    #[serde(rename = "type", default, deserialize_with = "null_as_empty")]
     type_: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     display_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     issn_l: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     host_organization_name: String,
 }
 
@@ -135,11 +135,11 @@ struct Biblio {
 
 #[derive(Debug, Default, Deserialize)]
 struct Grant {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     funder: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     funder_display_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     award_id: String,
 }
 

@@ -1,3 +1,5 @@
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use reqwest::blocking::Client;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -70,7 +72,12 @@ pub fn read_zip_file<P: AsRef<Path>>(filename: P, name: &str) -> Result<Vec<u8>>
 pub fn write_zip_file<P: AsRef<Path>>(filename: P, output: &[u8]) -> Result<()> {
     let path = Path::new(filename.as_ref());
     let mut zip_path = PathBuf::from(path);
-    zip_path.set_extension("zip");
+    zip_path.set_extension(format!(
+        "{}zip",
+        path.extension()
+            .map(|ext| format!("{}.", ext.to_string_lossy()))
+            .unwrap_or_default()
+    ));
 
     let zipfile = File::create(zip_path)?;
     let mut zip_writer = zip::ZipWriter::new(zipfile);
@@ -89,6 +96,25 @@ pub fn write_zip_file<P: AsRef<Path>>(filename: P, output: &[u8]) -> Result<()> 
     zip_writer.start_file(basename.to_string(), options)?;
     zip_writer.write_all(output)?;
     zip_writer.finish()?;
+
+    Ok(())
+}
+
+/// Saves the content to a GZIP-compressed file.
+pub fn write_gz_file<P: AsRef<Path>>(filename: P, output: &[u8]) -> Result<()> {
+    let path = Path::new(filename.as_ref());
+    let mut gz_path = PathBuf::from(path);
+    gz_path.set_extension(format!(
+        "{}gz",
+        path.extension()
+            .map(|ext| format!("{}.", ext.to_string_lossy()))
+            .unwrap_or_default()
+    ));
+
+    let file = File::create(gz_path)?;
+    let mut encoder = GzEncoder::new(file, Compression::default());
+    encoder.write_all(output)?;
+    encoder.finish()?;
 
     Ok(())
 }
@@ -131,7 +157,7 @@ pub fn write_file<P: AsRef<Path>>(filename: P, output: &[u8]) -> Result<()> {
 
 // ---------- helper functions ----------
 
-pub fn get_extension<P: AsRef<Path>>(filename: P, ext: &str) -> (PathBuf, String, bool) {
+pub fn get_extension<P: AsRef<Path>>(filename: P, ext: &str) -> (PathBuf, String, String) {
     let path = PathBuf::from(filename.as_ref());
 
     if path != PathBuf::new() {
@@ -140,8 +166,8 @@ pub fn get_extension<P: AsRef<Path>>(filename: P, ext: &str) -> (PathBuf, String
             .map(|ext| ext.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let compress = if extension == "zip" {
-            // Remove the ".zip" extension from the filename
+        let compress = if extension == "zip" || extension == "gz" {
+            // Remove trailing compression extension (".zip"/".gz") from filename.
             let stem = path.file_stem().unwrap_or_default();
             let parent = path.parent().unwrap_or_else(|| Path::new(""));
             let new_path = parent.join(stem);
@@ -157,7 +183,7 @@ pub fn get_extension<P: AsRef<Path>>(filename: P, ext: &str) -> (PathBuf, String
                 format!(".{}", new_extension)
             };
 
-            (new_path, formatted_ext, true)
+            (new_path, formatted_ext, extension)
         } else {
             let formatted_ext = if extension.is_empty() {
                 "".to_string()
@@ -165,7 +191,7 @@ pub fn get_extension<P: AsRef<Path>>(filename: P, ext: &str) -> (PathBuf, String
                 format!(".{}", extension)
             };
 
-            (path, formatted_ext, false)
+            (path, formatted_ext, String::new())
         };
 
         return compress;
@@ -179,5 +205,5 @@ pub fn get_extension<P: AsRef<Path>>(filename: P, ext: &str) -> (PathBuf, String
         format!(".{}", ext)
     };
 
-    (path, extension, false)
+    (path, extension, String::new())
 }

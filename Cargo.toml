@@ -39,3 +39,5 @@ quick-xml = { version = "0.37", features = ["serialize", "overlapped-lists"] }
 unicode-normalization = "0.1"
 ammonia = "4"
 scraper = "0.22"
+rusqlite = { version = "0.32", features = ["bundled"] }
+flate2 = "1.0"

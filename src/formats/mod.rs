@@ -14,6 +14,7 @@ pub mod jsonfeed;
 pub mod openalex;
 pub mod ris;
 pub mod schemaorg;
+pub mod vraix;
 
 use crate::data::Data;
 use crate::error::{Error, Result};
@@ -100,6 +101,7 @@ pub fn read(format: &str, input: &str) -> Result<Data> {
                 ror::fetch(input)
             }
         }
+        "vraix" => vraix::read(input),
         other => Err(Error::UnsupportedFormat(other.to_string())),
     }
 }

@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::Deserialize;
+use url::Url;
 
 use crate::data::{
     Affiliation, Container, Contributor, Data, Date, Description, FundingReference, License,
@@ -15,8 +16,21 @@ struct CrossrefResponse {
     message: CrossrefWork,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
-struct CrossrefWork {
+struct CrossrefListResponse {
+    message: CrossrefListMessage,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct CrossrefListMessage {
+    #[serde(default)]
+    items: Vec<CrossrefWork>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CrossrefWork {
     #[serde(rename = "DOI")]
     doi: String,
     #[serde(rename = "type")]
@@ -74,6 +88,7 @@ struct CrossrefAuthor {
 
 #[derive(Deserialize)]
 struct CrossrefAffiliation {
+    #[serde(default)]
     name: String,
     #[serde(default)]
     id: Vec<CrossrefAffiliationId>,
@@ -106,6 +121,7 @@ struct CrossrefLicense {
 struct CrossrefFunder {
     #[serde(rename = "DOI")]
     doi: Option<String>,
+    #[serde(default)]
     name: String,
     #[serde(default)]
     award: Vec<String>,
@@ -446,4 +462,247 @@ pub fn fetch(doi: &str) -> Result<Data> {
         .text()
         .map_err(|e| Error::Http(e.to_string()))?;
     read_json(&json)
+}
+
+/// Fetch a list of works from the Crossref API and convert them to `Data`.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub fn fetch_all(
+    number: usize,
+    page: usize,
+    member: &str,
+    type_: &str,
+    sample: bool,
+    year: &str,
+    ror: &str,
+    orcid: &str,
+    has_orcid: bool,
+    has_ror: bool,
+    has_references: bool,
+    has_relation: bool,
+    has_abstract: bool,
+    has_award: bool,
+    has_license: bool,
+    has_archive: bool,
+) -> Result<Vec<Data>> {
+    let works = get_all(
+        number,
+        page,
+        member,
+        type_,
+        sample,
+        year,
+        ror,
+        orcid,
+        has_orcid,
+        has_ror,
+        has_references,
+        has_relation,
+        has_abstract,
+        has_award,
+        has_license,
+        has_archive,
+    )?;
+    read_all(works)
+}
+
+/// Get a list of raw Crossref work items from the Crossref API.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn get_all(
+    number: usize,
+    page: usize,
+    member: &str,
+    type_: &str,
+    sample: bool,
+    year: &str,
+    ror: &str,
+    orcid: &str,
+    has_orcid: bool,
+    has_ror: bool,
+    has_references: bool,
+    has_relation: bool,
+    has_abstract: bool,
+    has_award: bool,
+    has_license: bool,
+    has_archive: bool,
+) -> Result<Vec<CrossrefWork>> {
+    let url = query_url(
+        number,
+        page,
+        member,
+        type_,
+        sample,
+        year,
+        orcid,
+        ror,
+        has_orcid,
+        has_ror,
+        has_references,
+        has_relation,
+        has_abstract,
+        has_award,
+        has_license,
+        has_archive,
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .user_agent(format!(
+            "commonmeta-rs/{} (https://github.com/front-matter/commonmeta-rs; mailto:info@front-matter.de)",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .build()
+        .map_err(|e| Error::Http(e.to_string()))?;
+
+    let json = client
+        .get(&url)
+        .header("Cache-Control", "private")
+        .send()
+        .map_err(|e| Error::Http(e.to_string()))?
+        .error_for_status()
+        .map_err(|e| Error::Http(e.to_string()))?
+        .text()
+        .map_err(|e| Error::Http(e.to_string()))?;
+
+    let response: CrossrefListResponse =
+        serde_json::from_str(&json).map_err(|e| Error::Parse(e.to_string()))?;
+    Ok(response.message.items)
+}
+
+/// Convert a list of Crossref works into commonmeta `Data`.
+#[allow(dead_code)]
+pub(crate) fn read_all(works: Vec<CrossrefWork>) -> Result<Vec<Data>> {
+    Ok(works.into_iter().map(from_work).collect())
+}
+
+/// Build the Crossref `/works` query URL used by `get_all`.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn query_url(
+    number: usize,
+    page: usize,
+    member: &str,
+    type_: &str,
+    sample: bool,
+    year: &str,
+    orcid: &str,
+    ror: &str,
+    has_orcid: bool,
+    has_ror: bool,
+    has_references: bool,
+    has_relation: bool,
+    has_abstract: bool,
+    has_award: bool,
+    has_license: bool,
+    has_archive: bool,
+) -> String {
+    let supported_types = [
+        "book",
+        "book-chapter",
+        "book-part",
+        "book-section",
+        "book-series",
+        "book-set",
+        "book-track",
+        "component",
+        "database",
+        "dataset",
+        "dissertation",
+        "edited-book",
+        "grant",
+        "journal",
+        "journal-article",
+        "journal-issue",
+        "journal-volume",
+        "monograph",
+        "other",
+        "peer-review",
+        "posted-content",
+        "proceedings",
+        "proceedings-article",
+        "proceedings-series",
+        "reference-book",
+        "reference-entry",
+        "report",
+        "report-component",
+        "report-series",
+        "standard",
+    ];
+
+    let mut url = Url::parse("https://api.crossref.org/works")
+        .expect("hardcoded Crossref URL should parse");
+    let rows = number.clamp(1, 1000);
+    let page = page.max(1);
+
+    {
+        let mut query = url.query_pairs_mut();
+
+        if sample {
+            query.append_pair("sample", &rows.to_string());
+        } else {
+            query.append_pair("rows", &rows.to_string());
+            query.append_pair("offset", &((page - 1) * rows).to_string());
+        }
+
+        query.append_pair("sort", "published");
+        query.append_pair("order", "desc");
+
+        let mut filters: Vec<String> = Vec::new();
+        if !member.is_empty() {
+            filters.push(format!("member:{member}"));
+        }
+        if !type_.is_empty() && supported_types.contains(&type_) {
+            filters.push(format!("type:{type_}"));
+        }
+        if !ror.is_empty() {
+            let normalized = ror
+                .trim_start_matches("https://ror.org/")
+                .trim_start_matches("http://ror.org/");
+            if !normalized.is_empty() {
+                filters.push(format!("ror-id:{normalized}"));
+            }
+        }
+        if !orcid.is_empty() {
+            let normalized = orcid
+                .trim_start_matches("https://orcid.org/")
+                .trim_start_matches("http://orcid.org/");
+            if !normalized.is_empty() {
+                filters.push(format!("orcid:{normalized}"));
+            }
+        }
+        if !year.is_empty() {
+            filters.push(format!("from-pub-date:{year}-01-01"));
+            filters.push(format!("until-pub-date:{year}-12-31"));
+        }
+        if has_orcid {
+            filters.push("has-orcid:true".to_string());
+        }
+        if has_ror {
+            filters.push("has-ror-id:true".to_string());
+        }
+        if has_references {
+            filters.push("has-references:true".to_string());
+        }
+        if has_relation {
+            filters.push("has-relation:true".to_string());
+        }
+        if has_abstract {
+            filters.push("has-abstract:true".to_string());
+        }
+        if has_award {
+            filters.push("has-award:true".to_string());
+        }
+        if has_license {
+            filters.push("has-license:true".to_string());
+        }
+        if has_archive {
+            filters.push("has-archive:true".to_string());
+        }
+        if !filters.is_empty() {
+            query.append_pair("filter", &filters.join(","));
+        }
+    }
+
+    url.to_string()
 }
