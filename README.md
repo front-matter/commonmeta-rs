@@ -62,8 +62,7 @@ cargo run -- list --from crossref --number 100 --type journal-article --file out
 # Read VRAIX metadata from a local SQLite file
 cargo run -- list crossref-2026-06-15.sqlite3 --from vraix --number 0 --to commonmeta --file out.json.gz
 
-# Parquet output (.parquet file extension, --to commonmeta only): records are
-# split into batches of 100,000, written in parallel, and zstd-compressed
+# Parquet output (.parquet file extension, --to commonmeta only): records are split into batches of 100,000, written in parallel, and zstd-compressed
 cargo run --release -- list crossref-2026-06-15.sqlite3 --from vraix --number 0 --file out.parquet
 ```
 
