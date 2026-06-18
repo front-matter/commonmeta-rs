@@ -432,16 +432,38 @@ mod tests {
         );
     }
 
+    /// Read (and discard) an incoming HTTP request up through the blank
+    /// line ending its headers. If the client's bytes are still unread in
+    /// the kernel's receive buffer when we close our end of the socket, the
+    /// OS can send a TCP RST instead of a clean FIN, which reqwest surfaces
+    /// as a body/decode error indistinguishable from a real interrupted
+    /// download — draining the request first avoids that race.
+    fn drain_http_request(stream: &std::net::TcpStream) {
+        use std::io::{BufRead, BufReader};
+        let mut reader = BufReader::new(stream);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) if line == "\r\n" || line == "\n" => break,
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+    }
+
     fn respond_once(listener: std::net::TcpListener, body: &'static [u8]) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
             use std::io::Write;
             if let Ok((mut stream, _)) = listener.accept() {
+                drain_http_request(&stream);
                 let header = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
                 let _ = stream.write_all(header.as_bytes());
                 let _ = stream.write_all(body);
+                let _ = stream.flush();
             }
         })
     }
@@ -519,6 +541,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             use std::io::Write;
             if let Ok((mut stream, _)) = listener.accept() {
+                drain_http_request(&stream);
                 let _ = stream
                     .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
             }
@@ -540,6 +563,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             use std::io::Write;
             if let Ok((mut stream, _)) = listener.accept() {
+                drain_http_request(&stream);
                 // Announce a body far larger than what's actually sent, then
                 // close the connection early to simulate an interrupted
                 // download (the failure mode behind the original bug).
