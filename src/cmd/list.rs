@@ -703,19 +703,48 @@ fn load_commonmeta_list_from_parquet(path: &str) -> Result<Vec<Data>, String> {
     let (_base, extension, compress) = file_utils::get_extension(path, ".parquet");
     if extension != ".parquet" {
         return Err(format!(
-            "list: --from commonmeta expects a .parquet (optionally .zst-compressed) input file, got '{}'",
+            "list: --from commonmeta expects a .parquet (optionally .zst/.zip/.tgz) input file, got '{}'",
             path
         ));
     }
 
-    let bytes = if compress == "zst" {
-        file_utils::read_zst_file(path)
-            .map_err(|e| format!("failed to read zstd-compressed '{}': {}", path, e))?
-    } else {
-        file_utils::read_file(path).map_err(|e| format!("failed to read '{}': {}", path, e))?
+    // .zip/.tgz inputs (from --file out.parquet.zip, see write_parquet_archive)
+    // hold one or more entries, each itself zstd-compressed Parquet; decompress
+    // every entry and concatenate the records they parse to.
+    let compressed_batches: Vec<Vec<u8>> = match compress.as_str() {
+        "zip" => {
+            let raw = file_utils::read_file(path).map_err(|e| format!("failed to read '{}': {}", path, e))?;
+            file_utils::read_zip_entries(&raw).map_err(|e| format!("failed to read zip '{}': {}", path, e))?
+        }
+        "tgz" => {
+            let raw = file_utils::read_file(path).map_err(|e| format!("failed to read '{}': {}", path, e))?;
+            file_utils::read_tar_gz_entries(&raw)
+                .map_err(|e| format!("failed to read tgz '{}': {}", path, e))?
+        }
+        "zst" => vec![file_utils::read_zst_file(path)
+            .map_err(|e| format!("failed to read zstd-compressed '{}': {}", path, e))?],
+        _ => vec![file_utils::read_file(path).map_err(|e| format!("failed to read '{}': {}", path, e))?],
     };
 
-    commonmeta::read_parquet(&bytes).map_err(|e| format!("failed to parse Parquet '{}': {}", path, e))
+    let parquet_batches: Vec<Vec<u8>> = if matches!(compress.as_str(), "zip" | "tgz") {
+        compressed_batches
+            .into_iter()
+            .map(|bytes| {
+                file_utils::unzst_content(&bytes)
+                    .map_err(|e| format!("failed to decompress entry in '{}': {}", path, e))
+            })
+            .collect::<Result<Vec<_>, String>>()?
+    } else {
+        compressed_batches
+    };
+
+    let mut out = Vec::new();
+    for bytes in parquet_batches {
+        let records =
+            commonmeta::read_parquet(&bytes).map_err(|e| format!("failed to parse Parquet '{}': {}", path, e))?;
+        out.extend(records);
+    }
+    Ok(out)
 }
 
 fn load_crossref_list_from_file(path: &str) -> Result<Vec<Data>, String> {
@@ -1129,6 +1158,63 @@ mod tests {
 
         let zst_path = dir.join("batch-commonmeta.parquet.zst");
         let loaded = load_commonmeta_list_from_parquet(zst_path.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].id, "https://doi.org/10.1/a");
+        assert_eq!(loaded[1].id, "https://doi.org/10.1/b");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_commonmeta_list_from_parquet_zip_round_trip() {
+        let dir = std::env::temp_dir().join("commonmeta_list_load_parquet_zip");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("out.parquet.zip");
+
+        let data = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        write_parquet_archive(&data, out_path.to_str().unwrap(), "zip").unwrap();
+
+        let loaded = load_commonmeta_list_from_parquet(out_path.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].id, "https://doi.org/10.1/a");
+        assert_eq!(loaded[1].id, "https://doi.org/10.1/b");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_commonmeta_list_from_parquet_tgz_round_trip() {
+        let dir = std::env::temp_dir().join("commonmeta_list_load_parquet_tgz");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("out.parquet.tgz");
+
+        let data = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        write_parquet_archive(&data, out_path.to_str().unwrap(), "tgz").unwrap();
+
+        let loaded = load_commonmeta_list_from_parquet(out_path.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].id, "https://doi.org/10.1/a");
+        assert_eq!(loaded[1].id, "https://doi.org/10.1/b");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_commonmeta_list_from_parquet_zip_multi_batch_round_trip() {
+        let dir = std::env::temp_dir().join("commonmeta_list_load_parquet_zip_multi");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("out.parquet.zip");
+
+        // Force multiple entries by writing them directly, same approach as
+        // the other multi-batch tests (BATCH_SIZE is kept at 100_000 for
+        // production use).
+        let chunk_a = vec![sample_data("https://doi.org/10.1/a")];
+        let chunk_b = vec![sample_data("https://doi.org/10.1/b")];
+        let entry_a = parquet_archive_entry(&chunk_a, "out.parquet", Some(0)).unwrap();
+        let entry_b = parquet_archive_entry(&chunk_b, "out.parquet", Some(1)).unwrap();
+        file_utils::write_zip_archive(&out_path, &[entry_a, entry_b]).unwrap();
+
+        let loaded = load_commonmeta_list_from_parquet(out_path.to_str().unwrap()).unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].id, "https://doi.org/10.1/a");
         assert_eq!(loaded[1].id, "https://doi.org/10.1/b");

@@ -103,6 +103,38 @@ pub fn write_zip_file<P: AsRef<Path>>(filename: P, output: &[u8]) -> Result<()> 
     Ok(())
 }
 
+/// Read each entry of a ZIP archive separately (in archive order), as
+/// opposed to `unzip_content`, which concatenates every entry's bytes
+/// together — not useful when entries are independently-encoded blobs (e.g.
+/// each a separate zstd-compressed Parquet batch) rather than plain text.
+pub fn read_zip_entries(bytes: &[u8]) -> Result<Vec<Vec<u8>>> {
+    let reader = io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(reader)?;
+    let mut entries = Vec::with_capacity(archive.len());
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+        entries.push(buffer);
+    }
+    Ok(entries)
+}
+
+/// Read each entry of a gzip-compressed tar (`.tgz`) archive separately, in
+/// archive order.
+pub fn read_tar_gz_entries(bytes: &[u8]) -> Result<Vec<Vec<u8>>> {
+    let decoder = flate2::read::GzDecoder::new(io::Cursor::new(bytes));
+    let mut archive = tar::Archive::new(decoder);
+    let mut entries = Vec::new();
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let mut buffer = Vec::new();
+        entry.read_to_end(&mut buffer)?;
+        entries.push(buffer);
+    }
+    Ok(entries)
+}
+
 /// Saves multiple named entries into a single ZIP archive.
 pub fn write_zip_archive<P: AsRef<Path>>(filename: P, entries: &[(String, Vec<u8>)]) -> Result<()> {
     let file = File::create(filename)?;
@@ -666,6 +698,44 @@ mod tests {
             .map(|e| e.unwrap().path().unwrap().to_string_lossy().to_string())
             .collect();
         assert_eq!(names, vec!["a.json", "b.json"]);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_read_zip_entries_returns_each_entry_separately() {
+        let dir = std::env::temp_dir().join("commonmeta_read_zip_entries_test");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.zip");
+
+        let entries = vec![
+            ("a.bin".to_string(), b"first-blob".to_vec()),
+            ("b.bin".to_string(), b"second-blob".to_vec()),
+        ];
+        write_zip_archive(&path, &entries).unwrap();
+
+        let bytes = read_file(&path).unwrap();
+        let read_back = read_zip_entries(&bytes).unwrap();
+        assert_eq!(read_back, vec![b"first-blob".to_vec(), b"second-blob".to_vec()]);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_read_tar_gz_entries_returns_each_entry_separately() {
+        let dir = std::env::temp_dir().join("commonmeta_read_tgz_entries_test");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.tgz");
+
+        let entries = vec![
+            ("a.bin".to_string(), b"first-blob".to_vec()),
+            ("b.bin".to_string(), b"second-blob".to_vec()),
+        ];
+        write_tar_gz_archive(&path, &entries).unwrap();
+
+        let bytes = read_file(&path).unwrap();
+        let read_back = read_tar_gz_entries(&bytes).unwrap();
+        assert_eq!(read_back, vec![b"first-blob".to_vec(), b"second-blob".to_vec()]);
 
         fs::remove_dir_all(&dir).ok();
     }
