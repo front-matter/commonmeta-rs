@@ -3,3 +3,6 @@ notes.md
 *.sqlite3
 *.zst
 .claude/settings.json
+python/.venv
+python/*.egg-info
+__pycache__/

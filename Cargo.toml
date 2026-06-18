@@ -1,6 +1,15 @@
+[workspace]
+members = ["python"]
+# `commonmeta-python` (the PyO3 extension-module crate) only links correctly
+# under maturin's build environment; plain `cargo build`/`cargo test` from
+# the workspace root must keep building just the main package by default,
+# as before this became a workspace. Use `cargo build -p commonmeta-python`
+# or `maturin develop` (see python/) to build the Python bindings.
+default-members = ["."]
+
 [package]
 name = "commonmeta"
-version = "0.2.7"
+version = "0.3.0"
 edition = "2024"
 authors = ["Front Matter <info@front-matter.de>"]
 description = "Library for conversions to/from the Commonmeta scholarly metadata format"

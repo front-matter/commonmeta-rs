@@ -2,12 +2,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use rusqlite::Connection;
 use serde_json::json;
 use url::Url;
 
 use commonmeta::Data;
-use crate::file_utils;
+use commonmeta::file_utils;
 
 /// Maximum number of records per output batch, used both for Parquet batch
 /// files and for entries within a `.zip`/`.tgz` archive.
@@ -380,16 +379,10 @@ fn parquet_batch_path(base_path: &Path, idx: Option<usize>) -> PathBuf {
 }
 
 /// Write `data` as multiple batched entries inside a single `.zip` (`compress
-/// == "zip"`) or `.tgz` (`compress == "tgz"`) archive, splitting into batches
-/// of `BATCH_SIZE` records (e.g. for a large `--number 0` VRAIX dump),
-/// rendered to `to` format. When there is only one batch, the entry is named
-/// after `out_path`'s base name; otherwise each batch gets a numbered suffix,
-/// matching the `parquet_batch_path` naming scheme.
+/// == "zip"`) or `.tgz` (`compress == "tgz"`) archive, rendered to `to`
+/// format. Batching and entry naming are handled by `commonmeta::write_archive`;
+/// this just picks the archive container format and persists it.
 fn write_archive_batches(data: &[Data], to: &str, out_path: &str, compress: &str) -> Result<(), String> {
-    if data.is_empty() {
-        return Err("list: no records to write".to_string());
-    }
-
     let (base_path, inner_ext, _) = file_utils::get_extension(out_path, ".json");
     let base_path = if base_path.extension().is_none() {
         let inner_ext = if inner_ext.is_empty() { ".json" } else { &inner_ext };
@@ -397,16 +390,10 @@ fn write_archive_batches(data: &[Data], to: &str, out_path: &str, compress: &str
     } else {
         base_path
     };
+    let base_name = base_path.file_name().unwrap_or_default().to_string_lossy().to_string();
 
-    let chunks: Vec<&[Data]> = data.chunks(BATCH_SIZE).collect();
-    let multi = chunks.len() > 1;
-
-    let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(chunks.len());
-    for (idx, chunk) in chunks.into_iter().enumerate() {
-        let output = write_output(chunk, to)?;
-        let name = archive_entry_name(&base_path, if multi { Some(idx) } else { None });
-        entries.push((name, output));
-    }
+    let entries =
+        commonmeta::write_archive(data, to, &base_name, BATCH_SIZE).map_err(|e| e.to_string())?;
 
     match compress {
         "zip" => file_utils::write_zip_archive(out_path, &entries)
@@ -419,58 +406,8 @@ fn write_archive_batches(data: &[Data], to: &str, out_path: &str, compress: &str
     Ok(())
 }
 
-/// Build the entry name for an archive batch: `base_path`'s file name when
-/// `idx` is `None`, or `{stem}-{idx:05}.{ext}` for numbered batches.
-fn archive_entry_name(base_path: &Path, idx: Option<usize>) -> String {
-    match idx {
-        None => base_path.file_name().unwrap_or_default().to_string_lossy().to_string(),
-        Some(i) => {
-            let stem = base_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-            let ext = base_path
-                .extension()
-                .map(|e| e.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if ext.is_empty() {
-                format!("{}-{:05}", stem, i)
-            } else {
-                format!("{}-{:05}.{}", stem, i, ext)
-            }
-        }
-    }
-}
-
 fn write_output(data: &[Data], to: &str) -> Result<Vec<u8>, String> {
-    let bar = crate::progress::count_bar("rendering", data.len() as u64);
-
-    if matches!(to, "commonmeta" | "csl" | "datacite" | "inveniordm" | "schemaorg" | "ror") {
-        let mut items: Vec<serde_json::Value> = Vec::with_capacity(data.len());
-        for item in data {
-            let rendered = render_single(item, to)?;
-            let value: serde_json::Value = serde_json::from_slice(&rendered)
-                .map_err(|e| format!("failed to parse {} output as JSON: {}", to, e))?;
-            items.push(value);
-            bar.inc(1);
-        }
-        bar.finish_and_clear();
-        return serde_json::to_vec_pretty(&items).map_err(|e| e.to_string());
-    }
-
-    let mut output = String::new();
-    for (idx, item) in data.iter().enumerate() {
-        let rendered = render_single(item, to)?;
-        if idx > 0 {
-            output.push('\n');
-        }
-        output.push_str(&String::from_utf8_lossy(&rendered));
-        bar.inc(1);
-    }
-    bar.finish_and_clear();
-    Ok(output.into_bytes())
-}
-
-fn render_single(data: &Data, to: &str) -> Result<Vec<u8>, String> {
-    let input = serde_json::to_string(data).map_err(|e| e.to_string())?;
-    commonmeta::convert("commonmeta", to, &input).map_err(|e| e.to_string())
+    commonmeta::write_list(data, to).map_err(|e| e.to_string())
 }
 
 pub(crate) fn fetch_list_from_api(matches: &ArgMatches, from: &str) -> Result<Vec<Data>, String> {
@@ -867,9 +804,14 @@ fn load_vraix_list_for_date(
     matches: &ArgMatches,
     timers: bool,
 ) -> Result<Vec<Data>, String> {
+    let number = *matches.get_one::<usize>("number").unwrap_or(&10);
+    let page = *matches.get_one::<usize>("page").unwrap_or(&1);
+    let offset = page.saturating_sub(1).saturating_mul(number);
+    let limit = if number == 0 { None } else { Some(number) };
+
     if let Some(path) = input_path {
         let convert_start = Instant::now();
-        let data = load_vraix_list_from_sqlite(path, from, matches)?;
+        let data = commonmeta::read_vraix_sqlite(path, from, limit, offset).map_err(|e| e.to_string())?;
         if timers {
             eprintln!(
                 "list: read to commonmeta took {:.2?} ({} records)",
@@ -912,9 +854,9 @@ fn load_vraix_list_for_date(
     file_utils::write_file(&tmp_path, &decompressed)
         .map_err(|e| format!("failed to write temp file '{}': {}", tmp_path.display(), e))?;
 
-    let result = load_vraix_list_from_sqlite(tmp_path.to_str().unwrap(), from, matches);
+    let result = commonmeta::read_vraix_sqlite(tmp_path.to_str().unwrap(), from, limit, offset);
     std::fs::remove_file(&tmp_path).ok();
-    let data = result?;
+    let data = result.map_err(|e| e.to_string())?;
     if timers {
         eprintln!(
             "list: read to commonmeta took {:.2?} ({} records)",
@@ -925,155 +867,10 @@ fn load_vraix_list_for_date(
     Ok(data)
 }
 
-fn load_vraix_list_from_sqlite(path: &str, from: &str, matches: &ArgMatches) -> Result<Vec<Data>, String> {
-    let number = *matches.get_one::<usize>("number").unwrap_or(&10);
-    let page = *matches.get_one::<usize>("page").unwrap_or(&1);
-    let offset = page.saturating_sub(1).saturating_mul(number);
-
-    let connection =
-        Connection::open(path).map_err(|e| format!("failed to open SQLite '{}': {}", path, e))?;
-    let table = find_vraix_table(&connection)?
-        .ok_or_else(|| "no VRAIX table with pid/source_id/raw_metadata found".to_string())?;
-
-    let query = if number == 0 {
-        format!("SELECT raw_metadata FROM {}", quote_identifier(&table))
-    } else {
-        format!(
-            "SELECT raw_metadata FROM {} LIMIT ?1 OFFSET ?2",
-            quote_identifier(&table)
-        )
-    };
-
-    let mut statement = connection
-        .prepare(&query)
-        .map_err(|e| format!("failed to prepare query: {}", e))?;
-
-    let mut out: Vec<Data> = Vec::new();
-    if number == 0 {
-        let total: i64 = connection
-            .query_row(
-                &format!("SELECT COUNT(*) FROM {}", quote_identifier(&table)),
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-        let bar = crate::progress::count_bar("converting", total.max(0) as u64);
-
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|e| format!("failed to query rows: {}", e))?;
-
-        for row in rows {
-            let raw_metadata = row.map_err(|e| e.to_string())?;
-            out.push(convert_vraix_row(from, &raw_metadata)?);
-            bar.inc(1);
-        }
-        bar.finish_and_clear();
-        return Ok(out);
-    }
-
-    let bar = crate::progress::count_bar("converting", number as u64);
-    let rows = statement
-        .query_map([number as i64, offset as i64], |row| row.get::<_, String>(0))
-        .map_err(|e| format!("failed to query rows: {}", e))?;
-
-    for row in rows {
-        let raw_metadata = row.map_err(|e| e.to_string())?;
-        out.push(convert_vraix_row(from, &raw_metadata)?);
-        bar.inc(1);
-    }
-    bar.finish_and_clear();
-
-    Ok(out)
-}
-
-fn find_vraix_table(connection: &Connection) -> Result<Option<String>, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-        )
-        .map_err(|e| e.to_string())?;
-    let names = statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|e| e.to_string())?;
-
-    for name in names {
-        let table = name.map_err(|e| e.to_string())?;
-        if table_has_vraix_columns(connection, &table)? {
-            return Ok(Some(table));
-        }
-    }
-
-    Ok(None)
-}
-
-fn table_has_vraix_columns(connection: &Connection, table_name: &str) -> Result<bool, String> {
-    let pragma = format!("PRAGMA table_info({})", quote_identifier(table_name));
-    let mut statement = connection.prepare(&pragma).map_err(|e| e.to_string())?;
-    let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|e| e.to_string())?;
-
-    let mut has_pid = false;
-    let mut has_source_id = false;
-    let mut has_raw_metadata = false;
-    for column in columns {
-        let col = column.map_err(|e| e.to_string())?;
-        if col.eq_ignore_ascii_case("pid") {
-            has_pid = true;
-        }
-        if col.eq_ignore_ascii_case("source_id") {
-            has_source_id = true;
-        }
-        if col.eq_ignore_ascii_case("raw_metadata") {
-            has_raw_metadata = true;
-        }
-    }
-
-    Ok(has_pid && has_source_id && has_raw_metadata)
-}
-
-fn quote_identifier(identifier: &str) -> String {
-    format!("\"{}\"", identifier.replace('"', "\"\""))
-}
-
-fn convert_vraix_row(from: &str, raw_metadata: &str) -> Result<Data, String> {
-    match from {
-        "crossref" => {
-            let value: serde_json::Value = serde_json::from_str(raw_metadata)
-                .map_err(|e| format!("invalid Crossref raw_metadata: {}", e))?;
-            let payload = if value.get("message").is_some() {
-                value
-            } else {
-                json!({ "message": value })
-            };
-            let input = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-            let bytes = commonmeta::convert("crossref", "commonmeta", &input)
-                .map_err(|e| format!("crossref conversion failed: {}", e))?;
-            serde_json::from_slice::<Data>(&bytes)
-                .map_err(|e| format!("failed to parse commonmeta JSON: {}", e))
-        }
-        "datacite" => {
-            let value: serde_json::Value = serde_json::from_str(raw_metadata)
-                .map_err(|e| format!("invalid DataCite raw_metadata: {}", e))?;
-            let payload = if value.get("data").is_some() {
-                value
-            } else {
-                json!({ "data": value })
-            };
-            let input = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-            let bytes = commonmeta::convert("datacite", "commonmeta", &input)
-                .map_err(|e| format!("datacite conversion failed: {}", e))?;
-            serde_json::from_slice::<Data>(&bytes)
-                .map_err(|e| format!("failed to parse commonmeta JSON: {}", e))
-        }
-        other => Err(format!("list: --date does not support --from {}", other)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
 
     fn sample_data(id: &str) -> Data {
         Data { id: id.to_string(), type_: "JournalArticle".to_string(), ..Data::default() }
@@ -1098,27 +895,6 @@ mod tests {
     fn test_parquet_batch_path_no_extension() {
         let path = parquet_batch_path(Path::new("/tmp/out"), Some(3));
         assert_eq!(path, PathBuf::from("/tmp/out-00003.zst"));
-    }
-
-    #[test]
-    fn test_archive_entry_name_single() {
-        let name = archive_entry_name(Path::new("/tmp/out.json"), None);
-        assert_eq!(name, "out.json");
-    }
-
-    #[test]
-    fn test_archive_entry_name_numbered() {
-        let name = archive_entry_name(Path::new("/tmp/out.json"), Some(0));
-        assert_eq!(name, "out-00000.json");
-
-        let name = archive_entry_name(Path::new("/tmp/out.json"), Some(12));
-        assert_eq!(name, "out-00012.json");
-    }
-
-    #[test]
-    fn test_archive_entry_name_no_extension() {
-        let name = archive_entry_name(Path::new("/tmp/out"), Some(3));
-        assert_eq!(name, "out-00003");
     }
 
     #[test]
@@ -1288,45 +1064,6 @@ mod tests {
                 )
                 .unwrap();
         }
-    }
-
-    #[test]
-    fn test_load_vraix_list_from_sqlite_crossref() {
-        let dir = std::env::temp_dir().join("commonmeta_list_vraix_crossref");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("crossref.sqlite3");
-        write_vraix_sqlite(
-            &path,
-            &[(
-                "10.1234/a",
-                r#"{"DOI":"10.1234/a","type":"journal-article","title":["Crossref Row"]}"#,
-            )],
-        );
-
-        let matches = command().get_matches_from(vec!["list", "--number", "10", "--page", "1"]);
-        let data = load_vraix_list_from_sqlite(path.to_str().unwrap(), "crossref", &matches).unwrap();
-        assert_eq!(data.len(), 1);
-        assert_eq!(data[0].id, "https://doi.org/10.1234/a");
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn test_load_vraix_list_from_sqlite_datacite() {
-        let dir = std::env::temp_dir().join("commonmeta_list_vraix_datacite");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("datacite.sqlite3");
-        write_vraix_sqlite(
-            &path,
-            &[("10.5678/b", r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#)],
-        );
-
-        let matches = command().get_matches_from(vec!["list", "--number", "10", "--page", "1"]);
-        let data = load_vraix_list_from_sqlite(path.to_str().unwrap(), "datacite", &matches).unwrap();
-        assert_eq!(data.len(), 1);
-        assert_eq!(data[0].id, "https://doi.org/10.5678/b");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
