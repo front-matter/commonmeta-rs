@@ -22,6 +22,9 @@ pub enum FileError {
 
     #[error("Status code error: {status} {text}")]
     StatusCode { status: u16, text: String },
+
+    #[error("download of '{url}' failed: {message}")]
+    Download { url: String, message: String },
 }
 
 pub type Result<T> = std::result::Result<T, FileError>;
@@ -194,14 +197,25 @@ pub fn write_zst_file<P: AsRef<Path>>(filename: P, output: &[u8]) -> Result<()> 
 
 // ---------- network functions ----------
 
-/// download content of a URL.
+/// Download the content of a URL.
+///
+/// Data dumps can be multiple GB (e.g. the daily Crossref dump is ~2GB), so
+/// the request timeout has to cover the entire download, not just a typical
+/// API response: 60s was enough to fail on any connection slower than
+/// ~35MB/s. `connect_timeout` stays short (server unreachable should fail
+/// fast); `timeout` covers connect-through-body and is generous enough for
+/// large, slow downloads while still bounding a truly stuck connection.
 pub fn download_file(url: &str) -> Result<Vec<u8>> {
     let client = Client::builder()
-        .timeout(Duration::from_secs(60))
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(30 * 60))
         .build()
         .map_err(FileError::Http)?;
 
-    let resp = client.get(url).send()?;
+    let mut resp = client.get(url).send().map_err(|e| FileError::Download {
+        url: url.to_string(),
+        message: describe_reqwest_error(&e),
+    })?;
 
     if !resp.status().is_success() {
         return Err(FileError::StatusCode {
@@ -210,7 +224,36 @@ pub fn download_file(url: &str) -> Result<Vec<u8>> {
         });
     }
 
-    Ok(resp.bytes()?.to_vec())
+    let mut buffer = Vec::new();
+    if let Err(e) = resp.copy_to(&mut buffer) {
+        return Err(FileError::Download {
+            url: url.to_string(),
+            message: format!(
+                "{} (received {} bytes before the error)",
+                describe_reqwest_error(&e),
+                buffer.len()
+            ),
+        });
+    }
+
+    Ok(buffer)
+}
+
+/// Classify a `reqwest::Error` into a more actionable message than its
+/// `Display` impl alone, which for body/decode failures is just the opaque
+/// "error decoding response body" regardless of root cause.
+fn describe_reqwest_error(e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        format!("the request timed out: {e}")
+    } else if e.is_connect() {
+        format!("could not connect to the server: {e}")
+    } else if e.is_body() || e.is_decode() {
+        format!(
+            "the connection was interrupted before the download finished: {e}"
+        )
+    } else {
+        e.to_string()
+    }
 }
 
 // ---------- write functions ----------
@@ -284,6 +327,65 @@ pub fn get_extension<P: AsRef<Path>>(filename: P, ext: &str) -> (PathBuf, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_download_file_connect_error_is_classified() {
+        // Nothing listens on port 1, so this fails fast with a connection
+        // error rather than hanging for the full 30-minute request timeout.
+        let err = download_file("http://127.0.0.1:1/").unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("could not connect to the server"),
+            "unexpected message: {message}"
+        );
+    }
+
+    #[test]
+    fn test_download_file_status_error() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            use std::io::Write;
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+
+        let err = download_file(&format!("http://{addr}/missing")).unwrap_err();
+        match err {
+            FileError::StatusCode { status, .. } => assert_eq!(status, 404),
+            other => panic!("expected StatusCode error, got: {other}"),
+        }
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_download_file_body_interrupted_reports_partial_bytes() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            use std::io::Write;
+            if let Ok((mut stream, _)) = listener.accept() {
+                // Announce a body far larger than what's actually sent, then
+                // close the connection early to simulate an interrupted
+                // download (the failure mode behind the original bug).
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\nConnection: close\r\n\r\nshort body",
+                );
+            }
+        });
+
+        let err = download_file(&format!("http://{addr}/big")).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("interrupted") && message.contains("bytes before the error"),
+            "unexpected message: {message}"
+        );
+
+        handle.join().unwrap();
+    }
 
     #[test]
     fn test_zst_roundtrip_content() {
