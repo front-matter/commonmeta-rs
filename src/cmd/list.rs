@@ -40,12 +40,14 @@ pub fn command() -> Command {
             written by --file *.parquet, regardless of --from, and read back into a list)\n\
             commonmeta list --from crossref --date 2026-06-14\n\
             commonmeta list --from datacite --date 2026-06-14\n\
-            commonmeta list datacite-2026-06-14.sqlite3 --from datacite --date 2026-06-14\n\
+            commonmeta list datacite-2026-06-14.sqlite3.zst --from datacite\n\
             (--date pairs with --from crossref or --from datacite to read a VRAIX daily\n\
             dump SQLite database; --from picks both the dump file, {from}-{date}.sqlite3.zst,\n\
             and how its rows are parsed. With no input path, the file is downloaded from\n\
-            metadata.vraix.org and decompressed; with an input path, that local SQLite\n\
-            file is read instead)\n\
+            metadata.vraix.org and decompressed. A .sqlite3/.sqlite3.zst input path is\n\
+            auto-detected the same way --file *.parquet is, so --date can be omitted when\n\
+            pointing directly at an already-downloaded dump; it's only needed to name the\n\
+            file to download when no input path is given)\n\
             commonmeta list --from crossref --date 2026-06-14 --number 0 --file out.zip\n\
             commonmeta list --from datacite --date 2026-06-14 --number 0 --file out.tgz\n\
             (a .zip/.tgz --file extension archives the records as multiple batched\n\
@@ -193,20 +195,25 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         return Err(format!("list: unsupported --to format: {}", to));
     }
 
-    let data = if let Some(date) = date {
+    let input_path = matches.get_one::<String>("input").map(String::as_str);
+    // A `.sqlite3`/`.sqlite3.zst` input is unambiguously a VRAIX dump (see
+    // `write_parquet`'s sibling concept for `.parquet`), so detect it from
+    // the extension rather than requiring `--date` to be passed just to
+    // pick the loader — `--date` is only otherwise needed to name the file
+    // to download when no local input path is given.
+    let is_vraix_sqlite_input = input_path
+        .map(|p| file_utils::get_extension(p, ".json").1 == ".sqlite3")
+        .unwrap_or(false);
+
+    let data = if date.is_some() || is_vraix_sqlite_input {
         if !matches!(from, "crossref" | "datacite") {
             return Err(
-                "list: --date requires --from crossref or --from datacite".to_string(),
+                "list: reading a VRAIX SQLite dump requires --from crossref or --from datacite"
+                    .to_string(),
             );
         }
-        load_vraix_list_for_date(
-            date,
-            matches.get_one::<String>("input").map(String::as_str),
-            from,
-            matches,
-            timers,
-        )?
-    } else if let Some(input_path) = matches.get_one::<String>("input") {
+        load_vraix_list_for_date(date.unwrap_or(""), input_path, from, matches, timers)?
+    } else if let Some(input_path) = input_path {
         load_list_from_file(input_path, from)?
     } else {
         if from == "commonmeta" {
@@ -921,7 +928,23 @@ fn load_vraix_list_for_date(
 
     if let Some(path) = input_path {
         let convert_start = Instant::now();
-        let data = commonmeta::read_vraix_sqlite(path, from, limit, offset).map_err(|e| e.to_string())?;
+        let (_base, _extension, compress) = file_utils::get_extension(path, ".json");
+        let data = if compress == "zst" {
+            let compressed = file_utils::read_zst_file(path)
+                .map_err(|e| format!("failed to read zstd-compressed '{}': {}", path, e))?;
+            // read_zst_file already decompresses; despite the name it
+            // returns the decompressed bytes, ready to write straight to
+            // a temp sqlite file (sqlite needs a real file path, not bytes).
+            let tmp_path = std::env::temp_dir()
+                .join(format!("commonmeta-vraix-local-{}-{}.sqlite3", from, std::process::id()));
+            file_utils::write_file(&tmp_path, &compressed)
+                .map_err(|e| format!("failed to write temp file '{}': {}", tmp_path.display(), e))?;
+            let result = commonmeta::read_vraix_sqlite(tmp_path.to_str().unwrap(), from, limit, offset);
+            std::fs::remove_file(&tmp_path).ok();
+            result.map_err(|e| e.to_string())?
+        } else {
+            commonmeta::read_vraix_sqlite(path, from, limit, offset).map_err(|e| e.to_string())?
+        };
         if timers {
             eprintln!(
                 "list: read to commonmeta took {:.2?} ({} records)",
@@ -1319,6 +1342,79 @@ mod tests {
         let matches =
             command().get_matches_from(vec!["list", "--from", "openalex", "--date", "2026-06-14"]);
         let err = execute(&matches).unwrap_err();
-        assert!(err.contains("--date requires --from crossref or --from datacite"));
+        assert!(err.contains("requires --from crossref or --from datacite"));
+    }
+
+    #[test]
+    fn test_load_vraix_list_for_date_decompresses_local_zst_input() {
+        let dir = std::env::temp_dir().join("commonmeta_list_vraix_local_zst");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sqlite_path = dir.join("datacite.sqlite3");
+        write_vraix_sqlite(
+            &sqlite_path,
+            &[("10.5678/b", r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#)],
+        );
+
+        let raw = std::fs::read(&sqlite_path).unwrap();
+        let compressed = zstd::stream::encode_all(std::io::Cursor::new(raw), 0).unwrap();
+        let zst_path = dir.join("datacite.sqlite3.zst");
+        std::fs::write(&zst_path, compressed).unwrap();
+
+        let matches = command().get_matches_from(vec!["list", "--number", "10", "--page", "1"]);
+        let data = load_vraix_list_for_date(
+            "2026-06-14",
+            Some(zst_path.to_str().unwrap()),
+            "datacite",
+            &matches,
+            false,
+        )
+        .unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].id, "https://doi.org/10.5678/b");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_execute_auto_detects_sqlite_input_without_date() {
+        let dir = std::env::temp_dir().join("commonmeta_list_execute_sqlite_no_date");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sqlite_path = dir.join("datacite.sqlite3");
+        write_vraix_sqlite(
+            &sqlite_path,
+            &[("10.5678/b", r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#)],
+        );
+
+        // No --date here: the .sqlite3 input extension alone must be enough
+        // to route into the VRAIX loader instead of the plain JSON loaders
+        // (which would otherwise try `read_to_string` on this binary file).
+        let matches = command()
+            .get_matches_from(vec!["list", sqlite_path.to_str().unwrap(), "--from", "datacite"]);
+        let result = execute(&matches);
+        assert!(result.is_ok(), "expected success, got: {:?}", result);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_execute_auto_detects_sqlite_zst_input_without_date() {
+        let dir = std::env::temp_dir().join("commonmeta_list_execute_sqlite_zst_no_date");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sqlite_path = dir.join("datacite.sqlite3");
+        write_vraix_sqlite(
+            &sqlite_path,
+            &[("10.5678/b", r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#)],
+        );
+        let raw = std::fs::read(&sqlite_path).unwrap();
+        let compressed = zstd::stream::encode_all(std::io::Cursor::new(raw), 0).unwrap();
+        let zst_path = dir.join("datacite.sqlite3.zst");
+        std::fs::write(&zst_path, compressed).unwrap();
+
+        let matches =
+            command().get_matches_from(vec!["list", zst_path.to_str().unwrap(), "--from", "datacite"]);
+        let result = execute(&matches);
+        assert!(result.is_ok(), "expected success, got: {:?}", result);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
