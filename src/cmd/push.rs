@@ -18,7 +18,7 @@ pub fn command() -> Command {
         )
         .arg(
             Arg::new("input")
-                .help("Optional input file path (JSON/JSONL, or SQLite for --from vraix)")
+                .help("Optional input file path (JSON/JSONL, or Parquet for --from commonmeta)")
                 .required(false)
                 .index(1),
         )
@@ -26,7 +26,7 @@ pub fn command() -> Command {
             Arg::new("from")
                 .long("from")
                 .short('f')
-                .help("Input source format (crossref, datacite, openalex, vraix, commonmeta)")
+                .help("Input source format (crossref, datacite, openalex, commonmeta)")
                 .default_value("crossref"),
         )
         .arg(
@@ -130,9 +130,9 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         .map(String::as_str)
         .unwrap_or("inveniordm");
 
-    if !matches!(from, "crossref" | "datacite" | "openalex" | "vraix" | "commonmeta") {
+    if !matches!(from, "crossref" | "datacite" | "openalex" | "commonmeta") {
         return Err(format!(
-            "push: --from {} is not implemented yet (supported: crossref, datacite, openalex, vraix, commonmeta)",
+            "push: --from {} is not implemented yet (supported: crossref, datacite, openalex, commonmeta)",
             from
         ));
     }
@@ -141,10 +141,10 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         if from == "commonmeta" {
             load_commonmeta_file(input_path)?
         } else {
-            load_list_from_file(input_path, from, matches)?
+            load_list_from_file(input_path, from)?
         }
     } else {
-        if matches!(from, "vraix" | "commonmeta") {
+        if from == "commonmeta" {
             return Err(format!("push: --from {} requires an input file path", from));
         }
         fetch_list_from_api(matches, from)?

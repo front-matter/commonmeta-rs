@@ -8,8 +8,9 @@ use url::Url;
 use commonmeta::Data;
 use crate::file_utils;
 
-/// Maximum number of records per Parquet batch file.
-const PARQUET_BATCH_SIZE: usize = 100_000;
+/// Maximum number of records per output batch, used both for Parquet batch
+/// files and for entries within a `.zip`/`.tgz` archive.
+const BATCH_SIZE: usize = 100_000;
 
 pub fn command() -> Command {
     Command::new("list")
@@ -20,22 +21,31 @@ pub fn command() -> Command {
             commonmeta list --number 10 --member 78 --type journal-article --from crossref\n\
             commonmeta list --number 10 --client cern.zenodo --type dataset --from datacite\n\
             commonmeta list --number 10 --from openalex --type journal-article\n\
-            commonmeta list crossref-2026-06-15.sqlite3 --from vraix --number 1000 --page 1 --to commonmeta --file out.json.gz\n\
             commonmeta list --from crossref --file out.json\n\
             commonmeta list --from crossref --number 1000 --file out.parquet\n\
             (a .parquet --file extension selects Parquet output and is only supported for\n\
             --to commonmeta, the default; output is always zstd-compressed, with records\n\
             split into batches of 100,000 written in parallel, e.g. out-00000.parquet.zst, ...)\n\
-            commonmeta list batch-commonmeta-00000.parquet.zst --from commonmeta --to csl\n\
-            (--from commonmeta reads a (optionally zstd-compressed) Parquet dump written\n\
-            by --file *.parquet back into a list, for re-rendering into other formats)\n\
-            commonmeta list --from vraix --date 2026-06-14\n\
-            (downloads crossref-2026-06-14.sqlite3.zst from metadata.vraix.org, decompresses\n\
-            it, and converts it to commonmeta, in place of an input SQLite file path)",
+            commonmeta list batch-commonmeta-00000.parquet.zst --to csl\n\
+            (a .parquet/.parquet.zst input is auto-detected as a commonmeta Parquet dump\n\
+            written by --file *.parquet, regardless of --from, and read back into a list)\n\
+            commonmeta list --from crossref --date 2026-06-14\n\
+            commonmeta list --from datacite --date 2026-06-14\n\
+            commonmeta list datacite-2026-06-14.sqlite3 --from datacite --date 2026-06-14\n\
+            (--date pairs with --from crossref or --from datacite to read a VRAIX daily\n\
+            dump SQLite database; --from picks both the dump file, {from}-{date}.sqlite3.zst,\n\
+            and how its rows are parsed. With no input path, the file is downloaded from\n\
+            metadata.vraix.org and decompressed; with an input path, that local SQLite\n\
+            file is read instead)\n\
+            commonmeta list --from crossref --date 2026-06-14 --number 0 --file out.zip\n\
+            commonmeta list --from datacite --date 2026-06-14 --number 0 --file out.tgz\n\
+            (a .zip/.tgz --file extension archives the records as multiple batched\n\
+            entries of 100,000 records each instead of one in-memory buffer, useful with\n\
+            --number 0, which fetches every row in a VRAIX dump)",
         )
         .arg(
             Arg::new("input")
-                .help("Optional input file path (JSON/JSONL, or SQLite for --from vraix)")
+                .help("Optional input file path (JSON/JSONL, Parquet, or SQLite with --date)")
                 .required(false)
                 .index(1),
         )
@@ -44,7 +54,7 @@ pub fn command() -> Command {
                 .long("from")
                 .short('f')
                 .help("Input source format")
-                .default_value("crossref"),
+                .default_value("commonmeta"),
         )
         .arg(
             Arg::new("to")
@@ -138,9 +148,9 @@ pub fn command() -> Command {
             Arg::new("date")
                 .long("date")
                 .help(
-                    "Date (YYYY-MM-DD) of a VRAIX daily dump to download, e.g. --from vraix \
-                     --date 2026-06-14 fetches crossref-2026-06-14.sqlite3.zst from \
-                     metadata.vraix.org",
+                    "Date (YYYY-MM-DD) of a VRAIX daily dump, used with --from crossref or \
+                     --from datacite; downloads {from}-{date}.sqlite3.zst from \
+                     metadata.vraix.org unless an input file path is also given",
                 ),
         )
 }
@@ -149,16 +159,17 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
     let from = matches
         .get_one::<String>("from")
         .map(String::as_str)
-        .unwrap_or("crossref");
+        .unwrap_or("commonmeta");
     let to = matches
         .get_one::<String>("to")
         .map(String::as_str)
         .unwrap_or("commonmeta");
     let out_file = matches.get_one::<String>("file");
+    let date = matches.get_one::<String>("date").map(String::as_str);
 
-    if !matches!(from, "crossref" | "datacite" | "openalex" | "vraix" | "commonmeta") {
+    if !matches!(from, "crossref" | "datacite" | "openalex" | "commonmeta") {
         return Err(format!(
-            "list: --from {} is not implemented yet (supported: crossref, datacite, openalex, vraix, commonmeta)",
+            "list: --from {} is not implemented yet (supported: crossref, datacite, openalex, commonmeta)",
             from
         ));
     }
@@ -166,16 +177,15 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         return Err(format!("list: unsupported --to format: {}", to));
     }
 
-    let data = if let Some(input_path) = matches.get_one::<String>("input") {
-        load_list_from_file(input_path, from, matches)?
-    } else if from == "vraix" {
-        let date = matches.get_one::<String>("date").map(String::as_str).unwrap_or("");
-        if date.is_empty() {
+    let data = if let Some(date) = date {
+        if !matches!(from, "crossref" | "datacite") {
             return Err(
-                "list: --from vraix requires an input SQLite file path or --date".to_string(),
+                "list: --date requires --from crossref or --from datacite".to_string(),
             );
         }
-        fetch_vraix_list_from_date(date, matches)?
+        load_vraix_list_for_date(date, matches.get_one::<String>("input").map(String::as_str), from, matches)?
+    } else if let Some(input_path) = matches.get_one::<String>("input") {
+        load_list_from_file(input_path, from)?
     } else {
         if from == "commonmeta" {
             return Err("list: --from commonmeta requires an input Parquet file path".to_string());
@@ -188,7 +198,7 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
     // supported for the native commonmeta schema until other flattened
     // tabular representations (e.g. for datacite, csl) are added.
     if let Some(path) = out_file {
-        let (_base, extension, _compress) = file_utils::get_extension(path, ".json");
+        let (_base, extension, compress) = file_utils::get_extension(path, ".json");
         if extension == ".parquet" {
             if to != "commonmeta" {
                 return Err(format!(
@@ -197,6 +207,12 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
                 ));
             }
             return write_parquet_batches(&data, path);
+        }
+        // A .zip/.tgz --file extension archives the records as multiple
+        // batched entries (e.g. for a large --number 0 VRAIX dump) instead
+        // of rendering everything into one in-memory buffer.
+        if compress == "zip" || compress == "tgz" {
+            return write_archive_batches(&data, to, path, &compress);
         }
     }
 
@@ -208,8 +224,6 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
             match compress.as_str() {
                 "gz" => file_utils::write_gz_file(&file, &output)
                     .map_err(|e| format!("failed to write gzip '{}': {}", path, e)),
-                "zip" => file_utils::write_zip_file(&file, &output)
-                    .map_err(|e| format!("failed to write zip '{}': {}", path, e)),
                 "zst" => file_utils::write_zst_file(&file, &output)
                     .map_err(|e| format!("failed to write zst '{}': {}", path, e)),
                 _ => file_utils::write_file(&file, &output)
@@ -239,7 +253,7 @@ fn is_supported_output_format(to: &str) -> bool {
 }
 
 /// Write `data` as one or more zstd-compressed Parquet files, splitting into
-/// batches of `PARQUET_BATCH_SIZE` records and writing the batches in parallel.
+/// batches of `BATCH_SIZE` records and writing the batches in parallel.
 /// When there is only one batch, the output is written to `out_path` (with a
 /// `.zst` suffix); otherwise each batch gets a numbered suffix.
 fn write_parquet_batches(data: &[Data], out_path: &str) -> Result<(), String> {
@@ -248,7 +262,7 @@ fn write_parquet_batches(data: &[Data], out_path: &str) -> Result<(), String> {
     }
 
     let (base_path, _extension, _compress) = file_utils::get_extension(out_path, ".parquet");
-    let chunks: Vec<&[Data]> = data.chunks(PARQUET_BATCH_SIZE).collect();
+    let chunks: Vec<&[Data]> = data.chunks(BATCH_SIZE).collect();
     let multi = chunks.len() > 1;
 
     let results: Vec<Result<(), String>> = std::thread::scope(|scope| {
@@ -312,6 +326,66 @@ fn parquet_batch_path(base_path: &Path, idx: Option<usize>) -> PathBuf {
                 format!("{}-{:05}.{}.zst", stem, i, ext)
             };
             parent.join(filename)
+        }
+    }
+}
+
+/// Write `data` as multiple batched entries inside a single `.zip` (`compress
+/// == "zip"`) or `.tgz` (`compress == "tgz"`) archive, splitting into batches
+/// of `BATCH_SIZE` records (e.g. for a large `--number 0` VRAIX dump),
+/// rendered to `to` format. When there is only one batch, the entry is named
+/// after `out_path`'s base name; otherwise each batch gets a numbered suffix,
+/// matching the `parquet_batch_path` naming scheme.
+fn write_archive_batches(data: &[Data], to: &str, out_path: &str, compress: &str) -> Result<(), String> {
+    if data.is_empty() {
+        return Err("list: no records to write".to_string());
+    }
+
+    let (base_path, inner_ext, _) = file_utils::get_extension(out_path, ".json");
+    let base_path = if base_path.extension().is_none() {
+        let inner_ext = if inner_ext.is_empty() { ".json" } else { &inner_ext };
+        base_path.with_extension(inner_ext.trim_start_matches('.'))
+    } else {
+        base_path
+    };
+
+    let chunks: Vec<&[Data]> = data.chunks(BATCH_SIZE).collect();
+    let multi = chunks.len() > 1;
+
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(chunks.len());
+    for (idx, chunk) in chunks.into_iter().enumerate() {
+        let output = write_output(chunk, to)?;
+        let name = archive_entry_name(&base_path, if multi { Some(idx) } else { None });
+        entries.push((name, output));
+    }
+
+    match compress {
+        "zip" => file_utils::write_zip_archive(out_path, &entries)
+            .map_err(|e| format!("failed to write zip '{}': {}", out_path, e))?,
+        "tgz" => file_utils::write_tar_gz_archive(out_path, &entries)
+            .map_err(|e| format!("failed to write tgz '{}': {}", out_path, e))?,
+        other => return Err(format!("list: unsupported archive compression: {}", other)),
+    }
+    println!("wrote {} ({} records in {} batch(es))", out_path, data.len(), entries.len());
+    Ok(())
+}
+
+/// Build the entry name for an archive batch: `base_path`'s file name when
+/// `idx` is `None`, or `{stem}-{idx:05}.{ext}` for numbered batches.
+fn archive_entry_name(base_path: &Path, idx: Option<usize>) -> String {
+    match idx {
+        None => base_path.file_name().unwrap_or_default().to_string_lossy().to_string(),
+        Some(i) => {
+            let stem = base_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+            let ext = base_path
+                .extension()
+                .map(|e| e.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if ext.is_empty() {
+                format!("{}-{:05}", stem, i)
+            } else {
+                format!("{}-{:05}.{}", stem, i, ext)
+            }
         }
     }
 }
@@ -532,12 +606,19 @@ fn fetch_openalex_list(matches: &ArgMatches, number: usize, page: usize) -> Resu
     Ok(out)
 }
 
-pub(crate) fn load_list_from_file(path: &str, from: &str, matches: &ArgMatches) -> Result<Vec<Data>, String> {
+pub(crate) fn load_list_from_file(path: &str, from: &str) -> Result<Vec<Data>, String> {
+    // A `.parquet`/`.parquet.zst` input is unambiguously a commonmeta dump
+    // written by `--file *.parquet` (see `write_parquet_batches`), so detect
+    // it from the extension rather than relying on `--from commonmeta`.
+    let (_base, extension, _compress) = file_utils::get_extension(path, ".json");
+    if extension == ".parquet" {
+        return load_commonmeta_list_from_parquet(path);
+    }
+
     match from {
         "crossref" => load_crossref_list_from_file(path),
         "datacite" => load_datacite_list_from_file(path),
         "openalex" => load_openalex_list_from_file(path),
-        "vraix" => load_vraix_list_from_sqlite(path, matches),
         "commonmeta" => load_commonmeta_list_from_parquet(path),
         _ => Err(format!("unsupported source: {from}")),
     }
@@ -717,27 +798,40 @@ fn convert_openalex_item(item: &serde_json::Value) -> Result<Data, String> {
     serde_json::from_slice::<Data>(&bytes).map_err(|e| format!("failed to parse output JSON: {}", e))
 }
 
-/// Download a VRAIX daily dump (`crossref-{date}.sqlite3.zst`) from
-/// metadata.vraix.org, decompress it, and load it the same way as a local
-/// `--from vraix` SQLite file.
-fn fetch_vraix_list_from_date(date: &str, matches: &ArgMatches) -> Result<Vec<Data>, String> {
-    let url = format!("https://metadata.vraix.org/crossref-{}.sqlite3.zst", date);
+/// Load a VRAIX daily dump for `--from crossref`/`--from datacite` combined
+/// with `--date`. With `input_path`, the local SQLite file at that path is
+/// read directly (e.g. an already-downloaded dump); otherwise
+/// `{from}-{date}.sqlite3.zst` is downloaded from metadata.vraix.org and
+/// decompressed into a temp file first. The dump's filename (and thus
+/// `from`) determines the source for every row in the file — VRAIX does not
+/// mix sources within one dump — so all rows are converted using `from`.
+fn load_vraix_list_for_date(
+    date: &str,
+    input_path: Option<&str>,
+    from: &str,
+    matches: &ArgMatches,
+) -> Result<Vec<Data>, String> {
+    if let Some(path) = input_path {
+        return load_vraix_list_from_sqlite(path, from, matches);
+    }
+
+    let url = format!("https://metadata.vraix.org/{}-{}.sqlite3.zst", from, date);
     let compressed = file_utils::download_file(&url)
         .map_err(|e| format!("failed to download '{}': {}", url, e))?;
     let decompressed = file_utils::unzst_content(&compressed)
         .map_err(|e| format!("failed to decompress '{}': {}", url, e))?;
 
-    let tmp_path =
-        std::env::temp_dir().join(format!("commonmeta-vraix-crossref-{}-{}.sqlite3", date, std::process::id()));
+    let tmp_path = std::env::temp_dir()
+        .join(format!("commonmeta-vraix-{}-{}-{}.sqlite3", from, date, std::process::id()));
     file_utils::write_file(&tmp_path, &decompressed)
         .map_err(|e| format!("failed to write temp file '{}': {}", tmp_path.display(), e))?;
 
-    let result = load_vraix_list_from_sqlite(tmp_path.to_str().unwrap(), matches);
+    let result = load_vraix_list_from_sqlite(tmp_path.to_str().unwrap(), from, matches);
     std::fs::remove_file(&tmp_path).ok();
     result
 }
 
-fn load_vraix_list_from_sqlite(path: &str, matches: &ArgMatches) -> Result<Vec<Data>, String> {
+fn load_vraix_list_from_sqlite(path: &str, from: &str, matches: &ArgMatches) -> Result<Vec<Data>, String> {
     let number = *matches.get_one::<usize>("number").unwrap_or(&10);
     let page = *matches.get_one::<usize>("page").unwrap_or(&1);
     let offset = page.saturating_sub(1).saturating_mul(number);
@@ -748,13 +842,10 @@ fn load_vraix_list_from_sqlite(path: &str, matches: &ArgMatches) -> Result<Vec<D
         .ok_or_else(|| "no VRAIX table with pid/source_id/raw_metadata found".to_string())?;
 
     let query = if number == 0 {
-        format!(
-            "SELECT source_id, raw_metadata FROM {}",
-            quote_identifier(&table)
-        )
+        format!("SELECT raw_metadata FROM {}", quote_identifier(&table))
     } else {
         format!(
-            "SELECT source_id, raw_metadata FROM {} LIMIT ?1 OFFSET ?2",
+            "SELECT raw_metadata FROM {} LIMIT ?1 OFFSET ?2",
             quote_identifier(&table)
         )
     };
@@ -766,31 +857,23 @@ fn load_vraix_list_from_sqlite(path: &str, matches: &ArgMatches) -> Result<Vec<D
     let mut out: Vec<Data> = Vec::new();
     if number == 0 {
         let rows = statement
-            .query_map([], |row| {
-                let source_id: i64 = row.get(0)?;
-                let raw_metadata: String = row.get(1)?;
-                Ok((source_id, raw_metadata))
-            })
+            .query_map([], |row| row.get::<_, String>(0))
             .map_err(|e| format!("failed to query rows: {}", e))?;
 
         for row in rows {
-            let (source_id, raw_metadata) = row.map_err(|e| e.to_string())?;
-            out.push(convert_vraix_row(source_id, &raw_metadata)?);
+            let raw_metadata = row.map_err(|e| e.to_string())?;
+            out.push(convert_vraix_row(from, &raw_metadata)?);
         }
         return Ok(out);
     }
 
     let rows = statement
-        .query_map([number as i64, offset as i64], |row| {
-            let source_id: i64 = row.get(0)?;
-            let raw_metadata: String = row.get(1)?;
-            Ok((source_id, raw_metadata))
-        })
+        .query_map([number as i64, offset as i64], |row| row.get::<_, String>(0))
         .map_err(|e| format!("failed to query rows: {}", e))?;
 
     for row in rows {
-        let (source_id, raw_metadata) = row.map_err(|e| e.to_string())?;
-        out.push(convert_vraix_row(source_id, &raw_metadata)?);
+        let raw_metadata = row.map_err(|e| e.to_string())?;
+        out.push(convert_vraix_row(from, &raw_metadata)?);
     }
 
     Ok(out)
@@ -846,9 +929,9 @@ fn quote_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
-fn convert_vraix_row(source_id: i64, raw_metadata: &str) -> Result<Data, String> {
-    match source_id {
-        1 => {
+fn convert_vraix_row(from: &str, raw_metadata: &str) -> Result<Data, String> {
+    match from {
+        "crossref" => {
             let value: serde_json::Value = serde_json::from_str(raw_metadata)
                 .map_err(|e| format!("invalid Crossref raw_metadata: {}", e))?;
             let payload = if value.get("message").is_some() {
@@ -862,7 +945,7 @@ fn convert_vraix_row(source_id: i64, raw_metadata: &str) -> Result<Data, String>
             serde_json::from_slice::<Data>(&bytes)
                 .map_err(|e| format!("failed to parse commonmeta JSON: {}", e))
         }
-        2 => {
+        "datacite" => {
             let value: serde_json::Value = serde_json::from_str(raw_metadata)
                 .map_err(|e| format!("invalid DataCite raw_metadata: {}", e))?;
             let payload = if value.get("data").is_some() {
@@ -876,13 +959,7 @@ fn convert_vraix_row(source_id: i64, raw_metadata: &str) -> Result<Data, String>
             serde_json::from_slice::<Data>(&bytes)
                 .map_err(|e| format!("failed to parse commonmeta JSON: {}", e))
         }
-        3 => {
-            let bytes = commonmeta::convert("ror", "commonmeta", raw_metadata)
-                .map_err(|e| format!("ror conversion failed: {}", e))?;
-            serde_json::from_slice::<Data>(&bytes)
-                .map_err(|e| format!("failed to parse commonmeta JSON: {}", e))
-        }
-        other => Err(format!("unsupported VRAIX source_id: {}", other)),
+        other => Err(format!("list: --date does not support --from {}", other)),
     }
 }
 
@@ -916,6 +993,73 @@ mod tests {
     }
 
     #[test]
+    fn test_archive_entry_name_single() {
+        let name = archive_entry_name(Path::new("/tmp/out.json"), None);
+        assert_eq!(name, "out.json");
+    }
+
+    #[test]
+    fn test_archive_entry_name_numbered() {
+        let name = archive_entry_name(Path::new("/tmp/out.json"), Some(0));
+        assert_eq!(name, "out-00000.json");
+
+        let name = archive_entry_name(Path::new("/tmp/out.json"), Some(12));
+        assert_eq!(name, "out-00012.json");
+    }
+
+    #[test]
+    fn test_archive_entry_name_no_extension() {
+        let name = archive_entry_name(Path::new("/tmp/out"), Some(3));
+        assert_eq!(name, "out-00003");
+    }
+
+    #[test]
+    fn test_write_archive_batches_zip() {
+        let dir = std::env::temp_dir().join("commonmeta_list_archive_zip");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("out.zip");
+
+        let data = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        write_archive_batches(&data, "commonmeta", out_path.to_str().unwrap(), "zip").unwrap();
+
+        assert!(out_path.exists());
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&out_path).unwrap()).unwrap();
+        assert_eq!(archive.len(), 1);
+        assert_eq!(archive.by_index(0).unwrap().name(), "out.json");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_write_archive_batches_tgz_no_inner_extension() {
+        let dir = std::env::temp_dir().join("commonmeta_list_archive_tgz");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("out.tgz");
+
+        let data = vec![sample_data("https://doi.org/10.1/a")];
+        write_archive_batches(&data, "commonmeta", out_path.to_str().unwrap(), "tgz").unwrap();
+
+        assert!(out_path.exists());
+        let decoder = flate2::read::GzDecoder::new(std::fs::File::open(&out_path).unwrap());
+        let mut archive = tar::Archive::new(decoder);
+        let entries: Vec<String> = archive
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().to_string_lossy().to_string())
+            .collect();
+        // "out.tgz" has no inner extension, so it defaults to ".json".
+        assert_eq!(entries, vec!["out.json"]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_write_archive_batches_empty_data_errors() {
+        let result = write_archive_batches(&[], "commonmeta", "/tmp/whatever.zip", "zip");
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_write_parquet_batches_single_batch() {
         let dir = std::env::temp_dir().join("commonmeta_list_parquet_single");
         std::fs::create_dir_all(&dir).unwrap();
@@ -940,7 +1084,7 @@ mod tests {
 
         // Force multiple chunks by calling the chunking logic directly with a
         // tiny effective batch size via two manual chunks instead of relying
-        // on PARQUET_BATCH_SIZE (kept at 100_000 for production use).
+        // on BATCH_SIZE (kept at 100_000 for production use).
         let chunk_a = vec![sample_data("https://doi.org/10.1/a")];
         let chunk_b = vec![sample_data("https://doi.org/10.1/b")];
 
@@ -1018,5 +1162,90 @@ mod tests {
         assert_eq!(reader.metadata().file_metadata().num_rows(), 1);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// VRAIX dumps don't mix sources within one file: the dump's filename
+    /// (and thus `--from`) determines what every `raw_metadata` row is.
+    fn write_vraix_sqlite(path: &Path, rows: &[(&str, &str)]) {
+        std::fs::remove_file(path).ok();
+        let connection = Connection::open(path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE works (pid TEXT, source_id INTEGER, raw_metadata TEXT);")
+            .unwrap();
+        for (pid, raw_metadata) in rows {
+            connection
+                .execute(
+                    "INSERT INTO works (pid, source_id, raw_metadata) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![pid, 1i64, raw_metadata],
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_load_vraix_list_from_sqlite_crossref() {
+        let dir = std::env::temp_dir().join("commonmeta_list_vraix_crossref");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("crossref.sqlite3");
+        write_vraix_sqlite(
+            &path,
+            &[(
+                "10.1234/a",
+                r#"{"DOI":"10.1234/a","type":"journal-article","title":["Crossref Row"]}"#,
+            )],
+        );
+
+        let matches = command().get_matches_from(vec!["list", "--number", "10", "--page", "1"]);
+        let data = load_vraix_list_from_sqlite(path.to_str().unwrap(), "crossref", &matches).unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].id, "https://doi.org/10.1234/a");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_vraix_list_from_sqlite_datacite() {
+        let dir = std::env::temp_dir().join("commonmeta_list_vraix_datacite");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("datacite.sqlite3");
+        write_vraix_sqlite(
+            &path,
+            &[("10.5678/b", r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#)],
+        );
+
+        let matches = command().get_matches_from(vec!["list", "--number", "10", "--page", "1"]);
+        let data = load_vraix_list_from_sqlite(path.to_str().unwrap(), "datacite", &matches).unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].id, "https://doi.org/10.5678/b");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_vraix_list_for_date_uses_local_input_path() {
+        let dir = std::env::temp_dir().join("commonmeta_list_vraix_local_date");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("datacite.sqlite3");
+        write_vraix_sqlite(
+            &path,
+            &[("10.5678/b", r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#)],
+        );
+
+        let matches = command().get_matches_from(vec!["list", "--number", "10", "--page", "1"]);
+        let data =
+            load_vraix_list_for_date("2026-06-14", Some(path.to_str().unwrap()), "datacite", &matches)
+                .unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].id, "https://doi.org/10.5678/b");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_execute_date_requires_crossref_or_datacite_from() {
+        let matches =
+            command().get_matches_from(vec!["list", "--from", "openalex", "--date", "2026-06-14"]);
+        let err = execute(&matches).unwrap_err();
+        assert!(err.contains("--date requires --from crossref or --from datacite"));
     }
 }

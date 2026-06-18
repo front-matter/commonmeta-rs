@@ -32,7 +32,7 @@ struct DcData {
 
 #[derive(Deserialize, Default)]
 struct DcAttributes {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string")]
     doi: String,
     #[serde(rename = "alternateIdentifiers", default)]
     alternate_identifiers: Vec<DcAlternateIdentifier>,
@@ -70,76 +70,77 @@ struct DcAttributes {
 
 #[derive(Deserialize, Default)]
 struct DcAlternateIdentifier {
-    #[serde(rename = "alternateIdentifier", default)]
+    #[serde(rename = "alternateIdentifier", default, deserialize_with = "null_to_string")]
     alternate_identifier: String,
-    #[serde(rename = "alternateIdentifierType", default)]
+    #[serde(rename = "alternateIdentifierType", default, deserialize_with = "null_to_string")]
     alternate_identifier_type: String,
 }
 
 // Affiliation is either Vec<String> or Vec<DcAffiliationStruct>; use Value
 #[derive(Deserialize, Default)]
 struct DcContributor {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string")]
     name: String,
-    #[serde(rename = "givenName", default)]
+    #[serde(rename = "givenName", default, deserialize_with = "null_to_string")]
     given_name: String,
-    #[serde(rename = "familyName", default)]
+    #[serde(rename = "familyName", default, deserialize_with = "null_to_string")]
     family_name: String,
-    #[serde(rename = "nameType", default)]
+    #[serde(rename = "nameType", default, deserialize_with = "null_to_string")]
     name_type: String,
     affiliation: Option<Value>,
     #[serde(rename = "nameIdentifiers", default)]
     name_identifiers: Vec<DcNameIdentifier>,
-    #[serde(rename = "contributorType", default)]
+    #[serde(rename = "contributorType", default, deserialize_with = "null_to_string")]
     contributor_type: String,
 }
 
 #[derive(Deserialize, Default)]
 struct DcNameIdentifier {
-    #[serde(rename = "nameIdentifier", default)]
+    #[serde(rename = "nameIdentifier", default, deserialize_with = "null_to_string")]
     name_identifier: String,
-    #[serde(rename = "nameIdentifierScheme", default)]
+    #[serde(rename = "nameIdentifierScheme", default, deserialize_with = "null_to_string")]
     name_identifier_scheme: String,
 }
 
 #[derive(Deserialize, Default)]
 struct DcAffiliationStruct {
-    #[serde(rename = "affiliationIdentifier", default)]
+    #[serde(rename = "affiliationIdentifier", default, deserialize_with = "null_to_string")]
     affiliation_identifier: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string")]
     name: String,
 }
 
 #[derive(Deserialize, Default)]
 struct DcPublisherStruct {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string")]
     name: String,
-    #[serde(rename = "publisherIdentifier", default)]
+    #[serde(rename = "publisherIdentifier", default, deserialize_with = "null_to_string")]
     publisher_identifier: String,
 }
 
 #[derive(Deserialize, Default)]
 struct DcContainer {
-    #[serde(rename = "type", default)]
+    #[serde(rename = "type", default, deserialize_with = "null_to_string")]
     type_: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string")]
     identifier: String,
-    #[serde(rename = "identifierType", default)]
+    #[serde(rename = "identifierType", default, deserialize_with = "null_to_string")]
     identifier_type: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string")]
     title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string")]
     volume: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string")]
     issue: String,
-    #[serde(rename = "firstPage", default)]
+    #[serde(rename = "firstPage", default, deserialize_with = "null_to_string")]
     first_page: String,
-    #[serde(rename = "lastPage", default)]
+    #[serde(rename = "lastPage", default, deserialize_with = "null_to_string")]
     last_page: String,
 }
 
 #[derive(Deserialize, Default)]
 struct DcTitle {
+    #[serde(default, deserialize_with = "null_to_string")]
     title: String,
     #[serde(rename = "titleType", default, deserialize_with = "null_to_string")]
     title_type: String,
@@ -149,6 +150,7 @@ struct DcTitle {
 
 #[derive(Deserialize, Default)]
 struct DcSubject {
+    #[serde(default, deserialize_with = "null_to_string")]
     subject: String,
 }
 
@@ -162,9 +164,9 @@ struct DcDate {
 
 #[derive(Deserialize, Default)]
 struct DcTypes {
-    #[serde(rename = "resourceTypeGeneral", default)]
+    #[serde(rename = "resourceTypeGeneral", default, deserialize_with = "null_to_string")]
     resource_type_general: String,
-    #[serde(rename = "resourceType", default)]
+    #[serde(rename = "resourceType", default, deserialize_with = "null_to_string")]
     resource_type: String,
 }
 
@@ -186,6 +188,7 @@ struct DcRights {
 
 #[derive(Deserialize, Default)]
 struct DcDescription {
+    #[serde(default, deserialize_with = "null_to_string")]
     description: String,
     #[serde(rename = "descriptionType", default, deserialize_with = "null_to_string")]
     description_type: String,
@@ -195,7 +198,7 @@ struct DcDescription {
 
 #[derive(Deserialize, Default)]
 struct DcGeoLocation {
-    #[serde(rename = "geoLocationPlace", default)]
+    #[serde(rename = "geoLocationPlace", default, deserialize_with = "null_to_string")]
     geo_location_place: String,
     #[serde(rename = "geoLocationPoint")]
     geo_location_point: Option<DcGeoPoint>,
@@ -225,17 +228,17 @@ struct DcGeoBox {
 
 #[derive(Deserialize, Default)]
 struct DcFundingReference {
-    #[serde(rename = "funderName", default)]
+    #[serde(rename = "funderName", default, deserialize_with = "null_to_string")]
     funder_name: String,
-    #[serde(rename = "funderIdentifier", default)]
+    #[serde(rename = "funderIdentifier", default, deserialize_with = "null_to_string")]
     funder_identifier: String,
-    #[serde(rename = "funderIdentifierType", default)]
+    #[serde(rename = "funderIdentifierType", default, deserialize_with = "null_to_string")]
     funder_identifier_type: String,
-    #[serde(rename = "awardNumber", default)]
+    #[serde(rename = "awardNumber", default, deserialize_with = "null_to_string")]
     award_number: String,
-    #[serde(rename = "awardTitle", default)]
+    #[serde(rename = "awardTitle", default, deserialize_with = "null_to_string")]
     award_title: String,
-    #[serde(rename = "awardUri", default)]
+    #[serde(rename = "awardUri", default, deserialize_with = "null_to_string")]
     award_uri: String,
 }
 
@@ -1358,4 +1361,39 @@ fn convert(data: &Data) -> OutPayload {
 pub fn write(data: &Data) -> Result<Vec<u8>> {
     let payload = convert(data);
     serde_json::to_vec(&payload).map_err(|e| Error::Parse(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Real-world VRAIX DataCite dumps use explicit JSON `null` (not a
+    /// missing key) for `givenName`/`familyName` on organizational creators,
+    /// which `#[serde(default)]` alone does not catch since default only
+    /// fires when the key is absent. See e.g. pid 10.25828/jnkz-s804.
+    #[test]
+    fn test_read_json_tolerates_null_creator_name_fields() {
+        let json = r#"{"data":{"id":"10.25828/jnkz-s804","attributes":{
+            "doi":"10.25828/jnkz-s804",
+            "creators":[{"name":"Some Org","nameType":"Organizational","givenName":null,"familyName":null,"affiliation":[],"nameIdentifiers":[]}],
+            "titles":[{"title":"A Title"}]
+        }}}"#;
+        let data = read_json(json).unwrap();
+        assert_eq!(data.id, "https://doi.org/10.25828/jnkz-s804");
+        assert_eq!(data.contributors[0].name, "Some Org");
+    }
+
+    /// `descriptions[]` entries sometimes carry only a `descriptionType`
+    /// with no `description` text at all (missing key, not null).
+    #[test]
+    fn test_read_json_tolerates_description_without_text() {
+        let json = r#"{"data":{"id":"10.1/a","attributes":{
+            "doi":"10.1/a",
+            "titles":[{"title":"A Title"}],
+            "descriptions":[{"descriptionType":"Other"}]
+        }}}"#;
+        let data = read_json(json).unwrap();
+        assert_eq!(data.descriptions[0].description, "");
+        assert_eq!(data.descriptions[0].type_, "Other");
+    }
 }

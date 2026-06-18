@@ -100,6 +100,45 @@ pub fn write_zip_file<P: AsRef<Path>>(filename: P, output: &[u8]) -> Result<()> 
     Ok(())
 }
 
+/// Saves multiple named entries into a single ZIP archive.
+pub fn write_zip_archive<P: AsRef<Path>>(filename: P, entries: &[(String, Vec<u8>)]) -> Result<()> {
+    let file = File::create(filename)?;
+    let mut zip_writer = zip::ZipWriter::new(file);
+
+    let options = zip::write::FileOptions::<()>::default()
+        .compression_method(zip::CompressionMethod::Stored)
+        .unix_permissions(0o755)
+        .last_modified_time(zip::DateTime::default_for_write());
+
+    for (name, content) in entries {
+        zip_writer.start_file(name, options)?;
+        zip_writer.write_all(content)?;
+    }
+    zip_writer.finish()?;
+
+    Ok(())
+}
+
+/// Saves multiple named entries into a single gzip-compressed tar (.tgz) archive.
+pub fn write_tar_gz_archive<P: AsRef<Path>>(filename: P, entries: &[(String, Vec<u8>)]) -> Result<()> {
+    let file = File::create(filename)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+
+    for (name, content) in entries {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(&mut header, name, content.as_slice())?;
+    }
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+
+    Ok(())
+}
+
 /// Saves the content to a GZIP-compressed file.
 pub fn write_gz_file<P: AsRef<Path>>(filename: P, output: &[u8]) -> Result<()> {
     let path = Path::new(filename.as_ref());
@@ -200,8 +239,8 @@ pub fn get_extension<P: AsRef<Path>>(filename: P, ext: &str) -> (PathBuf, String
             .map(|ext| ext.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let compress = if extension == "zip" || extension == "gz" || extension == "zst" {
-            // Remove trailing compression extension (".zip"/".gz"/".zst") from filename.
+        let compress = if extension == "zip" || extension == "gz" || extension == "zst" || extension == "tgz" {
+            // Remove trailing compression extension (".zip"/".gz"/".zst"/".tgz") from filename.
             let stem = path.file_stem().unwrap_or_default();
             let parent = path.parent().unwrap_or_else(|| Path::new(""));
             let new_path = parent.join(stem);
@@ -278,5 +317,58 @@ mod tests {
         assert_eq!(path, PathBuf::from("data.json"));
         assert_eq!(ext, ".json");
         assert_eq!(compress, "zst");
+    }
+
+    #[test]
+    fn test_get_extension_tgz() {
+        let (path, ext, compress) = get_extension("data.json.tgz", ".json");
+        assert_eq!(path, PathBuf::from("data.json"));
+        assert_eq!(ext, ".json");
+        assert_eq!(compress, "tgz");
+    }
+
+    #[test]
+    fn test_write_zip_archive_multi_entry() {
+        let dir = std::env::temp_dir().join("commonmeta_zip_archive_test");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.zip");
+
+        let entries = vec![
+            ("a.json".to_string(), b"{\"a\":1}".to_vec()),
+            ("b.json".to_string(), b"{\"b\":2}".to_vec()),
+        ];
+        write_zip_archive(&path, &entries).unwrap();
+
+        let mut archive = zip::ZipArchive::new(File::open(&path).unwrap()).unwrap();
+        assert_eq!(archive.len(), 2);
+        let mut contents = String::new();
+        archive.by_name("a.json").unwrap().read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, "{\"a\":1}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_write_tar_gz_archive_multi_entry() {
+        let dir = std::env::temp_dir().join("commonmeta_tgz_archive_test");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.tgz");
+
+        let entries = vec![
+            ("a.json".to_string(), b"{\"a\":1}".to_vec()),
+            ("b.json".to_string(), b"{\"b\":2}".to_vec()),
+        ];
+        write_tar_gz_archive(&path, &entries).unwrap();
+
+        let decoder = flate2::read::GzDecoder::new(File::open(&path).unwrap());
+        let mut archive = tar::Archive::new(decoder);
+        let names: Vec<String> = archive
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["a.json", "b.json"]);
+
+        fs::remove_dir_all(&dir).ok();
     }
 }

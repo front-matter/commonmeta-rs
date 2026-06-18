@@ -1,6 +1,6 @@
 [package]
 name = "commonmeta"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 authors = ["Front Matter <info@front-matter.de>"]
 description = "Library for conversions to/from the Commonmeta scholarly metadata format"
@@ -45,6 +45,7 @@ ammonia = "4"
 scraper = "0.27.0"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 flate2 = "1.1.9"
+tar = "0.4"
 zstd = "0.13"
 parquet = { version = "59", default-features = false, features = ["zstd"] }
 parquet_derive = "59"
