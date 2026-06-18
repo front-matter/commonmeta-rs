@@ -66,6 +66,13 @@ pub fn write_parquet(list: &[Data]) -> Result<Vec<u8>> {
     formats::commonmeta::write_parquet_all(list)
 }
 
+/// Read a list of commonmeta records back from the flattened Parquet schema
+/// written by [`write_parquet`]. Lossy: only the fields captured by the
+/// flattened projection (e.g. first author, first title) are restored.
+pub fn read_parquet(bytes: &[u8]) -> Result<Vec<Data>> {
+    formats::commonmeta::read_parquet_all(bytes)
+}
+
 /// Create-or-update, then publish, a list of records in InvenioRDM.
 ///
 /// This performs real, network-visible writes against `host` (a live record

@@ -25,7 +25,13 @@ pub fn command() -> Command {
             commonmeta list --from crossref --number 1000 --file out.parquet\n\
             (a .parquet --file extension selects Parquet output and is only supported for\n\
             --to commonmeta, the default; output is always zstd-compressed, with records\n\
-            split into batches of 100,000 written in parallel, e.g. out-00000.parquet.zst, ...)",
+            split into batches of 100,000 written in parallel, e.g. out-00000.parquet.zst, ...)\n\
+            commonmeta list batch-commonmeta-00000.parquet.zst --from commonmeta --to csl\n\
+            (--from commonmeta reads a (optionally zstd-compressed) Parquet dump written\n\
+            by --file *.parquet back into a list, for re-rendering into other formats)\n\
+            commonmeta list --from vraix --date 2026-06-14\n\
+            (downloads crossref-2026-06-14.sqlite3.zst from metadata.vraix.org, decompresses\n\
+            it, and converts it to commonmeta, in place of an input SQLite file path)",
         )
         .arg(
             Arg::new("input")
@@ -128,6 +134,15 @@ pub fn command() -> Command {
                 .long("file")
                 .help("Write output to file instead of stdout"),
         )
+        .arg(
+            Arg::new("date")
+                .long("date")
+                .help(
+                    "Date (YYYY-MM-DD) of a VRAIX daily dump to download, e.g. --from vraix \
+                     --date 2026-06-14 fetches crossref-2026-06-14.sqlite3.zst from \
+                     metadata.vraix.org",
+                ),
+        )
 }
 
 pub fn execute(matches: &ArgMatches) -> Result<(), String> {
@@ -141,9 +156,9 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         .unwrap_or("commonmeta");
     let out_file = matches.get_one::<String>("file");
 
-    if !matches!(from, "crossref" | "datacite" | "openalex" | "vraix") {
+    if !matches!(from, "crossref" | "datacite" | "openalex" | "vraix" | "commonmeta") {
         return Err(format!(
-            "list: --from {} is not implemented yet (supported: crossref, datacite, openalex, vraix)",
+            "list: --from {} is not implemented yet (supported: crossref, datacite, openalex, vraix, commonmeta)",
             from
         ));
     }
@@ -153,9 +168,17 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
 
     let data = if let Some(input_path) = matches.get_one::<String>("input") {
         load_list_from_file(input_path, from, matches)?
+    } else if from == "vraix" {
+        let date = matches.get_one::<String>("date").map(String::as_str).unwrap_or("");
+        if date.is_empty() {
+            return Err(
+                "list: --from vraix requires an input SQLite file path or --date".to_string(),
+            );
+        }
+        fetch_vraix_list_from_date(date, matches)?
     } else {
-        if from == "vraix" {
-            return Err("list: --from vraix requires an input SQLite file path".to_string());
+        if from == "commonmeta" {
+            return Err("list: --from commonmeta requires an input Parquet file path".to_string());
         }
         fetch_list_from_api(matches, from)?
     };
@@ -515,8 +538,30 @@ pub(crate) fn load_list_from_file(path: &str, from: &str, matches: &ArgMatches) 
         "datacite" => load_datacite_list_from_file(path),
         "openalex" => load_openalex_list_from_file(path),
         "vraix" => load_vraix_list_from_sqlite(path, matches),
+        "commonmeta" => load_commonmeta_list_from_parquet(path),
         _ => Err(format!("unsupported source: {from}")),
     }
+}
+
+/// Read a commonmeta Parquet dump (optionally zstd-compressed, e.g.
+/// `batch-commonmeta-00000.parquet.zst`) back into a list of records.
+fn load_commonmeta_list_from_parquet(path: &str) -> Result<Vec<Data>, String> {
+    let (_base, extension, compress) = file_utils::get_extension(path, ".parquet");
+    if extension != ".parquet" {
+        return Err(format!(
+            "list: --from commonmeta expects a .parquet (optionally .zst-compressed) input file, got '{}'",
+            path
+        ));
+    }
+
+    let bytes = if compress == "zst" {
+        file_utils::read_zst_file(path)
+            .map_err(|e| format!("failed to read zstd-compressed '{}': {}", path, e))?
+    } else {
+        file_utils::read_file(path).map_err(|e| format!("failed to read '{}': {}", path, e))?
+    };
+
+    commonmeta::read_parquet(&bytes).map_err(|e| format!("failed to parse Parquet '{}': {}", path, e))
 }
 
 fn load_crossref_list_from_file(path: &str) -> Result<Vec<Data>, String> {
@@ -670,6 +715,26 @@ fn convert_openalex_item(item: &serde_json::Value) -> Result<Data, String> {
     let bytes = commonmeta::convert("openalex", "commonmeta", &input)
         .map_err(|e| format!("openalex conversion failed: {}", e))?;
     serde_json::from_slice::<Data>(&bytes).map_err(|e| format!("failed to parse output JSON: {}", e))
+}
+
+/// Download a VRAIX daily dump (`crossref-{date}.sqlite3.zst`) from
+/// metadata.vraix.org, decompress it, and load it the same way as a local
+/// `--from vraix` SQLite file.
+fn fetch_vraix_list_from_date(date: &str, matches: &ArgMatches) -> Result<Vec<Data>, String> {
+    let url = format!("https://metadata.vraix.org/crossref-{}.sqlite3.zst", date);
+    let compressed = file_utils::download_file(&url)
+        .map_err(|e| format!("failed to download '{}': {}", url, e))?;
+    let decompressed = file_utils::unzst_content(&compressed)
+        .map_err(|e| format!("failed to decompress '{}': {}", url, e))?;
+
+    let tmp_path =
+        std::env::temp_dir().join(format!("commonmeta-vraix-crossref-{}-{}.sqlite3", date, std::process::id()));
+    file_utils::write_file(&tmp_path, &decompressed)
+        .map_err(|e| format!("failed to write temp file '{}': {}", tmp_path.display(), e))?;
+
+    let result = load_vraix_list_from_sqlite(tmp_path.to_str().unwrap(), matches);
+    std::fs::remove_file(&tmp_path).ok();
+    result
 }
 
 fn load_vraix_list_from_sqlite(path: &str, matches: &ArgMatches) -> Result<Vec<Data>, String> {
@@ -886,6 +951,46 @@ mod tests {
         assert!(dir.join("out-00001.parquet.zst").exists());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_commonmeta_list_from_parquet_zst() {
+        let dir = std::env::temp_dir().join("commonmeta_list_load_parquet_zst");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("batch-commonmeta.parquet");
+
+        let data = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        write_parquet_batches(&data, out_path.to_str().unwrap()).unwrap();
+
+        let zst_path = dir.join("batch-commonmeta.parquet.zst");
+        let loaded = load_commonmeta_list_from_parquet(zst_path.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].id, "https://doi.org/10.1/a");
+        assert_eq!(loaded[1].id, "https://doi.org/10.1/b");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_commonmeta_list_from_parquet_uncompressed() {
+        let dir = std::env::temp_dir().join("commonmeta_list_load_parquet_plain");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("data.parquet");
+
+        let bytes = commonmeta::write_parquet(&[sample_data("https://doi.org/10.1/a")]).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+
+        let loaded = load_commonmeta_list_from_parquet(path.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "https://doi.org/10.1/a");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_commonmeta_list_from_parquet_wrong_extension() {
+        let result = load_commonmeta_list_from_parquet("/tmp/whatever.json");
+        assert!(result.is_err());
     }
 
     #[test]

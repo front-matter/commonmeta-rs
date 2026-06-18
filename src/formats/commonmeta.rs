@@ -26,7 +26,9 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
 // spirit as the `RorCsv` flattening in ror.rs.
 
 /// A flattened, Parquet-friendly view of a single commonmeta `Data` record.
-#[derive(Debug, Default, Clone, Serialize, parquet_derive::ParquetRecordWriter)]
+#[derive(
+    Debug, Default, Clone, Serialize, parquet_derive::ParquetRecordWriter, parquet_derive::ParquetRecordReader,
+)]
 pub struct CommonmetaRow {
     pub id: String,
     pub record_type: String,
@@ -145,6 +147,96 @@ pub fn write_parquet_all(list: &[Data]) -> Result<Vec<u8>> {
     writer.into_inner().map_err(|e| Error::Serialize(e.to_string()))
 }
 
+/// Reconstruct a `Data` record from its flattened `CommonmetaRow` projection.
+///
+/// This is the inverse of `flatten_row`, but lossy in the same direction: only
+/// the fields captured by `CommonmetaRow` (e.g. the first author, first title)
+/// are restored, not the full original record.
+fn unflatten_row(row: &CommonmetaRow) -> Data {
+    Data {
+        id: row.id.clone(),
+        type_: row.record_type.clone(),
+        additional_type: row.additional_type.clone(),
+        titles: if row.title.is_empty() {
+            Vec::new()
+        } else {
+            vec![crate::data::Title { title: row.title.clone(), ..Default::default() }]
+        },
+        url: row.url.clone(),
+        identifiers: if row.doi.is_empty() {
+            Vec::new()
+        } else {
+            vec![crate::data::Identifier {
+                identifier: row.doi.clone(),
+                identifier_type: "DOI".to_string(),
+            }]
+        },
+        publisher: crate::data::Publisher { name: row.publisher.clone(), ..Default::default() },
+        language: row.language.clone(),
+        version: row.version.clone(),
+        license: crate::data::License { id: row.license.clone(), ..Default::default() },
+        container: crate::data::Container {
+            title: row.container_title.clone(),
+            type_: row.container_type.clone(),
+            volume: row.volume.clone(),
+            issue: row.issue.clone(),
+            first_page: row.first_page.clone(),
+            last_page: row.last_page.clone(),
+            ..Default::default()
+        },
+        date: crate::data::Date {
+            published: row.date_published.clone(),
+            created: row.date_created.clone(),
+            updated: row.date_updated.clone(),
+            ..Default::default()
+        },
+        contributors: if row.first_author_name.is_empty() && row.first_author_orcid.is_empty() {
+            Vec::new()
+        } else {
+            vec![crate::data::Contributor {
+                id: row.first_author_orcid.clone(),
+                name: row.first_author_name.clone(),
+                ..Default::default()
+            }]
+        },
+        subjects: row
+            .subjects
+            .split("; ")
+            .filter(|s| !s.is_empty())
+            .map(|s| crate::data::Subject { subject: s.to_string() })
+            .collect(),
+        descriptions: if row.description.is_empty() {
+            Vec::new()
+        } else {
+            vec![crate::data::Description { description: row.description.clone(), ..Default::default() }]
+        },
+        provider: row.provider.clone(),
+        ..Default::default()
+    }
+}
+
+/// Read a list of commonmeta records back from the flattened `CommonmetaRow`
+/// Parquet schema written by `write_parquet_all`. Lossy: only the fields
+/// captured by `CommonmetaRow` are restored.
+pub fn read_parquet_all(bytes: &[u8]) -> Result<Vec<Data>> {
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+    use parquet::record::RecordReader;
+
+    let reader = SerializedFileReader::new(::bytes::Bytes::from(bytes.to_vec()))
+        .map_err(|e| Error::Parse(e.to_string()))?;
+
+    let mut rows: Vec<CommonmetaRow> = Vec::new();
+    for i in 0..reader.num_row_groups() {
+        let mut row_group_reader =
+            reader.get_row_group(i).map_err(|e| Error::Parse(e.to_string()))?;
+        let num_rows = row_group_reader.metadata().num_rows() as usize;
+        rows.read_from_row_group(&mut *row_group_reader, num_rows)
+            .map_err(|e| Error::Parse(e.to_string()))?;
+    }
+
+    Ok(rows.iter().map(unflatten_row).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +317,30 @@ mod tests {
         assert!(column_names.iter().any(|c| c == "title"));
         assert!(column_names.iter().any(|c| c == "doi"));
         assert!(column_names.iter().any(|c| c == "first_author_name"));
+    }
+
+    #[test]
+    fn test_write_read_parquet_roundtrip() {
+        let list = vec![sample_data()];
+        let bytes = write_parquet_all(&list).unwrap();
+
+        let roundtripped = read_parquet_all(&bytes).unwrap();
+        assert_eq!(roundtripped.len(), 1);
+        assert_eq!(roundtripped[0].id, "https://doi.org/10.1234/abc");
+        assert_eq!(roundtripped[0].type_, "JournalArticle");
+        assert_eq!(roundtripped[0].titles[0].title, "A Sample Title");
+        assert_eq!(roundtripped[0].identifiers[0].identifier, "10.1234/abc");
+        assert_eq!(roundtripped[0].contributors[0].name, "Jane Doe");
+        assert_eq!(
+            roundtripped[0].contributors[0].id,
+            "https://orcid.org/0000-0002-1825-0097"
+        );
+    }
+
+    #[test]
+    fn test_read_parquet_all_empty() {
+        let bytes = write_parquet_all(&[]).unwrap();
+        let roundtripped = read_parquet_all(&bytes).unwrap();
+        assert!(roundtripped.is_empty());
     }
 }
