@@ -32,6 +32,9 @@ pub fn command() -> Command {
             (a .parquet --file extension selects Parquet output and is only supported for\n\
             --to commonmeta, the default; output is always zstd-compressed, with records\n\
             split into batches of 100,000 written in parallel, e.g. out-00000.parquet.zst, ...)\n\
+            commonmeta list --from crossref --number 1000 --file out.parquet.zip\n\
+            (combining .parquet with .zip/.tgz packs the same zstd-compressed batches\n\
+            into a single archive instead of writing them loose to disk)\n\
             commonmeta list batch-commonmeta-00000.parquet.zst --to csl\n\
             (a .parquet/.parquet.zst input is auto-detected as a commonmeta Parquet dump\n\
             written by --file *.parquet, regardless of --from, and read back into a list)\n\
@@ -226,7 +229,14 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
                 ));
             }
             let write_start = Instant::now();
-            let result = write_parquet_batches(&data, path);
+            // e.g. --file out.parquet.zip packs the zstd-compressed batch
+            // files into a single zip/tgz archive instead of writing them
+            // loose to disk.
+            let result = if compress == "zip" || compress == "tgz" {
+                write_parquet_archive(&data, path, &compress)
+            } else {
+                write_parquet_batches(&data, path)
+            };
             if timers {
                 eprintln!(
                     "list: write {} took {:.2?} ({} records)",
@@ -376,6 +386,77 @@ fn parquet_batch_path(base_path: &Path, idx: Option<usize>) -> PathBuf {
             parent.join(filename)
         }
     }
+}
+
+/// Write `data` as one or more zstd-compressed Parquet batches packed into a
+/// single `.zip` (`compress == "zip"`) or `.tgz` (`compress == "tgz"`)
+/// archive, e.g. for `--file out.parquet.zip`. Entry names follow the same
+/// `parquet_batch_path` numbering as loose-file output, just without a
+/// directory component.
+fn write_parquet_archive(data: &[Data], out_path: &str, compress: &str) -> Result<(), String> {
+    if data.is_empty() {
+        return Err("list: no records to write".to_string());
+    }
+
+    let (base_path, _extension, _compress) = file_utils::get_extension(out_path, ".parquet");
+    let base_name = base_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+    let chunks: Vec<&[Data]> = data.chunks(BATCH_SIZE).collect();
+    let multi = chunks.len() > 1;
+
+    let results: Vec<Result<(String, Vec<u8>), String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .into_iter()
+            .enumerate()
+            .map(|(idx, chunk)| {
+                let base_name = base_name.clone();
+                scope.spawn(move || {
+                    parquet_archive_entry(chunk, &base_name, if multi { Some(idx) } else { None })
+                })
+            })
+            .collect();
+
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err("list: parquet batch thread panicked".to_string()))
+            })
+            .collect()
+    });
+
+    let entries: Vec<(String, Vec<u8>)> = results.into_iter().collect::<Result<Vec<_>, String>>()?;
+
+    match compress {
+        "zip" => file_utils::write_zip_archive(out_path, &entries)
+            .map_err(|e| format!("failed to write zip '{}': {}", out_path, e))?,
+        "tgz" => file_utils::write_tar_gz_archive(out_path, &entries)
+            .map_err(|e| format!("failed to write tgz '{}': {}", out_path, e))?,
+        other => return Err(format!("list: unsupported archive compression: {}", other)),
+    }
+    println!("wrote {} ({} records in {} batch(es))", out_path, data.len(), entries.len());
+    Ok(())
+}
+
+/// Render one Parquet batch (zstd-compressed) and name it as an archive
+/// entry, reusing `parquet_batch_path`'s numbering scheme but dropping any
+/// directory component since archive entries are flat names.
+fn parquet_archive_entry(
+    chunk: &[Data],
+    base_name: &str,
+    idx: Option<usize>,
+) -> Result<(String, Vec<u8>), String> {
+    let bytes = commonmeta::write_parquet(chunk).map_err(|e| e.to_string())?;
+    let compressed = zstd::stream::encode_all(std::io::Cursor::new(bytes), 0)
+        .map_err(|e| format!("failed to zstd-compress parquet batch: {}", e))?;
+
+    let entry_name = parquet_batch_path(Path::new(base_name), idx)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    Ok((entry_name, compressed))
 }
 
 /// Write `data` as multiple batched entries inside a single `.zip` (`compress
@@ -979,6 +1060,62 @@ mod tests {
         assert!(dir.join("out-00001.parquet.zst").exists());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_write_parquet_archive_zip_single_batch() {
+        let dir = std::env::temp_dir().join("commonmeta_list_parquet_archive_zip");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("out.parquet.zip");
+
+        let data = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        write_parquet_archive(&data, out_path.to_str().unwrap(), "zip").unwrap();
+
+        assert!(out_path.exists());
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&out_path).unwrap()).unwrap();
+        assert_eq!(archive.len(), 1);
+        assert_eq!(archive.by_index(0).unwrap().name(), "out.parquet.zst");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_write_parquet_archive_tgz_numbered_entries() {
+        // Force multiple chunks the same way test_write_parquet_batches_multi_batch
+        // does, by calling the per-chunk helper directly rather than relying
+        // on BATCH_SIZE (kept at 100_000 for production use).
+        let chunk_a = vec![sample_data("https://doi.org/10.1/a")];
+        let chunk_b = vec![sample_data("https://doi.org/10.1/b")];
+
+        let (name_a, bytes_a) = parquet_archive_entry(&chunk_a, "out.parquet", Some(0)).unwrap();
+        let (name_b, bytes_b) = parquet_archive_entry(&chunk_b, "out.parquet", Some(1)).unwrap();
+        assert_eq!(name_a, "out-00000.parquet.zst");
+        assert_eq!(name_b, "out-00001.parquet.zst");
+        assert!(!bytes_a.is_empty());
+        assert!(!bytes_b.is_empty());
+
+        let dir = std::env::temp_dir().join("commonmeta_list_parquet_archive_tgz");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out_path = dir.join("out.parquet.tgz");
+        let data = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        write_parquet_archive(&data, out_path.to_str().unwrap(), "tgz").unwrap();
+
+        let decoder = flate2::read::GzDecoder::new(std::fs::File::open(&out_path).unwrap());
+        let mut archive = tar::Archive::new(decoder);
+        let entries: Vec<String> = archive
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(entries, vec!["out.parquet.zst"]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_write_parquet_archive_empty_data_errors() {
+        let result = write_parquet_archive(&[], "/tmp/whatever.parquet.zip", "zip");
+        assert!(result.is_err());
     }
 
     #[test]
