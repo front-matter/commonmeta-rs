@@ -137,24 +137,55 @@ fn flatten_row(data: &Data) -> CommonmetaRow {
 
 /// Write a list of commonmeta records as Parquet using the flattened
 /// `CommonmetaRow` schema.
+/// Records per Parquet row group. `flatten_row` is the CPU-heavy step here
+/// (each row's `json` column is a full JSON serialization of the original
+/// record), so it's parallelized across chunks of this size; the resulting
+/// row groups are then written into the output sequentially, since Parquet
+/// row-group data has to land in the underlying buffer in order. A single
+/// file with multiple row groups is normal Parquet practice, not a
+/// workaround — unlike writing one row group per output *file*, which is
+/// what `cmd::list` used to do before merging this batching in here.
+const ROW_GROUP_SIZE: usize = 100_000;
+
 pub fn write_parquet_all(list: &[Data]) -> Result<Vec<u8>> {
+    write_parquet_chunked(list, ROW_GROUP_SIZE)
+}
+
+/// `write_parquet_all`, parameterized over the row-group size so tests can
+/// force multiple row groups without constructing 100,000+ records.
+fn write_parquet_chunked(list: &[Data], row_group_size: usize) -> Result<Vec<u8>> {
     use parquet::file::properties::WriterProperties;
     use parquet::file::writer::SerializedFileWriter;
     use parquet::record::RecordWriter;
 
-    let rows: Vec<CommonmetaRow> = list.iter().map(flatten_row).collect();
-    let schema = rows.as_slice().schema().map_err(|e| Error::Serialize(e.to_string()))?;
+    let chunks: Vec<&[Data]> =
+        if list.is_empty() { vec![&[][..]] } else { list.chunks(row_group_size).collect() };
+
+    let row_chunks: Vec<Vec<CommonmetaRow>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .into_iter()
+            .map(|chunk| scope.spawn(move || chunk.iter().map(flatten_row).collect::<Vec<_>>()))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().map_err(|_| Error::Serialize("parquet flatten thread panicked".to_string())))
+            .collect::<Result<Vec<_>>>()
+    })?;
+
+    let schema = row_chunks[0].as_slice().schema().map_err(|e| Error::Serialize(e.to_string()))?;
     let props = std::sync::Arc::new(WriterProperties::builder().build());
 
     let buffer: Vec<u8> = Vec::new();
     let mut writer = SerializedFileWriter::new(buffer, schema, props)
         .map_err(|e| Error::Serialize(e.to_string()))?;
 
-    let mut row_group = writer.next_row_group().map_err(|e| Error::Serialize(e.to_string()))?;
-    rows.as_slice()
-        .write_to_row_group(&mut row_group)
-        .map_err(|e| Error::Serialize(e.to_string()))?;
-    row_group.close().map_err(|e| Error::Serialize(e.to_string()))?;
+    for rows in &row_chunks {
+        let mut row_group = writer.next_row_group().map_err(|e| Error::Serialize(e.to_string()))?;
+        rows.as_slice()
+            .write_to_row_group(&mut row_group)
+            .map_err(|e| Error::Serialize(e.to_string()))?;
+        row_group.close().map_err(|e| Error::Serialize(e.to_string()))?;
+    }
 
     writer.into_inner().map_err(|e| Error::Serialize(e.to_string()))
 }
@@ -341,6 +372,24 @@ mod tests {
         assert!(column_names.iter().any(|c| c == "title"));
         assert!(column_names.iter().any(|c| c == "doi"));
         assert!(column_names.iter().any(|c| c == "first_author_name"));
+    }
+
+    #[test]
+    fn test_write_parquet_chunked_uses_multiple_row_groups_in_one_file() {
+        use parquet::file::reader::{FileReader, SerializedFileReader};
+
+        let list = vec![sample_data(), sample_data(), sample_data()];
+        // row_group_size=1 forces 3 row groups without needing 100,000+ rows.
+        let bytes = write_parquet_chunked(&list, 1).unwrap();
+
+        let reader = SerializedFileReader::new(::bytes::Bytes::from(bytes.clone())).unwrap();
+        assert_eq!(reader.num_row_groups(), 3);
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 3);
+
+        // A multi-row-group file is still a single, fully readable Parquet
+        // file: read_parquet_all already loops over every row group.
+        let roundtripped = read_parquet_all(&bytes).unwrap();
+        assert_eq!(roundtripped.len(), 3);
     }
 
     #[test]

@@ -317,89 +317,43 @@ fn is_supported_output_format(to: &str) -> bool {
     )
 }
 
-/// Write `data` as one or more zstd-compressed Parquet files, splitting into
-/// batches of `BATCH_SIZE` records and writing the batches in parallel.
-/// When there is only one batch, the output is written to `out_path` (with a
-/// `.zst` suffix); otherwise each batch gets a numbered suffix.
+/// Write `data` as a single zstd-compressed Parquet file at `out_path` (with
+/// a `.zst` suffix added). `commonmeta::write_parquet` internally
+/// parallelizes the CPU-heavy flattening step across row groups, but always
+/// returns one combined buffer — so this always produces one file,
+/// regardless of how large `data` is.
 fn write_parquet_batches(data: &[Data], out_path: &str) -> Result<(), String> {
     if data.is_empty() {
         return Err("list: no records to write".to_string());
     }
 
     let (base_path, _extension, _compress) = file_utils::get_extension(out_path, ".parquet");
-    let chunks: Vec<&[Data]> = data.chunks(BATCH_SIZE).collect();
-    let multi = chunks.len() > 1;
-
-    let results: Vec<Result<(), String>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = chunks
-            .into_iter()
-            .enumerate()
-            .map(|(idx, chunk)| {
-                let base_path = base_path.clone();
-                scope.spawn(move || {
-                    write_parquet_batch(chunk, &base_path, if multi { Some(idx) } else { None })
-                })
-            })
-            .collect();
-
-        handles
-            .into_iter()
-            .map(|handle| {
-                handle
-                    .join()
-                    .unwrap_or_else(|_| Err("list: parquet batch thread panicked".to_string()))
-            })
-            .collect()
-    });
-
-    results.into_iter().collect::<Result<Vec<()>, String>>()?;
-    Ok(())
+    write_parquet_batch(data, &base_path)
 }
 
-fn write_parquet_batch(chunk: &[Data], base_path: &Path, idx: Option<usize>) -> Result<(), String> {
-    let bytes = commonmeta::write_parquet(chunk).map_err(|e| e.to_string())?;
+fn write_parquet_batch(data: &[Data], base_path: &Path) -> Result<(), String> {
+    let bytes = commonmeta::write_parquet(data).map_err(|e| e.to_string())?;
     let compressed = zstd::stream::encode_all(std::io::Cursor::new(bytes), 0)
-        .map_err(|e| format!("failed to zstd-compress parquet batch: {}", e))?;
+        .map_err(|e| format!("failed to zstd-compress parquet: {}", e))?;
 
-    let path = parquet_batch_path(base_path, idx);
+    let path = parquet_batch_path(base_path);
     file_utils::write_file(&path, &compressed)
         .map_err(|e| format!("failed to write '{}': {}", path.display(), e))?;
-    println!("wrote {} ({} records)", path.display(), chunk.len());
+    println!("wrote {} ({} records)", path.display(), data.len());
     Ok(())
 }
 
-/// Build the output path for a Parquet batch: `{base}.zst` when `idx` is
-/// `None`, or `{stem}-{idx:05}.{ext}.zst` for numbered batches.
-fn parquet_batch_path(base_path: &Path, idx: Option<usize>) -> PathBuf {
-    match idx {
-        None => {
-            let mut path = base_path.to_path_buf();
-            let name = format!("{}.zst", path.file_name().unwrap_or_default().to_string_lossy());
-            path.set_file_name(name);
-            path
-        }
-        Some(i) => {
-            let stem = base_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-            let ext = base_path
-                .extension()
-                .map(|e| e.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let parent = base_path.parent().unwrap_or_else(|| Path::new(""));
-            let filename = if ext.is_empty() {
-                format!("{}-{:05}.zst", stem, i)
-            } else {
-                format!("{}-{:05}.{}.zst", stem, i, ext)
-            };
-            parent.join(filename)
-        }
-    }
+/// Build the output path for the Parquet file: `{base}.zst`.
+fn parquet_batch_path(base_path: &Path) -> PathBuf {
+    let mut path = base_path.to_path_buf();
+    let name = format!("{}.zst", path.file_name().unwrap_or_default().to_string_lossy());
+    path.set_file_name(name);
+    path
 }
 
-/// Write `data` as one or more zstd-compressed Parquet batches packed into a
-/// single `.zip` (`compress == "zip"`) or `.tgz` (`compress == "tgz"`)
-/// archive, e.g. for `--file out.parquet.zip`. Entry names follow the same
-/// `parquet_batch_path` numbering as loose-file output, just without a
-/// directory component.
+/// Write `data` as a single zstd-compressed Parquet file packed into a
+/// `.zip` (`compress == "zip"`) or `.tgz` (`compress == "tgz"`) archive,
+/// e.g. for `--file out.parquet.zip`.
 fn write_parquet_archive(data: &[Data], out_path: &str, compress: &str) -> Result<(), String> {
     if data.is_empty() {
         return Err("list: no records to write".to_string());
@@ -408,57 +362,28 @@ fn write_parquet_archive(data: &[Data], out_path: &str, compress: &str) -> Resul
     let (base_path, _extension, _compress) = file_utils::get_extension(out_path, ".parquet");
     let base_name = base_path.file_name().unwrap_or_default().to_string_lossy().to_string();
 
-    let chunks: Vec<&[Data]> = data.chunks(BATCH_SIZE).collect();
-    let multi = chunks.len() > 1;
-
-    let results: Vec<Result<(String, Vec<u8>), String>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = chunks
-            .into_iter()
-            .enumerate()
-            .map(|(idx, chunk)| {
-                let base_name = base_name.clone();
-                scope.spawn(move || {
-                    parquet_archive_entry(chunk, &base_name, if multi { Some(idx) } else { None })
-                })
-            })
-            .collect();
-
-        handles
-            .into_iter()
-            .map(|handle| {
-                handle
-                    .join()
-                    .unwrap_or_else(|_| Err("list: parquet batch thread panicked".to_string()))
-            })
-            .collect()
-    });
-
-    let entries: Vec<(String, Vec<u8>)> = results.into_iter().collect::<Result<Vec<_>, String>>()?;
+    let entry = parquet_archive_entry(data, &base_name)?;
 
     match compress {
-        "zip" => file_utils::write_zip_archive(out_path, &entries)
+        "zip" => file_utils::write_zip_archive(out_path, std::slice::from_ref(&entry))
             .map_err(|e| format!("failed to write zip '{}': {}", out_path, e))?,
-        "tgz" => file_utils::write_tar_gz_archive(out_path, &entries)
+        "tgz" => file_utils::write_tar_gz_archive(out_path, std::slice::from_ref(&entry))
             .map_err(|e| format!("failed to write tgz '{}': {}", out_path, e))?,
         other => return Err(format!("list: unsupported archive compression: {}", other)),
     }
-    println!("wrote {} ({} records in {} batch(es))", out_path, data.len(), entries.len());
+    println!("wrote {} ({} records)", out_path, data.len());
     Ok(())
 }
 
-/// Render one Parquet batch (zstd-compressed) and name it as an archive
-/// entry, reusing `parquet_batch_path`'s numbering scheme but dropping any
+/// Render `data` as a single zstd-compressed Parquet blob and name it as an
+/// archive entry, reusing `parquet_batch_path`'s naming but dropping any
 /// directory component since archive entries are flat names.
-fn parquet_archive_entry(
-    chunk: &[Data],
-    base_name: &str,
-    idx: Option<usize>,
-) -> Result<(String, Vec<u8>), String> {
-    let bytes = commonmeta::write_parquet(chunk).map_err(|e| e.to_string())?;
+fn parquet_archive_entry(data: &[Data], base_name: &str) -> Result<(String, Vec<u8>), String> {
+    let bytes = commonmeta::write_parquet(data).map_err(|e| e.to_string())?;
     let compressed = zstd::stream::encode_all(std::io::Cursor::new(bytes), 0)
-        .map_err(|e| format!("failed to zstd-compress parquet batch: {}", e))?;
+        .map_err(|e| format!("failed to zstd-compress parquet: {}", e))?;
 
-    let entry_name = parquet_batch_path(Path::new(base_name), idx)
+    let entry_name = parquet_batch_path(Path::new(base_name))
         .file_name()
         .unwrap_or_default()
         .to_string_lossy()
@@ -1011,23 +936,14 @@ mod tests {
 
     #[test]
     fn test_parquet_batch_path_single() {
-        let path = parquet_batch_path(Path::new("/tmp/out.parquet"), None);
+        let path = parquet_batch_path(Path::new("/tmp/out.parquet"));
         assert_eq!(path, PathBuf::from("/tmp/out.parquet.zst"));
     }
 
     #[test]
-    fn test_parquet_batch_path_numbered() {
-        let path = parquet_batch_path(Path::new("/tmp/out.parquet"), Some(0));
-        assert_eq!(path, PathBuf::from("/tmp/out-00000.parquet.zst"));
-
-        let path = parquet_batch_path(Path::new("/tmp/out.parquet"), Some(12));
-        assert_eq!(path, PathBuf::from("/tmp/out-00012.parquet.zst"));
-    }
-
-    #[test]
     fn test_parquet_batch_path_no_extension() {
-        let path = parquet_batch_path(Path::new("/tmp/out"), Some(3));
-        assert_eq!(path, PathBuf::from("/tmp/out-00003.zst"));
+        let path = parquet_batch_path(Path::new("/tmp/out"));
+        assert_eq!(path, PathBuf::from("/tmp/out.zst"));
     }
 
     #[test]
@@ -1094,22 +1010,19 @@ mod tests {
     }
 
     #[test]
-    fn test_write_parquet_batches_multi_batch() {
-        let dir = std::env::temp_dir().join("commonmeta_list_parquet_multi");
+    fn test_write_parquet_batches_large_list_still_one_file() {
+        let dir = std::env::temp_dir().join("commonmeta_list_parquet_large");
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.parquet");
 
-        // Force multiple chunks by calling the chunking logic directly with a
-        // tiny effective batch size via two manual chunks instead of relying
-        // on BATCH_SIZE (kept at 100_000 for production use).
-        let chunk_a = vec![sample_data("https://doi.org/10.1/a")];
-        let chunk_b = vec![sample_data("https://doi.org/10.1/b")];
+        // Internally this would span multiple Parquet row groups if
+        // ROW_GROUP_SIZE were small, but that's an implementation detail of
+        // commonmeta::write_parquet now — the CLI always writes one file.
+        let data: Vec<Data> = (0..5).map(|i| sample_data(&format!("https://doi.org/10.1/{i}"))).collect();
+        write_parquet_batches(&data, out_path.to_str().unwrap()).unwrap();
 
-        write_parquet_batch(&chunk_a, &out_path, Some(0)).unwrap();
-        write_parquet_batch(&chunk_b, &out_path, Some(1)).unwrap();
-
-        assert!(dir.join("out-00000.parquet.zst").exists());
-        assert!(dir.join("out-00001.parquet.zst").exists());
+        assert!(dir.join("out.parquet.zst").exists());
+        assert!(!dir.join("out-00000.parquet.zst").exists());
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1132,19 +1045,10 @@ mod tests {
     }
 
     #[test]
-    fn test_write_parquet_archive_tgz_numbered_entries() {
-        // Force multiple chunks the same way test_write_parquet_batches_multi_batch
-        // does, by calling the per-chunk helper directly rather than relying
-        // on BATCH_SIZE (kept at 100_000 for production use).
-        let chunk_a = vec![sample_data("https://doi.org/10.1/a")];
-        let chunk_b = vec![sample_data("https://doi.org/10.1/b")];
-
-        let (name_a, bytes_a) = parquet_archive_entry(&chunk_a, "out.parquet", Some(0)).unwrap();
-        let (name_b, bytes_b) = parquet_archive_entry(&chunk_b, "out.parquet", Some(1)).unwrap();
-        assert_eq!(name_a, "out-00000.parquet.zst");
-        assert_eq!(name_b, "out-00001.parquet.zst");
-        assert!(!bytes_a.is_empty());
-        assert!(!bytes_b.is_empty());
+    fn test_write_parquet_archive_tgz_single_entry() {
+        let (name, bytes) = parquet_archive_entry(&[sample_data("https://doi.org/10.1/a")], "out.parquet").unwrap();
+        assert_eq!(name, "out.parquet.zst");
+        assert!(!bytes.is_empty());
 
         let dir = std::env::temp_dir().join("commonmeta_list_parquet_archive_tgz");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1228,13 +1132,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.parquet.zip");
 
-        // Force multiple entries by writing them directly, same approach as
-        // the other multi-batch tests (BATCH_SIZE is kept at 100_000 for
-        // production use).
+        // The writer always produces a single entry now, but the reader
+        // still supports multiple (e.g. archives from an older version, or
+        // hand-assembled ones) by concatenating every entry's records.
         let chunk_a = vec![sample_data("https://doi.org/10.1/a")];
         let chunk_b = vec![sample_data("https://doi.org/10.1/b")];
-        let entry_a = parquet_archive_entry(&chunk_a, "out.parquet", Some(0)).unwrap();
-        let entry_b = parquet_archive_entry(&chunk_b, "out.parquet", Some(1)).unwrap();
+        let mut entry_a = parquet_archive_entry(&chunk_a, "out.parquet").unwrap();
+        let entry_b = parquet_archive_entry(&chunk_b, "out.parquet").unwrap();
+        entry_a.0 = "out-00000.parquet.zst".to_string();
+        let entry_b = ("out-00001.parquet.zst".to_string(), entry_b.1);
         file_utils::write_zip_archive(&out_path, &[entry_a, entry_b]).unwrap();
 
         let loaded = load_commonmeta_list_from_parquet(out_path.to_str().unwrap()).unwrap();
