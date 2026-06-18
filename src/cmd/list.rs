@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use rusqlite::Connection;
@@ -12,6 +12,12 @@ use crate::file_utils;
 /// Maximum number of records per output batch, used both for Parquet batch
 /// files and for entries within a `.zip`/`.tgz` archive.
 const BATCH_SIZE: usize = 100_000;
+
+/// How long a downloaded VRAIX dump stays valid in the local cache before
+/// it's re-downloaded. Dumps are daily snapshots that don't change once
+/// published, so this is purely a disk-space/staleness bound, not a
+/// correctness one.
+const VRAIX_CACHE_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 pub fn command() -> Command {
     Command::new("list")
@@ -875,16 +881,26 @@ fn load_vraix_list_for_date(
     }
 
     let url = format!("https://metadata.vraix.org/{}-{}.sqlite3.zst", from, date);
+    let cache_key = format!("{}-{}.sqlite3.zst", from, date);
 
     let download_start = Instant::now();
-    let compressed = file_utils::download_file(&url)
-        .map_err(|e| format!("failed to download '{}': {}", url, e))?;
+    let (compressed, from_cache) =
+        file_utils::download_file_cached(&url, "vraix", &cache_key, VRAIX_CACHE_TTL)
+            .map_err(|e| format!("failed to download '{}': {}", url, e))?;
     if timers {
-        eprintln!(
-            "list: download took {:.2?} ({} bytes)",
-            download_start.elapsed(),
-            compressed.len()
-        );
+        if from_cache {
+            eprintln!(
+                "list: download took {:.2?} ({} bytes, from local cache)",
+                download_start.elapsed(),
+                compressed.len()
+            );
+        } else {
+            eprintln!(
+                "list: download took {:.2?} ({} bytes)",
+                download_start.elapsed(),
+                compressed.len()
+            );
+        }
     }
 
     let convert_start = Instant::now();

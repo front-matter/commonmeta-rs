@@ -4,7 +4,7 @@ use reqwest::blocking::Client;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use thiserror::Error;
 
 // ---------- error handling ----------
@@ -246,6 +246,71 @@ pub fn download_file(url: &str) -> Result<Vec<u8>> {
     Ok(buffer)
 }
 
+/// Local cache directory for downloaded files, e.g.
+/// `~/Library/Caches/commonmeta/{namespace}` on macOS,
+/// `~/.cache/commonmeta/{namespace}` on Linux. Falls back to the system temp
+/// dir if no cache dir is available.
+pub fn cache_dir(namespace: &str) -> PathBuf {
+    dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("commonmeta").join(namespace)
+}
+
+/// Like [`download_file`], but checks a local cache first and populates it
+/// on a miss. `namespace`/`cache_key` locate the cached file under
+/// [`cache_dir`]; `ttl` is how long a cached copy stays valid before being
+/// treated as a miss and re-downloaded. Returns `(bytes, true)` on a cache
+/// hit, `(bytes, false)` after a fresh download.
+///
+/// Cache writes and the staleness sweep are best-effort: a read-only
+/// filesystem or full disk degrades to always-download rather than failing
+/// the caller, since the network request already succeeded by that point.
+pub fn download_file_cached(
+    url: &str,
+    namespace: &str,
+    cache_key: &str,
+    ttl: Duration,
+) -> Result<(Vec<u8>, bool)> {
+    let path = cache_dir(namespace).join(cache_key);
+    prune_cache(namespace, ttl);
+
+    if let Some(bytes) = read_cache(&path, ttl) {
+        return Ok((bytes, true));
+    }
+
+    let bytes = download_file(url)?;
+    write_cache(&path, &bytes);
+    Ok((bytes, false))
+}
+
+/// Return the cached bytes at `path` if it exists and is younger than `ttl`.
+fn read_cache(path: &Path, ttl: Duration) -> Option<Vec<u8>> {
+    let metadata = fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    if SystemTime::now().duration_since(modified).ok()? > ttl {
+        return None;
+    }
+    fs::read(path).ok()
+}
+
+fn write_cache(path: &Path, bytes: &[u8]) {
+    if let Err(e) = write_file(path, bytes) {
+        eprintln!("warning: failed to cache '{}': {}", path.display(), e);
+    }
+}
+
+/// Remove cached files older than `ttl` from `cache_dir(namespace)`.
+fn prune_cache(namespace: &str, ttl: Duration) {
+    let Ok(entries) = fs::read_dir(cache_dir(namespace)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else { continue };
+        let Ok(modified) = metadata.modified() else { continue };
+        if SystemTime::now().duration_since(modified).unwrap_or_default() > ttl {
+            fs::remove_file(entry.path()).ok();
+        }
+    }
+}
+
 /// Forwards writes into `buffer` while incrementing `bar`, so
 /// `Response::copy_to` (which already classifies errors via
 /// `reqwest::Error`, unlike a manual `Read::read` loop) can report progress.
@@ -365,6 +430,86 @@ mod tests {
             message.contains("could not connect to the server"),
             "unexpected message: {message}"
         );
+    }
+
+    fn respond_once(listener: std::net::TcpListener, body: &'static [u8]) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            use std::io::Write;
+            if let Ok((mut stream, _)) = listener.accept() {
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(body);
+            }
+        })
+    }
+
+    #[test]
+    fn test_download_file_cached_hits_cache_without_network() {
+        let namespace = "test-cache-hit";
+        let cache_key = "file.txt";
+        std::fs::remove_dir_all(cache_dir(namespace)).ok();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = respond_once(listener, b"hello from network");
+
+        let (bytes, from_cache) = download_file_cached(
+            &format!("http://{addr}/file"),
+            namespace,
+            cache_key,
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+        assert_eq!(bytes, b"hello from network");
+        assert!(!from_cache);
+        handle.join().unwrap();
+
+        // Second call must not touch the network: nothing is listening on
+        // this address anymore, so a cache miss here would error out.
+        let (bytes, from_cache) = download_file_cached(
+            &format!("http://{addr}/file"),
+            namespace,
+            cache_key,
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+        assert_eq!(bytes, b"hello from network");
+        assert!(from_cache);
+
+        std::fs::remove_dir_all(cache_dir(namespace)).ok();
+    }
+
+    #[test]
+    fn test_download_file_cached_expired_entry_redownloads() {
+        let namespace = "test-cache-expired";
+        let cache_key = "file.txt";
+        std::fs::remove_dir_all(cache_dir(namespace)).ok();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = respond_once(listener, b"first download");
+        let ttl = Duration::from_millis(50);
+        let (bytes, from_cache) =
+            download_file_cached(&format!("http://{addr}/file"), namespace, cache_key, ttl).unwrap();
+        assert_eq!(bytes, b"first download");
+        assert!(!from_cache);
+        handle.join().unwrap();
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = respond_once(listener, b"second download");
+        let (bytes, from_cache) =
+            download_file_cached(&format!("http://{addr}/file"), namespace, cache_key, ttl).unwrap();
+        assert_eq!(bytes, b"second download");
+        assert!(!from_cache, "expired cache entry should trigger a fresh download");
+        handle.join().unwrap();
+
+        std::fs::remove_dir_all(cache_dir(namespace)).ok();
     }
 
     #[test]
