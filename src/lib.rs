@@ -60,15 +60,18 @@ pub fn convert_citation(
     formats::write_citation("citation", &data, style, locale)
 }
 
-/// Write a list of commonmeta records as a single Parquet file, using a
-/// flattened, lossy tabular projection of each record's fields.
+/// Write a list of commonmeta records as a single Parquet file. Alongside a
+/// flattened tabular projection of each record's fields (for filtering in
+/// tools like DuckDB without parsing JSON), every row also carries a `json`
+/// column with the record's complete serialization, so [`read_parquet`]
+/// round-trips losslessly.
 pub fn write_parquet(list: &[Data]) -> Result<Vec<u8>> {
     formats::commonmeta::write_parquet_all(list)
 }
 
-/// Read a list of commonmeta records back from the flattened Parquet schema
-/// written by [`write_parquet`]. Lossy: only the fields captured by the
-/// flattened projection (e.g. first author, first title) are restored.
+/// Read a list of commonmeta records back from the Parquet schema written by
+/// [`write_parquet`]. Lossless: each record is restored from its `json`
+/// column, the complete original serialization.
 pub fn read_parquet(bytes: &[u8]) -> Result<Vec<Data>> {
     formats::commonmeta::read_parquet_all(bytes)
 }

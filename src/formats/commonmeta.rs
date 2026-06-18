@@ -21,9 +21,14 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
 // ── Bulk Parquet writer (catalog dumps) ───────────────────────────────────────
 //
 // Parquet needs a flat, scalar schema, but `Data` is deeply nested (titles,
-// contributors, identifiers, etc. are all lists). `CommonmetaRow` is a lossy
-// tabular projection of the fields most useful for analysis, in the same
-// spirit as the `RorCsv` flattening in ror.rs.
+// contributors, identifiers, etc. are all lists). `CommonmetaRow` flattens
+// the fields most useful for analysis/filtering (e.g. in DuckDB) without
+// needing to parse JSON, in the same spirit as the `RorCsv` flattening in
+// ror.rs — but unlike that one, it also carries a `json` column with the
+// complete record's JSON serialization, so `read_parquet_all` can
+// reconstruct the original `Data` exactly rather than just the flattened
+// subset. The other columns are a queryable convenience layer on top of
+// that, not the source of truth.
 
 /// A flattened, Parquet-friendly view of a single commonmeta `Data` record.
 #[derive(
@@ -55,6 +60,10 @@ pub struct CommonmetaRow {
     pub description: String,
     pub provider: String,
     pub additional_type: String,
+    /// Complete JSON serialization of the original `Data` record. The
+    /// authoritative source for `read_parquet_all`; the columns above exist
+    /// for filtering/analysis without needing to parse this.
+    pub json: String,
 }
 
 fn contributor_name(contributor: &crate::data::Contributor) -> String {
@@ -94,6 +103,8 @@ fn flatten_row(data: &Data) -> CommonmetaRow {
 
     let description = data.descriptions.first().map(|d| d.description.clone()).unwrap_or_default();
 
+    let json = serde_json::to_string(data).unwrap_or_default();
+
     CommonmetaRow {
         id: data.id.clone(),
         record_type: data.type_.clone(),
@@ -120,6 +131,7 @@ fn flatten_row(data: &Data) -> CommonmetaRow {
         description,
         provider: data.provider.clone(),
         additional_type: data.additional_type.clone(),
+        json,
     }
 }
 
@@ -147,12 +159,24 @@ pub fn write_parquet_all(list: &[Data]) -> Result<Vec<u8>> {
     writer.into_inner().map_err(|e| Error::Serialize(e.to_string()))
 }
 
-/// Reconstruct a `Data` record from its flattened `CommonmetaRow` projection.
+/// Reconstruct a `Data` record from a `CommonmetaRow`.
 ///
-/// This is the inverse of `flatten_row`, but lossy in the same direction: only
-/// the fields captured by `CommonmetaRow` (e.g. the first author, first title)
-/// are restored, not the full original record.
+/// Prefers the `json` column, which holds the complete original record, so
+/// the round trip through Parquet is lossless. Falls back to rebuilding from
+/// the flattened columns (the inverse of `flatten_row`, lossy in the same
+/// direction: only the fields captured there, e.g. the first author, first
+/// title, are restored) for Parquet files written before the `json` column
+/// existed, or if it's somehow empty/invalid.
 fn unflatten_row(row: &CommonmetaRow) -> Data {
+    if !row.json.is_empty()
+        && let Ok(data) = serde_json::from_str::<Data>(&row.json)
+    {
+        return data;
+    }
+    unflatten_row_lossy(row)
+}
+
+fn unflatten_row_lossy(row: &CommonmetaRow) -> Data {
     Data {
         id: row.id.clone(),
         type_: row.record_type.clone(),
@@ -215,9 +239,9 @@ fn unflatten_row(row: &CommonmetaRow) -> Data {
     }
 }
 
-/// Read a list of commonmeta records back from the flattened `CommonmetaRow`
-/// Parquet schema written by `write_parquet_all`. Lossy: only the fields
-/// captured by `CommonmetaRow` are restored.
+/// Read a list of commonmeta records back from the `CommonmetaRow` Parquet
+/// schema written by `write_parquet_all`. Lossless: each record is restored
+/// from its `json` column, the complete original serialization.
 pub fn read_parquet_all(bytes: &[u8]) -> Result<Vec<Data>> {
     use parquet::file::reader::{FileReader, SerializedFileReader};
     use parquet::record::RecordReader;
@@ -326,15 +350,58 @@ mod tests {
 
         let roundtripped = read_parquet_all(&bytes).unwrap();
         assert_eq!(roundtripped.len(), 1);
-        assert_eq!(roundtripped[0].id, "https://doi.org/10.1234/abc");
-        assert_eq!(roundtripped[0].type_, "JournalArticle");
-        assert_eq!(roundtripped[0].titles[0].title, "A Sample Title");
-        assert_eq!(roundtripped[0].identifiers[0].identifier, "10.1234/abc");
-        assert_eq!(roundtripped[0].contributors[0].name, "Jane Doe");
-        assert_eq!(
-            roundtripped[0].contributors[0].id,
-            "https://orcid.org/0000-0002-1825-0097"
-        );
+        // Lossless: the round-tripped record is byte-for-byte identical to
+        // the original, not just the fields the flattened columns capture.
+        assert_eq!(roundtripped[0], list[0]);
+    }
+
+    #[test]
+    fn test_write_read_parquet_roundtrip_preserves_fields_outside_flattened_view() {
+        use crate::data::{Affiliation, Description, Subject, Title};
+
+        let mut data = sample_data();
+        // Fields the old flattened-only reconstruction dropped: a second
+        // title, a second contributor with affiliations, a second
+        // identifier, and a second description.
+        data.titles.push(Title {
+            title: "An Alternative Title".to_string(),
+            type_: "TranslatedTitle".to_string(),
+            ..Default::default()
+        });
+        data.contributors.push(Contributor {
+            given_name: "John".to_string(),
+            family_name: "Smith".to_string(),
+            affiliations: vec![Affiliation {
+                id: "https://ror.org/02catss52".to_string(),
+                name: "Example University".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        data.identifiers.push(Identifier {
+            identifier: "1234-5678".to_string(),
+            identifier_type: "ISSN".to_string(),
+        });
+        data.descriptions.push(Description {
+            description: "A second description".to_string(),
+            type_: "TechnicalInfo".to_string(),
+            ..Default::default()
+        });
+        data.subjects = vec![Subject { subject: "Biology".to_string() }, Subject {
+            subject: "Chemistry".to_string(),
+        }];
+
+        let bytes = write_parquet_all(&[data.clone()]).unwrap();
+        let roundtripped = read_parquet_all(&bytes).unwrap();
+
+        assert_eq!(roundtripped.len(), 1);
+        assert_eq!(roundtripped[0], data);
+        assert_eq!(roundtripped[0].titles.len(), 2);
+        assert_eq!(roundtripped[0].contributors.len(), 2);
+        assert_eq!(roundtripped[0].contributors[1].affiliations[0].name, "Example University");
+        assert_eq!(roundtripped[0].identifiers.len(), 2);
+        assert_eq!(roundtripped[0].descriptions.len(), 1);
+        assert_eq!(roundtripped[0].subjects.len(), 2);
     }
 
     #[test]
