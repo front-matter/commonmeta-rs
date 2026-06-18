@@ -434,6 +434,8 @@ fn archive_entry_name(base_path: &Path, idx: Option<usize>) -> String {
 }
 
 fn write_output(data: &[Data], to: &str) -> Result<Vec<u8>, String> {
+    let bar = crate::progress::count_bar("rendering", data.len() as u64);
+
     if matches!(to, "commonmeta" | "csl" | "datacite" | "inveniordm" | "schemaorg" | "ror") {
         let mut items: Vec<serde_json::Value> = Vec::with_capacity(data.len());
         for item in data {
@@ -441,7 +443,9 @@ fn write_output(data: &[Data], to: &str) -> Result<Vec<u8>, String> {
             let value: serde_json::Value = serde_json::from_slice(&rendered)
                 .map_err(|e| format!("failed to parse {} output as JSON: {}", to, e))?;
             items.push(value);
+            bar.inc(1);
         }
+        bar.finish_and_clear();
         return serde_json::to_vec_pretty(&items).map_err(|e| e.to_string());
     }
 
@@ -452,7 +456,9 @@ fn write_output(data: &[Data], to: &str) -> Result<Vec<u8>, String> {
             output.push('\n');
         }
         output.push_str(&String::from_utf8_lossy(&rendered));
+        bar.inc(1);
     }
+    bar.finish_and_clear();
     Ok(output.into_bytes())
 }
 
@@ -928,6 +934,15 @@ fn load_vraix_list_from_sqlite(path: &str, from: &str, matches: &ArgMatches) -> 
 
     let mut out: Vec<Data> = Vec::new();
     if number == 0 {
+        let total: i64 = connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {}", quote_identifier(&table)),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        let bar = crate::progress::count_bar("converting", total.max(0) as u64);
+
         let rows = statement
             .query_map([], |row| row.get::<_, String>(0))
             .map_err(|e| format!("failed to query rows: {}", e))?;
@@ -935,10 +950,13 @@ fn load_vraix_list_from_sqlite(path: &str, from: &str, matches: &ArgMatches) -> 
         for row in rows {
             let raw_metadata = row.map_err(|e| e.to_string())?;
             out.push(convert_vraix_row(from, &raw_metadata)?);
+            bar.inc(1);
         }
+        bar.finish_and_clear();
         return Ok(out);
     }
 
+    let bar = crate::progress::count_bar("converting", number as u64);
     let rows = statement
         .query_map([number as i64, offset as i64], |row| row.get::<_, String>(0))
         .map_err(|e| format!("failed to query rows: {}", e))?;
@@ -946,7 +964,9 @@ fn load_vraix_list_from_sqlite(path: &str, from: &str, matches: &ArgMatches) -> 
     for row in rows {
         let raw_metadata = row.map_err(|e| e.to_string())?;
         out.push(convert_vraix_row(from, &raw_metadata)?);
+        bar.inc(1);
     }
+    bar.finish_and_clear();
 
     Ok(out)
 }

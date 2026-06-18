@@ -224,8 +224,15 @@ pub fn download_file(url: &str) -> Result<Vec<u8>> {
         });
     }
 
+    let total_bytes = resp.content_length().unwrap_or(0);
+    let bar = crate::progress::bytes_bar("downloading", total_bytes);
+
     let mut buffer = Vec::new();
-    if let Err(e) = resp.copy_to(&mut buffer) {
+    let mut writer = ProgressWriter { buffer: &mut buffer, bar: &bar };
+    let copy_result = resp.copy_to(&mut writer);
+    bar.finish_and_clear();
+
+    if let Err(e) = copy_result {
         return Err(FileError::Download {
             url: url.to_string(),
             message: format!(
@@ -237,6 +244,26 @@ pub fn download_file(url: &str) -> Result<Vec<u8>> {
     }
 
     Ok(buffer)
+}
+
+/// Forwards writes into `buffer` while incrementing `bar`, so
+/// `Response::copy_to` (which already classifies errors via
+/// `reqwest::Error`, unlike a manual `Read::read` loop) can report progress.
+struct ProgressWriter<'a> {
+    buffer: &'a mut Vec<u8>,
+    bar: &'a indicatif::ProgressBar,
+}
+
+impl Write for ProgressWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.buffer.extend_from_slice(buf);
+        self.bar.inc(buf.len() as u64);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Classify a `reqwest::Error` into a more actionable message than its

@@ -4,6 +4,7 @@ mod cmd;
 pub mod crockford;
 pub mod doi_utils;
 pub mod file_utils;
+pub mod progress;
 pub mod utils;
 
 fn main() -> Result<(), String> {

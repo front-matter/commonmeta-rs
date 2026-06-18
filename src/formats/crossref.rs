@@ -1,6 +1,6 @@
 use lazy_static::lazy_static;
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use url::Url;
 
 use crate::data::{
@@ -8,6 +8,22 @@ use crate::data::{
     Identifier, License, Publisher, Reference, Subject, Title,
 };
 use crate::error::{Error, Result};
+
+// Crossref sometimes sends an explicit JSON `null` for an optional string
+// (e.g. `"publisher":null`) rather than omitting the key. `#[serde(default)]`
+// alone doesn't catch that: default only fires when the key is *absent*, not
+// when it's present with value `null`, so deserializing straight into a
+// `String` fails with "invalid type: null, expected a string".
+fn null_to_string<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
+}
+
+/// Same as `null_to_string`, but for array fields (e.g. `"title":[null]`)
+/// where an individual element may be an explicit `null`.
+fn null_to_string_vec<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
+    let values: Vec<Option<String>> = Deserialize::deserialize(d)?;
+    Ok(values.into_iter().map(Option::unwrap_or_default).collect())
+}
 
 // ─── Crossref API structs ────────────────────────────────────────────────────
 
@@ -31,17 +47,17 @@ struct CrossrefListMessage {
 
 #[derive(Deserialize)]
 pub(crate) struct CrossrefWork {
-    #[serde(rename = "DOI")]
+    #[serde(rename = "DOI", default, deserialize_with = "null_to_string")]
     doi: String,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default, deserialize_with = "null_to_string")]
     type_: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string_vec")]
     title: Vec<String>,
     #[serde(default)]
     author: Vec<CrossrefAuthor>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string")]
     publisher: String,
-    #[serde(rename = "container-title", default)]
+    #[serde(rename = "container-title", default, deserialize_with = "null_to_string_vec")]
     container_title: Vec<String>,
     #[serde(default)]
     volume: Option<String>,
@@ -49,13 +65,13 @@ pub(crate) struct CrossrefWork {
     issue: Option<String>,
     #[serde(default)]
     page: Option<String>,
-    #[serde(rename = "ISSN", default)]
+    #[serde(rename = "ISSN", default, deserialize_with = "null_to_string_vec")]
     issn: Vec<String>,
     #[serde(rename = "abstract", default)]
     abstract_text: Option<String>,
     #[serde(default)]
     language: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string_vec")]
     subject: Vec<String>,
     #[serde(default)]
     license: Vec<CrossrefLicense>,
@@ -83,7 +99,7 @@ pub(crate) struct CrossrefWork {
 
 #[derive(Deserialize)]
 struct CrossrefInstitution {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string")]
     name: String,
 }
 
@@ -95,21 +111,21 @@ struct CrossrefResource {
 
 #[derive(Deserialize)]
 struct CrossrefPrimaryResource {
-    #[serde(rename = "URL", default)]
+    #[serde(rename = "URL", default, deserialize_with = "null_to_string")]
     url: String,
 }
 
 #[derive(Deserialize)]
 struct CrossrefVersion {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string")]
     version: String,
 }
 
 #[derive(Deserialize)]
 struct CrossrefLink {
-    #[serde(rename = "URL", default)]
+    #[serde(rename = "URL", default, deserialize_with = "null_to_string")]
     url: String,
-    #[serde(rename = "content-type", default)]
+    #[serde(rename = "content-type", default, deserialize_with = "null_to_string")]
     content_type: String,
 }
 
@@ -126,7 +142,7 @@ struct CrossrefAuthor {
 
 #[derive(Deserialize)]
 struct CrossrefAffiliation {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string")]
     name: String,
     #[serde(default)]
     id: Vec<CrossrefAffiliationId>,
@@ -134,10 +150,11 @@ struct CrossrefAffiliation {
 
 #[derive(Deserialize)]
 struct CrossrefAffiliationId {
+    #[serde(default, deserialize_with = "null_to_string")]
     id: String,
-    #[serde(rename = "id-type")]
+    #[serde(rename = "id-type", default, deserialize_with = "null_to_string")]
     id_type: String,
-    #[serde(rename = "asserted-by", default)]
+    #[serde(rename = "asserted-by", default, deserialize_with = "null_to_string")]
     asserted_by: String,
 }
 
@@ -151,7 +168,7 @@ struct CrossrefDate {
 
 #[derive(Deserialize)]
 struct CrossrefLicense {
-    #[serde(rename = "URL")]
+    #[serde(rename = "URL", default, deserialize_with = "null_to_string")]
     url: String,
     #[serde(rename = "content-version")]
     content_version: Option<String>,
@@ -161,9 +178,9 @@ struct CrossrefLicense {
 struct CrossrefFunder {
     #[serde(rename = "DOI")]
     doi: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string")]
     name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_string_vec")]
     award: Vec<String>,
 }
 
@@ -831,4 +848,50 @@ pub(crate) fn query_url(
     }
 
     url.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Real-world VRAIX Crossref dumps use explicit JSON `null` (not a
+    /// missing key) for several optional string fields, which
+    /// `#[serde(default)]` alone does not catch since default only fires
+    /// when the key is absent.
+    #[test]
+    fn test_read_json_tolerates_null_publisher() {
+        let json = r#"{"message":{
+            "DOI":"10.1/a",
+            "type":"journal-article",
+            "title":["A Title"],
+            "publisher":null
+        }}"#;
+        let data = read_json(json).unwrap();
+        assert_eq!(data.id, "https://doi.org/10.1/a");
+        assert_eq!(data.publisher.name, "");
+    }
+
+    /// Array elements can also be an explicit `null`, e.g. `"title":[null]`.
+    #[test]
+    fn test_read_json_tolerates_null_title_element() {
+        let json = r#"{"message":{
+            "DOI":"10.1/a",
+            "type":"journal-article",
+            "title":[null]
+        }}"#;
+        let data = read_json(json).unwrap();
+        assert_eq!(data.titles[0].title, "");
+    }
+
+    #[test]
+    fn test_read_json_tolerates_null_affiliation_name() {
+        let json = r#"{"message":{
+            "DOI":"10.1/a",
+            "type":"journal-article",
+            "title":["A Title"],
+            "author":[{"name":"Some Org","affiliation":[{"name":null}]}]
+        }}"#;
+        let data = read_json(json).unwrap();
+        assert_eq!(data.contributors[0].affiliations[0].name, "");
+    }
 }
