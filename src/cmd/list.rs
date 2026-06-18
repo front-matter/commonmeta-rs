@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use rusqlite::Connection;
@@ -153,6 +154,12 @@ pub fn command() -> Command {
                      metadata.vraix.org unless an input file path is also given",
                 ),
         )
+        .arg(
+            Arg::new("timers")
+                .long("timers")
+                .help("Print timing for download/parse/write phases to stderr")
+                .action(ArgAction::SetTrue),
+        )
 }
 
 pub fn execute(matches: &ArgMatches) -> Result<(), String> {
@@ -166,6 +173,7 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         .unwrap_or("commonmeta");
     let out_file = matches.get_one::<String>("file");
     let date = matches.get_one::<String>("date").map(String::as_str);
+    let timers = matches.get_flag("timers");
 
     if !matches!(from, "crossref" | "datacite" | "openalex" | "commonmeta") {
         return Err(format!(
@@ -183,7 +191,13 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
                 "list: --date requires --from crossref or --from datacite".to_string(),
             );
         }
-        load_vraix_list_for_date(date, matches.get_one::<String>("input").map(String::as_str), from, matches)?
+        load_vraix_list_for_date(
+            date,
+            matches.get_one::<String>("input").map(String::as_str),
+            from,
+            matches,
+            timers,
+        )?
     } else if let Some(input_path) = matches.get_one::<String>("input") {
         load_list_from_file(input_path, from)?
     } else {
@@ -206,17 +220,46 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
                     to
                 ));
             }
-            return write_parquet_batches(&data, path);
+            let write_start = Instant::now();
+            let result = write_parquet_batches(&data, path);
+            if timers {
+                eprintln!(
+                    "list: write {} took {:.2?} ({} records)",
+                    to,
+                    write_start.elapsed(),
+                    data.len()
+                );
+            }
+            return result;
         }
         // A .zip/.tgz --file extension archives the records as multiple
         // batched entries (e.g. for a large --number 0 VRAIX dump) instead
         // of rendering everything into one in-memory buffer.
         if compress == "zip" || compress == "tgz" {
-            return write_archive_batches(&data, to, path, &compress);
+            let write_start = Instant::now();
+            let result = write_archive_batches(&data, to, path, &compress);
+            if timers {
+                eprintln!(
+                    "list: write {} took {:.2?} ({} records)",
+                    to,
+                    write_start.elapsed(),
+                    data.len()
+                );
+            }
+            return result;
         }
     }
 
+    let write_start = Instant::now();
     let output = write_output(&data, to)?;
+    if timers {
+        eprintln!(
+            "list: write {} took {:.2?} ({} records)",
+            to,
+            write_start.elapsed(),
+            data.len()
+        );
+    }
 
     match out_file {
         Some(path) => {
@@ -810,14 +853,35 @@ fn load_vraix_list_for_date(
     input_path: Option<&str>,
     from: &str,
     matches: &ArgMatches,
+    timers: bool,
 ) -> Result<Vec<Data>, String> {
     if let Some(path) = input_path {
-        return load_vraix_list_from_sqlite(path, from, matches);
+        let convert_start = Instant::now();
+        let data = load_vraix_list_from_sqlite(path, from, matches)?;
+        if timers {
+            eprintln!(
+                "list: read to commonmeta took {:.2?} ({} records)",
+                convert_start.elapsed(),
+                data.len()
+            );
+        }
+        return Ok(data);
     }
 
     let url = format!("https://metadata.vraix.org/{}-{}.sqlite3.zst", from, date);
+
+    let download_start = Instant::now();
     let compressed = file_utils::download_file(&url)
         .map_err(|e| format!("failed to download '{}': {}", url, e))?;
+    if timers {
+        eprintln!(
+            "list: download took {:.2?} ({} bytes)",
+            download_start.elapsed(),
+            compressed.len()
+        );
+    }
+
+    let convert_start = Instant::now();
     let decompressed = file_utils::unzst_content(&compressed)
         .map_err(|e| format!("failed to decompress '{}': {}", url, e))?;
 
@@ -828,7 +892,15 @@ fn load_vraix_list_for_date(
 
     let result = load_vraix_list_from_sqlite(tmp_path.to_str().unwrap(), from, matches);
     std::fs::remove_file(&tmp_path).ok();
-    result
+    let data = result?;
+    if timers {
+        eprintln!(
+            "list: read to commonmeta took {:.2?} ({} records)",
+            convert_start.elapsed(),
+            data.len()
+        );
+    }
+    Ok(data)
 }
 
 fn load_vraix_list_from_sqlite(path: &str, from: &str, matches: &ArgMatches) -> Result<Vec<Data>, String> {
@@ -1232,9 +1304,14 @@ mod tests {
         );
 
         let matches = command().get_matches_from(vec!["list", "--number", "10", "--page", "1"]);
-        let data =
-            load_vraix_list_for_date("2026-06-14", Some(path.to_str().unwrap()), "datacite", &matches)
-                .unwrap();
+        let data = load_vraix_list_for_date(
+            "2026-06-14",
+            Some(path.to_str().unwrap()),
+            "datacite",
+            &matches,
+            false,
+        )
+        .unwrap();
         assert_eq!(data.len(), 1);
         assert_eq!(data[0].id, "https://doi.org/10.5678/b");
 
