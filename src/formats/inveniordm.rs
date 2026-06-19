@@ -2096,6 +2096,11 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
     serde_json::to_vec(&payload).map_err(|e| Error::Parse(e.to_string()))
 }
 
+pub fn write_all(list: &[Data]) -> Result<Vec<u8>> {
+    let payloads: Vec<OutInveniordm> = list.iter().map(convert).collect();
+    serde_json::to_vec_pretty(&payloads).map_err(|e| Error::Parse(e.to_string()))
+}
+
 /// Fetch an InvenioRDM record by URL (e.g. `https://rogue-scholar.org/records/7zrtf-jkc81`).
 pub fn fetch(url: &str) -> Result<Data> {
     let parsed = url::Url::parse(url).map_err(|e| Error::Parse(e.to_string()))?;

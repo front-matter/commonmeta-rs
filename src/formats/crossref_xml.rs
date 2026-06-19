@@ -1022,12 +1022,9 @@ fn convert(data: &Data) -> Body {
     body
 }
 
-// ── Public write function ─────────────────────────────────────────────────────
-
-pub fn write(data: &Data) -> Result<Vec<u8>> {
-    let body = convert(data);
+fn build_doi_batch(body: Body) -> DoiBatch {
     let timestamp = Utc::now().format("%Y%m%d%H%M%S").to_string();
-    let doi_batch = DoiBatch {
+    DoiBatch {
         xmlns: "http://www.crossref.org/schema/5.4.0",
         xmlns_ai: "http://www.crossref.org/AccessIndicators.xsd",
         xmlns_rel: "http://www.crossref.org/relations.xsd",
@@ -1043,8 +1040,10 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
             registrant: String::new(),
         },
         body,
-    };
+    }
+}
 
+fn serialize_doi_batch(doi_batch: DoiBatch) -> Result<Vec<u8>> {
     let mut buf = String::new();
     let mut ser = Serializer::new(&mut buf);
     ser.indent(' ', 2);
@@ -1054,6 +1053,23 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
 
     let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}", buf);
     Ok(xml.into_bytes())
+}
+
+// ── Public write function ─────────────────────────────────────────────────────
+
+pub fn write(data: &Data) -> Result<Vec<u8>> {
+    serialize_doi_batch(build_doi_batch(convert(data)))
+}
+
+pub fn write_all(list: &[Data]) -> Result<Vec<u8>> {
+    let mut body = Body::default();
+    for data in list {
+        let part = convert(data);
+        body.posted_content.extend(part.posted_content);
+        body.journal.extend(part.journal);
+        body.dissertation.extend(part.dissertation);
+    }
+    serialize_doi_batch(build_doi_batch(body))
 }
 
 // ── XML input structs (Crossref API "unixsd" format) ─────────────────────────

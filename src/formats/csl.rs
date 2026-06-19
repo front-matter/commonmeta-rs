@@ -476,9 +476,7 @@ fn bare_doi(id: &str) -> String {
         .to_string()
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────────
-
-pub fn write(data: &Data) -> Result<Vec<u8>> {
+fn convert(data: &Data) -> CslRecord {
     let doi = if data.id.contains("doi.org") { bare_doi(&data.id) } else { String::new() };
     let csl_id = if doi.is_empty() { data.id.clone() } else { doi.clone() };
 
@@ -498,8 +496,7 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
         .map(to_csl_name)
         .collect();
 
-    let issued = parse_iso_date(&data.date.published)
-        .or_else(|| parse_iso_date(&data.date.created));
+    let issued = parse_iso_date(&data.date.published).or_else(|| parse_iso_date(&data.date.created));
 
     let container = &data.container;
     let page = match (container.first_page.as_str(), container.last_page.as_str()) {
@@ -520,7 +517,7 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
         .map(|d| d.description.clone())
         .unwrap_or_default();
 
-    let record = CslRecord {
+    CslRecord {
         id: csl_id,
         type_: to_csl_type(&data.type_).to_string(),
         title,
@@ -538,9 +535,19 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
         abstract_text,
         language: data.language.clone(),
         source: data.provider.clone(),
-    };
+    }
+}
 
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+pub fn write(data: &Data) -> Result<Vec<u8>> {
+    let record = convert(data);
     serde_json::to_vec_pretty(&record).map_err(|e| Error::Serialize(e.to_string()))
+}
+
+pub fn write_all(list: &[Data]) -> Result<Vec<u8>> {
+    let records: Vec<CslRecord> = list.iter().map(convert).collect();
+    serde_json::to_vec_pretty(&records).map_err(|e| Error::Serialize(e.to_string()))
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

@@ -328,7 +328,7 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
 }
 
 /// Write Data as minimal ROR JSON.
-pub fn write_json(data: &Data) -> Result<Vec<u8>> {
+fn convert_json(data: &Data) -> serde_json::Value {
     use serde_json::{json, Map, Value};
 
     let ror_id = normalize_ror(&data.id);
@@ -393,7 +393,17 @@ pub fn write_json(data: &Data) -> Result<Vec<u8>> {
         obj.insert("established".to_string(), Value::Number(year.into()));
     }
 
-    serde_json::to_vec_pretty(&Value::Object(obj))
+    Value::Object(obj)
+}
+
+pub fn write_json(data: &Data) -> Result<Vec<u8>> {
+    serde_json::to_vec_pretty(&convert_json(data))
+        .map_err(|e| Error::Serialize(e.to_string()))
+}
+
+pub fn write_json_all(list: &[Data]) -> Result<Vec<u8>> {
+    let values: Vec<serde_json::Value> = list.iter().map(convert_json).collect();
+    serde_json::to_vec_pretty(&values)
         .map_err(|e| Error::Serialize(e.to_string()))
 }
 

@@ -1015,3 +1015,9 @@ pub fn write(data: &crate::data::Data) -> crate::error::Result<Vec<u8>> {
     let payload = convert(data);
     serde_json::to_vec(&payload).map_err(|e| crate::error::Error::Serialize(e.to_string()))
 }
+
+pub fn write_all(list: &[crate::data::Data]) -> crate::error::Result<Vec<u8>> {
+    let payloads: Vec<OutPayload> = list.iter().map(convert).collect();
+    serde_json::to_vec_pretty(&payloads)
+        .map_err(|e| crate::error::Error::Serialize(e.to_string()))
+}

@@ -3,19 +3,28 @@ use serde::Serialize;
 use crate::data::Data;
 use crate::error::{Error, Result};
 
-pub fn read(json: &str) -> Result<Data> {
-    serde_json::from_str(json).map_err(|e| Error::Parse(e.to_string()))
-}
-
-pub fn write(data: &Data) -> Result<Vec<u8>> {
+fn sanitize(data: &Data) -> Data {
     let mut sanitized = data.clone();
     for contributor in &mut sanitized.contributors {
         if contributor.type_ == "Person" {
             contributor.name.clear();
         }
     }
+    sanitized
+}
 
+pub fn read(json: &str) -> Result<Data> {
+    serde_json::from_str(json).map_err(|e| Error::Parse(e.to_string()))
+}
+
+pub fn write(data: &Data) -> Result<Vec<u8>> {
+    let sanitized = sanitize(data);
     serde_json::to_vec(&sanitized).map_err(|e| Error::Serialize(e.to_string()))
+}
+
+pub fn write_all(list: &[Data]) -> Result<Vec<u8>> {
+    let sanitized: Vec<Data> = list.iter().map(sanitize).collect();
+    serde_json::to_vec_pretty(&sanitized).map_err(|e| Error::Serialize(e.to_string()))
 }
 
 // ── Bulk Parquet writer (catalog dumps) ───────────────────────────────────────

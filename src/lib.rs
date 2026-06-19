@@ -97,18 +97,20 @@ pub fn write_list_citation(
 ) -> Result<Vec<u8>> {
     let bar = progress::count_bar("rendering", list.len() as u64);
 
-    if matches!(to, "commonmeta" | "csl" | "datacite" | "inveniordm" | "schemaorg" | "ror") {
-        let mut items: Vec<serde_json::Value> = Vec::with_capacity(list.len());
-        for item in list {
-            let rendered = formats::write_citation(to, item, style, locale)?;
-            let value: serde_json::Value = serde_json::from_slice(&rendered).map_err(|e| {
-                Error::Serialize(format!("failed to parse {} output as JSON: {}", to, e))
-            })?;
-            items.push(value);
-            bar.inc(1);
-        }
+    if matches!(
+        to,
+        "commonmeta"
+            | "csl"
+            | "datacite"
+            | "inveniordm"
+            | "schemaorg"
+            | "ror"
+            | "citation"
+            | "crossref_xml"
+    ) {
+        let bytes = formats::write_all_citation(to, list, style, locale)?;
         bar.finish_and_clear();
-        return serde_json::to_vec_pretty(&items).map_err(|e| Error::Serialize(e.to_string()));
+        return Ok(bytes);
     }
 
     let mut output = String::new();
@@ -274,6 +276,27 @@ mod tests {
         let text = String::from_utf8(bytes).unwrap();
         // Two records, newline-joined rather than a JSON array.
         assert_eq!(text.lines().filter(|l| l.starts_with("TY  -")).count(), 2);
+    }
+
+    #[test]
+    fn test_write_list_crossref_xml_batches_into_one_doi_batch() {
+        let list = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        let bytes = write_list(&list, "crossref_xml").unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        assert_eq!(text.matches("<doi_batch xmlns=").count(), 1);
+        assert_eq!(text.matches("<journal_article").count(), 2);
+    }
+
+    #[test]
+    fn test_write_list_ror_uses_json_array_batch_writer() {
+        let mut a = sample_data("https://ror.org/0342dzm54");
+        a.titles.push(crate::data::Title { title: "Org A".to_string(), ..Default::default() });
+        let mut b = sample_data("https://ror.org/0521rfr06");
+        b.titles.push(crate::data::Title { title: "Org B".to_string(), ..Default::default() });
+
+        let bytes = write_list(&[a, b], "ror").unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value.as_array().unwrap().len(), 2);
     }
 
     #[test]

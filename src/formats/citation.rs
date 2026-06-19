@@ -201,22 +201,24 @@ fn build_entry(data: &Data) -> Entry {
     entry
 }
 
+fn resolve_style(style_name: Option<&str>) -> Result<hayagriva::citationberg::IndependentStyle> {
+    let archived = style_name
+        .and_then(ArchivedStyle::by_name)
+        .unwrap_or(ArchivedStyle::AmericanPsychologicalAssociation);
+
+    match archived.get() {
+        Style::Independent(style) => Ok(style),
+        Style::Dependent(_) => Err(Error::Serialize("dependent style not supported".into())),
+    }
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /// Format a bibliography entry as HTML. Defaults to APA 7th edition.
 /// `style_name` is a CSL style name (e.g. `"chicago-author-date"`).
 /// `locale` is a BCP 47 tag (e.g. `"de-DE"`) that overrides the style's default language.
 pub fn write(data: &Data, style_name: Option<&str>, locale: Option<&str>) -> Result<Vec<u8>> {
-    let archived = style_name
-        .and_then(ArchivedStyle::by_name)
-        .unwrap_or(ArchivedStyle::AmericanPsychologicalAssociation);
-
-    let style = match archived.get() {
-        Style::Independent(s) => s,
-        Style::Dependent(_) => {
-            return Err(Error::Serialize("dependent style not supported".into()));
-        }
-    };
+    let style = resolve_style(style_name)?;
 
     let locale_code = locale.map(|l| LocaleCode(l.into()));
     let locale_list = locales();
@@ -251,6 +253,52 @@ pub fn write(data: &Data, style_name: Option<&str>, locale: Option<&str>) -> Res
     Ok(text.into_bytes())
 }
 
+/// Format a list of bibliography entries as HTML, one rendered entry per line.
+/// Expensive style and locale setup is shared across the whole list.
+pub fn write_all(list: &[Data], style_name: Option<&str>, locale: Option<&str>) -> Result<Vec<u8>> {
+    if list.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let style = resolve_style(style_name)?;
+    let locale_code = locale.map(|l| LocaleCode(l.into()));
+    let locale_list = locales();
+
+    let entries: Vec<Entry> = list.iter().map(build_entry).collect();
+    let items: Vec<CitationItem<'_, Entry>> = entries.iter().map(CitationItem::with_entry).collect();
+
+    let mut driver = BibliographyDriver::new();
+    driver.citation(CitationRequest::new(
+        items,
+        &style,
+        locale_code.clone(),
+        &locale_list,
+        None,
+    ));
+
+    let result = driver.finish(BibliographyRequest {
+        style: &style,
+        locale: locale_code,
+        locale_files: &locale_list,
+    });
+
+    let lines: Vec<String> = result
+        .bibliography
+        .map(|bib| {
+            bib.items
+                .into_iter()
+                .map(|item| {
+                    let mut buf = String::new();
+                    item.content.write_buf(&mut buf, BufWriteFormat::Html).unwrap_or(());
+                    buf
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(lines.join("\n").into_bytes())
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -281,5 +329,16 @@ mod tests {
         let out = write(&data, Some("chicago-author-date"), None).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(!text.is_empty(), "expected non-empty chicago citation");
+    }
+
+    #[test]
+    fn write_all_renders_multiple_entries() {
+        let first = load("journal_article.json");
+        let second = load("blog_post_1.json");
+        let out = write_all(&[first, second], None, None).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "expected one rendered citation per line: {text}");
+        assert!(lines[0].contains("Lovelace") || lines[1].contains("Lovelace"));
     }
 }

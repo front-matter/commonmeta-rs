@@ -1363,6 +1363,11 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
     serde_json::to_vec(&payload).map_err(|e| Error::Parse(e.to_string()))
 }
 
+pub fn write_all(list: &[Data]) -> Result<Vec<u8>> {
+    let payloads: Vec<OutPayload> = list.iter().map(convert).collect();
+    serde_json::to_vec_pretty(&payloads).map_err(|e| Error::Parse(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -130,3 +130,22 @@ pub fn write_citation(
         other => Err(Error::UnsupportedFormat(other.to_string())),
     }
 }
+
+pub fn write_all_citation(
+    format: &str,
+    list: &[Data],
+    style: Option<&str>,
+    locale: Option<&str>,
+) -> Result<Vec<u8>> {
+    match format {
+        "commonmeta" => commonmeta::write_all(list),
+        "csl" => csl::write_all(list),
+        "datacite" => datacite::write_all(list),
+        "inveniordm" => inveniordm::write_all(list),
+        "schemaorg" => schemaorg::write_all(list),
+        "ror" => ror::write_json_all(list),
+        "citation" => citation::write_all(list, style, locale),
+        "crossref_xml" => crossref_xml::write_all(list),
+        other => Err(Error::UnsupportedFormat(other.to_string())),
+    }
+}
