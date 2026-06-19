@@ -28,6 +28,10 @@ pub fn command() -> Command {
             commonmeta list --number 10 --client cern.zenodo --type dataset --from datacite\n\
             commonmeta list --number 10 --from openalex --type journal-article\n\
             commonmeta list --from crossref --file out.json\n\
+            commonmeta list --from crossref --to citation --style chicago-author-date\n\
+            (--to accepts every format --to accepts in convert: commonmeta, csl, datacite,\n\
+            inveniordm, schemaorg, ror, bibtex, ris, crossref_xml, citation; --style/--locale\n\
+            only affect --to citation, same as convert)\n\
             commonmeta list --from crossref --number 1000 --file out.parquet\n\
             (a .parquet --file extension selects Parquet output and is only supported for\n\
             --to commonmeta, the default; output is always zstd-compressed, with records\n\
@@ -170,6 +174,16 @@ pub fn command() -> Command {
                 .help("Print timing for download/parse/write phases to stderr")
                 .action(ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("style")
+                .long("style")
+                .help("CSL style name for --to citation output (default: apa)"),
+        )
+        .arg(
+            Arg::new("locale")
+                .long("locale")
+                .help("BCP 47 locale for --to citation output (e.g. de-DE)"),
+        )
 }
 
 pub fn execute(matches: &ArgMatches) -> Result<(), String> {
@@ -184,6 +198,8 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
     let out_file = matches.get_one::<String>("file");
     let date = matches.get_one::<String>("date").map(String::as_str);
     let timers = matches.get_flag("timers");
+    let style = matches.get_one::<String>("style").map(String::as_str);
+    let locale = matches.get_one::<String>("locale").map(String::as_str);
 
     if !matches!(from, "crossref" | "datacite" | "openalex" | "commonmeta") {
         return Err(format!(
@@ -259,7 +275,7 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         // of rendering everything into one in-memory buffer.
         if compress == "zip" || compress == "tgz" {
             let write_start = Instant::now();
-            let result = write_archive_batches(&data, to, path, &compress);
+            let result = write_archive_batches(&data, to, path, &compress, style, locale);
             if timers {
                 eprintln!(
                     "list: write {} took {:.2?} ({} records)",
@@ -273,7 +289,7 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
     }
 
     let write_start = Instant::now();
-    let output = write_output(&data, to)?;
+    let output = write_output(&data, to, style, locale)?;
     if timers {
         eprintln!(
             "list: write {} took {:.2?} ({} records)",
@@ -302,6 +318,10 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
     }
 }
 
+/// Every `--to` format `convert` supports (it has no allowlist of its own —
+/// it just forwards `to` to `formats::write_citation`, which errors on an
+/// unknown format); kept here too so `list` rejects bad input before doing
+/// any work instead of failing on the first record.
 fn is_supported_output_format(to: &str) -> bool {
     matches!(
         to,
@@ -314,6 +334,7 @@ fn is_supported_output_format(to: &str) -> bool {
             | "bibtex"
             | "ris"
             | "crossref_xml"
+            | "citation"
     )
 }
 
@@ -395,7 +416,14 @@ fn parquet_archive_entry(data: &[Data], base_name: &str) -> Result<(String, Vec<
 /// == "zip"`) or `.tgz` (`compress == "tgz"`) archive, rendered to `to`
 /// format. Batching and entry naming are handled by `commonmeta::write_archive`;
 /// this just picks the archive container format and persists it.
-fn write_archive_batches(data: &[Data], to: &str, out_path: &str, compress: &str) -> Result<(), String> {
+fn write_archive_batches(
+    data: &[Data],
+    to: &str,
+    out_path: &str,
+    compress: &str,
+    style: Option<&str>,
+    locale: Option<&str>,
+) -> Result<(), String> {
     let (base_path, inner_ext, _) = file_utils::get_extension(out_path, ".json");
     let base_path = if base_path.extension().is_none() {
         let inner_ext = if inner_ext.is_empty() { ".json" } else { &inner_ext };
@@ -405,8 +433,8 @@ fn write_archive_batches(data: &[Data], to: &str, out_path: &str, compress: &str
     };
     let base_name = base_path.file_name().unwrap_or_default().to_string_lossy().to_string();
 
-    let entries =
-        commonmeta::write_archive(data, to, &base_name, BATCH_SIZE).map_err(|e| e.to_string())?;
+    let entries = commonmeta::write_archive_citation(data, to, &base_name, BATCH_SIZE, style, locale)
+        .map_err(|e| e.to_string())?;
 
     match compress {
         "zip" => file_utils::write_zip_archive(out_path, &entries)
@@ -419,8 +447,8 @@ fn write_archive_batches(data: &[Data], to: &str, out_path: &str, compress: &str
     Ok(())
 }
 
-fn write_output(data: &[Data], to: &str) -> Result<Vec<u8>, String> {
-    commonmeta::write_list(data, to).map_err(|e| e.to_string())
+fn write_output(data: &[Data], to: &str, style: Option<&str>, locale: Option<&str>) -> Result<Vec<u8>, String> {
+    commonmeta::write_list_citation(data, to, style, locale).map_err(|e| e.to_string())
 }
 
 pub(crate) fn fetch_list_from_api(matches: &ArgMatches, from: &str) -> Result<Vec<Data>, String> {
@@ -953,7 +981,7 @@ mod tests {
         let out_path = dir.join("out.zip");
 
         let data = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
-        write_archive_batches(&data, "commonmeta", out_path.to_str().unwrap(), "zip").unwrap();
+        write_archive_batches(&data, "commonmeta", out_path.to_str().unwrap(), "zip", None, None).unwrap();
 
         assert!(out_path.exists());
         let mut archive = zip::ZipArchive::new(std::fs::File::open(&out_path).unwrap()).unwrap();
@@ -970,7 +998,7 @@ mod tests {
         let out_path = dir.join("out.tgz");
 
         let data = vec![sample_data("https://doi.org/10.1/a")];
-        write_archive_batches(&data, "commonmeta", out_path.to_str().unwrap(), "tgz").unwrap();
+        write_archive_batches(&data, "commonmeta", out_path.to_str().unwrap(), "tgz", None, None).unwrap();
 
         assert!(out_path.exists());
         let decoder = flate2::read::GzDecoder::new(std::fs::File::open(&out_path).unwrap());
@@ -988,7 +1016,7 @@ mod tests {
 
     #[test]
     fn test_write_archive_batches_empty_data_errors() {
-        let result = write_archive_batches(&[], "commonmeta", "/tmp/whatever.zip", "zip");
+        let result = write_archive_batches(&[], "commonmeta", "/tmp/whatever.zip", "zip", None, None);
         assert!(result.is_err());
     }
 
@@ -1249,6 +1277,22 @@ mod tests {
             command().get_matches_from(vec!["list", "--from", "openalex", "--date", "2026-06-14"]);
         let err = execute(&matches).unwrap_err();
         assert!(err.contains("requires --from crossref or --from datacite"));
+    }
+
+    #[test]
+    fn test_is_supported_output_format_includes_citation() {
+        assert!(is_supported_output_format("citation"));
+    }
+
+    #[test]
+    fn test_write_output_renders_citation_with_style() {
+        let mut data = sample_data("https://doi.org/10.1/a");
+        data.titles.push(commonmeta::data::Title { title: "A Title".to_string(), ..Default::default() });
+        data.date.published = "2020".to_string();
+
+        let apa = write_output(&[data.clone()], "citation", None, None).unwrap();
+        let chicago = write_output(&[data], "citation", Some("chicago-author-date"), None).unwrap();
+        assert_ne!(apa, chicago);
     }
 
     #[test]

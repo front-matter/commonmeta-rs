@@ -435,7 +435,7 @@ dependencies = [
 
 [[package]]
 name = "commonmeta"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "ammonia",
  "avro-rs",

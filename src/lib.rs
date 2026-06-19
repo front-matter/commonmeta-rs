@@ -83,12 +83,24 @@ pub fn read_parquet(bytes: &[u8]) -> Result<Vec<Data>> {
 /// `schemaorg`, `ror`), or newline-joined output for line/document-shaped
 /// formats (e.g. `bibtex`, `ris`, `crossref_xml`).
 pub fn write_list(list: &[Data], to: &str) -> Result<Vec<u8>> {
+    write_list_citation(list, to, None, None)
+}
+
+/// Like `write_list`, but passes CSL `style`/`locale` through to the
+/// citation writer when `to == "citation"` (ignored for every other format,
+/// same as `convert_citation`/`write_citation`).
+pub fn write_list_citation(
+    list: &[Data],
+    to: &str,
+    style: Option<&str>,
+    locale: Option<&str>,
+) -> Result<Vec<u8>> {
     let bar = progress::count_bar("rendering", list.len() as u64);
 
     if matches!(to, "commonmeta" | "csl" | "datacite" | "inveniordm" | "schemaorg" | "ror") {
         let mut items: Vec<serde_json::Value> = Vec::with_capacity(list.len());
         for item in list {
-            let rendered = write(to, item)?;
+            let rendered = formats::write_citation(to, item, style, locale)?;
             let value: serde_json::Value = serde_json::from_slice(&rendered).map_err(|e| {
                 Error::Serialize(format!("failed to parse {} output as JSON: {}", to, e))
             })?;
@@ -101,7 +113,7 @@ pub fn write_list(list: &[Data], to: &str) -> Result<Vec<u8>> {
 
     let mut output = String::new();
     for (idx, item) in list.iter().enumerate() {
-        let rendered = write(to, item)?;
+        let rendered = formats::write_citation(to, item, style, locale)?;
         if idx > 0 {
             output.push('\n');
         }
@@ -124,6 +136,19 @@ pub fn write_archive(
     base_name: &str,
     batch_size: usize,
 ) -> Result<Vec<(String, Vec<u8>)>> {
+    write_archive_citation(list, to, base_name, batch_size, None, None)
+}
+
+/// Like `write_archive`, but passes CSL `style`/`locale` through to the
+/// citation writer when `to == "citation"`.
+pub fn write_archive_citation(
+    list: &[Data],
+    to: &str,
+    base_name: &str,
+    batch_size: usize,
+    style: Option<&str>,
+    locale: Option<&str>,
+) -> Result<Vec<(String, Vec<u8>)>> {
     if list.is_empty() {
         return Err(Error::Serialize("no records to write".to_string()));
     }
@@ -132,7 +157,7 @@ pub fn write_archive(
 
     let mut entries = Vec::with_capacity(chunks.len());
     for (idx, chunk) in chunks.into_iter().enumerate() {
-        let bytes = write_list(chunk, to)?;
+        let bytes = write_list_citation(chunk, to, style, locale)?;
         let name = batch_entry_name(base_name, if multi { Some(idx) } else { None });
         entries.push((name, bytes));
     }
@@ -249,6 +274,34 @@ mod tests {
         let text = String::from_utf8(bytes).unwrap();
         // Two records, newline-joined rather than a JSON array.
         assert_eq!(text.lines().filter(|l| l.starts_with("TY  -")).count(), 2);
+    }
+
+    #[test]
+    fn test_write_list_citation_renders_each_record() {
+        let mut a = sample_data("https://doi.org/10.1/a");
+        a.titles.push(crate::data::Title { title: "Title A".to_string(), ..Default::default() });
+        a.date.published = "2020".to_string();
+        let mut b = sample_data("https://doi.org/10.1/b");
+        b.titles.push(crate::data::Title { title: "Title B".to_string(), ..Default::default() });
+        b.date.published = "2021".to_string();
+
+        let bytes = write_list(&[a, b], "citation").unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("Title A"));
+        assert!(lines[1].contains("Title B"));
+    }
+
+    #[test]
+    fn test_write_list_citation_respects_style() {
+        let mut a = sample_data("https://doi.org/10.1/a");
+        a.titles.push(crate::data::Title { title: "Title A".to_string(), ..Default::default() });
+        a.date.published = "2020".to_string();
+
+        let apa = write_list_citation(&[a.clone()], "citation", None, None).unwrap();
+        let chicago = write_list_citation(&[a], "citation", Some("chicago-author-date"), None).unwrap();
+        assert_ne!(apa, chicago);
     }
 
     #[test]
