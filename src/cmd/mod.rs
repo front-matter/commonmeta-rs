@@ -1,6 +1,7 @@
 pub mod analyze;
 pub mod convert;
 pub mod decode;
+pub mod dump;
 pub mod encode;
 pub mod list;
 pub mod r#match;

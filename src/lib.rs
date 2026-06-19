@@ -195,6 +195,18 @@ pub fn read_vraix_sqlite(sqlite_path: &str, from: &str, limit: Option<usize>, of
     formats::vraix::read_dump(sqlite_path, from, limit, offset)
 }
 
+/// Write a VRAIX dump's transport table (e.g. `pid_records`) to a single
+/// Parquet file's bytes, using its raw columns (`pid`, `source_id`,
+/// `raw_metadata`, ...) as-is — *not* converted to commonmeta `Data` the way
+/// [`read_vraix_sqlite`] is. For analytics over the dump itself (e.g. via
+/// DataFusion/Polars/DuckDB), not for ingesting it as commonmeta records.
+/// `batch_size` controls how many rows land in each internal Parquet row
+/// group (see [`formats::commonmeta::write_parquet_all`]'s analogous
+/// `ROW_GROUP_SIZE` for why this matters for large dumps).
+pub fn write_vraix_table_parquet(sqlite_path: &str, batch_size: usize) -> Result<Vec<u8>> {
+    formats::vraix::write_table_parquet(sqlite_path, batch_size)
+}
+
 /// Fetch commonmeta records from a VRAIX daily dump for `from` ("crossref"
 /// or "datacite") and `date` (YYYY-MM-DD).
 ///
