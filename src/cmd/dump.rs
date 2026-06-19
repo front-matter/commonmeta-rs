@@ -4,13 +4,14 @@
 
 use clap::{Arg, ArgMatches, Command};
 use commonmeta::file_utils;
+use std::time::Instant;
 
 /// Default Parquet row-group size — 10 000 rows per group keeps memory
 /// pressure manageable for large VRAIX daily dumps (millions of rows).
 const DEFAULT_BATCH_SIZE: usize = 10_000;
 
 pub fn command() -> Command {
-    Command::new("dump")
+    Command::new("package")
         .about("Write a VRAIX SQLite dump as a Parquet file")
         .long_about(
             "Read a VRAIX transport table from a local SQLite3 file and write \
@@ -26,11 +27,11 @@ pub fn command() -> Command {
               .parquet.zip   ZIP archive containing the Parquet file\n\
               .parquet.tgz   tar+gzip archive containing the Parquet file\n\n\
             Examples:\n\n\
-            commonmeta dump crossref-2026-06-15.sqlite3\n\
-            commonmeta dump crossref-2026-06-15.sqlite3 --file crossref-2026-06-15.parquet\n\
-            commonmeta dump crossref-2026-06-15.sqlite3 --file crossref-2026-06-15.parquet.zst\n\
-            commonmeta dump crossref-2026-06-15.sqlite3 --file crossref-2026-06-15.parquet.zip\n\
-            commonmeta dump crossref-2026-06-15.sqlite3 --batch-size 50000",
+            commonmeta package crossref-2026-06-15.sqlite3\n\
+            commonmeta package crossref-2026-06-15.sqlite3 --file crossref-2026-06-15.parquet\n\
+            commonmeta package crossref-2026-06-15.sqlite3 --file crossref-2026-06-15.parquet.zst\n\
+            commonmeta package crossref-2026-06-15.sqlite3 --file crossref-2026-06-15.parquet.zip\n\
+            commonmeta package crossref-2026-06-15.sqlite3 --batch-size 50000 --timer",
         )
         .arg(
             Arg::new("input")
@@ -54,9 +55,17 @@ pub fn command() -> Command {
                 .help("Rows per Parquet row group (default: 10000)")
                 .value_parser(clap::value_parser!(usize)),
         )
+        .arg(
+            Arg::new("timer")
+                .long("timer")
+                .help("Print total packaging duration to stderr")
+                .action(clap::ArgAction::SetTrue),
+        )
 }
 
 pub fn execute(matches: &ArgMatches) -> Result<(), String> {
+    let timer = matches.get_flag("timer");
+    let started = Instant::now();
     let input = matches.get_one::<String>("input").expect("required");
     let batch_size = matches
         .get_one::<usize>("batch_size")
@@ -74,6 +83,9 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
     write_output(&bytes, &out_path)?;
 
     eprintln!("wrote {} rows → {}", parquet_row_count(&bytes), out_path);
+    if timer {
+        eprintln!("package timer: {:?}", started.elapsed());
+    }
 
     Ok(())
 }
