@@ -1,7 +1,5 @@
 pub mod bibtex;
 pub mod cff;
-pub mod ror;
-pub mod ror_countries;
 pub mod citation;
 pub mod codemeta;
 pub mod commonmeta;
@@ -9,10 +7,13 @@ pub mod crossref;
 pub mod crossref_xml;
 pub mod csl;
 pub mod datacite;
+pub mod datacite_xml;
 pub mod inveniordm;
 pub mod jsonfeed;
 pub mod openalex;
 pub mod ris;
+pub mod ror;
+pub mod ror_countries;
 pub mod schemaorg;
 pub mod vraix;
 
@@ -43,6 +44,13 @@ pub fn read(format: &str, input: &str) -> Result<Data> {
                 datacite::fetch(input)
             }
         }
+        "datacite_xml" => {
+            if input.trim_start().starts_with('<') {
+                datacite_xml::read_xml(input)
+            } else {
+                datacite_xml::fetch(input)
+            }
+        }
         "inveniordm" => {
             if input.trim_start().starts_with('{') {
                 inveniordm::read_json(input)
@@ -61,7 +69,9 @@ pub fn read(format: &str, input: &str) -> Result<Data> {
             if input.trim_start().starts_with('{') {
                 csl::read_json(input)
             } else {
-                Err(Error::UnsupportedFormat("csl fetch not supported".to_string()))
+                Err(Error::UnsupportedFormat(
+                    "csl fetch not supported".to_string(),
+                ))
             }
         }
         "schemaorg" => {

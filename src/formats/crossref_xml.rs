@@ -4,15 +4,17 @@ use quick_xml::se::Serializer;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
+use crate::author_utils::normalize_contributor_roles;
 use crate::data::{
-    Affiliation, Container, Contributor, Data, Description, FundingReference, Identifier,
-    License, Publisher, Reference, Relation, Subject, Title,
+    Affiliation, Container, Contributor, Data, Description, FundingReference, Identifier, License,
+    Organization as DataOrganization, Person as DataPerson, Publisher, Reference, Relation, Subject,
+    Title,
 };
 use crate::doi_utils::{normalize_doi, validate_doi};
 use crate::error::{Error, Result};
 use crate::utils::{
-    community_slug_as_url, dedupe_slice, issn_as_url, normalize_orcid, normalize_ror, sanitize,
-    title_case, normalize_cc_url, url_to_spdx, validate_id,
+    community_slug_as_url, dedupe_slice, issn_as_url, normalize_cc_url, normalize_orcid,
+    normalize_ror, sanitize, title_case, validate_id,
 };
 
 // ── XML output structs ────────────────────────────────────────────────────────
@@ -133,9 +135,9 @@ struct JournalArticle {
     publication_type: &'static str,
     #[serde(rename = "@language", skip_serializing_if = "str::is_empty")]
     language: String,
+    titles: Titles,
     #[serde(skip_serializing_if = "Contributors::is_empty")]
     contributors: Contributors,
-    titles: Titles,
     #[serde(rename = "jats:abstract", skip_serializing_if = "Vec::is_empty")]
     abstract_: Vec<JatsAbstract>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -332,9 +334,15 @@ struct RelProgram {
 
 #[derive(Serialize)]
 struct RelRelatedItem {
-    #[serde(rename = "rel:inter_work_relation", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "rel:inter_work_relation",
+        skip_serializing_if = "Option::is_none"
+    )]
     inter_work: Option<RelWorkRelation>,
-    #[serde(rename = "rel:intra_work_relation", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "rel:intra_work_relation",
+        skip_serializing_if = "Option::is_none"
+    )]
     intra_work: Option<RelWorkRelation>,
 }
 
@@ -426,7 +434,10 @@ struct Citation {
     c_year: String,
     #[serde(rename = "article_title", skip_serializing_if = "str::is_empty")]
     article_title: String,
-    #[serde(rename = "unstructured_citation", skip_serializing_if = "str::is_empty")]
+    #[serde(
+        rename = "unstructured_citation",
+        skip_serializing_if = "str::is_empty"
+    )]
     unstructured_citation: String,
 }
 
@@ -452,7 +463,6 @@ const INTRA_WORK_RELATION_TYPES: &[&str] = &[
 
 // Allowed contributor roles for Crossref (Python: allowed_roles)
 const ALLOWED_CONTRIBUTOR_ROLES: &[&str] = &["Author", "Editor", "Reviewer", "Translator"];
-
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -524,25 +534,29 @@ fn build_contributors(data: &Data) -> Contributors {
     let mut seq_index = 0usize;
 
     for c in &data.contributors {
-        if !is_allowed_contributor(&c.contributor_roles) {
+        if !is_allowed_contributor(&c.roles) {
             continue;
         }
-        let role = map_contributor_role(&c.contributor_roles);
-        let seq: &'static str = if seq_index == 0 { "first" } else { "additional" };
+        let role = map_contributor_role(&c.roles);
+        let seq: &'static str = if seq_index == 0 {
+            "first"
+        } else {
+            "additional"
+        };
         seq_index += 1;
 
         if c.type_ == "Organization" {
             organizations.push(Organization {
                 contributor_role: role,
                 sequence: seq,
-                name: c.name.clone(),
+                name: c.name(),
             });
-        } else if !c.given_name.is_empty() || !c.family_name.is_empty() {
-            let affiliations = if c.affiliations.is_empty() {
+        } else if !c.given_name().is_empty() || !c.family_name().is_empty() {
+            let affiliations = if c.affiliations().is_empty() {
                 None
             } else {
                 let inst: Vec<Institution> = c
-                    .affiliations
+                    .affiliations()
                     .iter()
                     .filter(|a| !a.name.is_empty())
                     .map(|a| Institution {
@@ -566,10 +580,10 @@ fn build_contributors(data: &Data) -> Contributors {
             person_names.push(PersonName {
                 contributor_role: role,
                 sequence: seq,
-                given_name: c.given_name.clone(),
-                surname: c.family_name.clone(),
+                given_name: c.given_name().to_string(),
+                surname: c.family_name().to_string(),
                 affiliations,
-                orcid: c.id.clone(),
+                orcid: c.id().to_string(),
             });
         }
     }
@@ -581,28 +595,47 @@ fn build_contributors(data: &Data) -> Contributors {
 }
 
 fn build_titles(data: &Data) -> Titles {
-    let mut titles = Titles::default();
-    for t in &data.titles {
-        if t.type_ == "Subtitle" {
-            titles.subtitle = t.title.clone();
-        } else {
-            titles.title = t.title.clone();
-        }
+    let title = data.title.clone();
+
+    let subtitle = data
+        .additional_titles
+        .iter()
+        .find(|t| !t.title.is_empty() && t.type_ == "Subtitle")
+        .map(|t| t.title.clone())
+        .unwrap_or_default();
+
+    Titles { title, subtitle }
+}
+
+fn doi_for_crossref(data: &Data) -> String {
+    if let Some(identifier) = data
+        .identifiers
+        .iter()
+        .find(|i| i.identifier_type == "DOI" && !i.identifier.is_empty())
+        .map(|i| i.identifier.clone())
+    {
+        return validate_doi(&identifier).unwrap_or_default();
     }
-    titles
+    validate_doi(&data.id).unwrap_or_default()
 }
 
 fn build_abstract(data: &Data) -> Vec<JatsAbstract> {
-    data.descriptions
-        .iter()
-        .filter(|d| d.type_ == "Abstract" || d.type_ == "Other")
-        .map(|d| JatsAbstract {
+    let mut result = Vec::new();
+    if !data.description.is_empty() {
+        result.push(JatsAbstract {
             xmlns_jats: "http://www.ncbi.nlm.nih.gov/JATS1",
-            p: vec![JatsP {
-                text: d.description.clone(),
-            }],
-        })
-        .collect()
+            p: vec![JatsP { text: data.description.clone() }],
+        });
+    }
+    for d in &data.additional_descriptions {
+        if d.type_ == "Abstract" || d.type_ == "Other" {
+            result.push(JatsAbstract {
+                xmlns_jats: "http://www.ncbi.nlm.nih.gov/JATS1",
+                p: vec![JatsP { text: d.description.clone() }],
+            });
+        }
+    }
+    result
 }
 
 fn build_funding_program(data: &Data) -> Option<FrProgram> {
@@ -619,8 +652,8 @@ fn build_funding_program(data: &Data) -> Option<FrProgram> {
         .funding_references
         .iter()
         .filter_map(|f| {
-            if !f.funder_identifier.is_empty() {
-                Some(f.funder_identifier.as_str())
+            if !f.funder_id.is_empty() {
+                Some(f.funder_id.as_str())
             } else if !f.funder_name.is_empty() {
                 Some(f.funder_name.as_str())
             } else {
@@ -634,25 +667,25 @@ fn build_funding_program(data: &Data) -> Option<FrProgram> {
     for fr in &data.funding_references {
         let mut group: Vec<FrAssertion> = Vec::new();
 
-        let (_, id_type) = if !fr.funder_identifier.is_empty() {
-            validate_id(&fr.funder_identifier)
+        let (_, id_type) = if !fr.funder_id.is_empty() {
+            validate_id(&fr.funder_id)
         } else {
             (String::new(), "")
         };
 
-        let funder_assertion = if !fr.funder_identifier.is_empty() && id_type == "ROR" {
+        let funder_assertion = if !fr.funder_id.is_empty() && id_type == "ROR" {
             FrAssertion {
                 name: "ror".to_string(),
-                text: fr.funder_identifier.clone(),
+                text: fr.funder_id.clone(),
                 nested: vec![],
             }
-        } else if !fr.funder_identifier.is_empty() && id_type == "Crossref Funder ID" {
+        } else if !fr.funder_id.is_empty() && id_type == "Crossref Funder ID" {
             FrAssertion {
                 name: "funder_name".to_string(),
                 text: fr.funder_name.clone(),
                 nested: vec![FrAssertion {
                     name: "funder_identifier".to_string(),
-                    text: fr.funder_identifier.clone(),
+                    text: fr.funder_id.clone(),
                     nested: vec![],
                 }],
             }
@@ -777,7 +810,7 @@ fn build_version_info(data: &Data) -> Option<VersionInfo> {
 }
 
 fn build_doi_data(data: &Data) -> DoiData {
-    let doi = validate_doi(&data.id).unwrap_or_default();
+    let doi = doi_for_crossref(data);
     let mut items: Vec<Item> = vec![Item {
         resource: ResourceEl {
             mime_type: "text/html".to_string(),
@@ -845,7 +878,7 @@ fn build_citation_list(data: &Data) -> Option<CitationList> {
                 volume: r.volume.clone(),
                 first_page: r.first_page.clone(),
                 c_year: r.publication_year.clone(),
-                article_title: r.title.clone(),
+                article_title: r.reference.clone(),
                 unstructured_citation: unstructured,
             }
         })
@@ -854,7 +887,9 @@ fn build_citation_list(data: &Data) -> Option<CitationList> {
     if citations.is_empty() {
         None
     } else {
-        Some(CitationList { citation: citations })
+        Some(CitationList {
+            citation: citations,
+        })
     }
 }
 
@@ -871,7 +906,7 @@ fn build_item_number(data: &Data) -> Option<ItemNumber> {
 }
 
 fn build_posted_date(data: &Data) -> PostedDate {
-    let (year, month, day) = parse_date_parts(&data.date.published);
+    let (year, month, day) = parse_date_parts(&data.date_published);
     PostedDate {
         media_type: "online",
         year,
@@ -881,10 +916,10 @@ fn build_posted_date(data: &Data) -> PostedDate {
 }
 
 fn build_publication_date(data: &Data, media_type: &str) -> Option<PublicationDate> {
-    if data.date.published.is_empty() {
+    if data.date_published.is_empty() {
         return None;
     }
-    let (year, month, day) = parse_date_parts(&data.date.published);
+    let (year, month, day) = parse_date_parts(&data.date_published);
     Some(PublicationDate {
         media_type: media_type.to_string(),
         year,
@@ -894,7 +929,9 @@ fn build_publication_date(data: &Data, media_type: &str) -> Option<PublicationDa
 }
 
 fn build_issn(data: &Data) -> Option<Issn> {
-    if data.container.identifier_type.to_uppercase() == "ISSN" && !data.container.identifier.is_empty() {
+    if data.container.identifier_type.to_uppercase() == "ISSN"
+        && !data.container.identifier.is_empty()
+    {
         return Some(Issn {
             media_type: "electronic",
             text: data.container.identifier.clone(),
@@ -1731,35 +1768,35 @@ struct XmlAssertion {
 
 fn cr_xml_type(doi_type: &str) -> &'static str {
     match doi_type {
-        "journal_article"     => "JournalArticle",
-        "journal_issue"       => "JournalIssue",
-        "journal_volume"      => "JournalVolume",
-        "journal_title"       => "Journal",
-        "conference_title"    => "Proceedings",
-        "conference_series"   => "ProceedingsSeries",
-        "conference_paper"    => "ProceedingsArticle",
-        "book_title"          => "Book",
-        "book_series"         => "BookSeries",
-        "book_content"        => "BookChapter",
-        "component"           => "Component",
-        "dissertation"        => "Dissertation",
-        "peer_review"         => "PeerReview",
-        "posted_content"      => "Article",
-        "report-paper_title"  => "Report",
+        "journal_article" => "JournalArticle",
+        "journal_issue" => "JournalIssue",
+        "journal_volume" => "JournalVolume",
+        "journal_title" => "Journal",
+        "conference_title" => "Proceedings",
+        "conference_series" => "ProceedingsSeries",
+        "conference_paper" => "ProceedingsArticle",
+        "book_title" => "Book",
+        "book_series" => "BookSeries",
+        "book_content" => "BookChapter",
+        "component" => "Component",
+        "dissertation" => "Dissertation",
+        "peer_review" => "PeerReview",
+        "posted_content" => "Article",
+        "report-paper_title" => "Report",
         "report-paper_series" => "ReportSeries",
-        "standard_title"      => "Standard",
-        "standard_series"     => "StandardSeries",
-        "dataset"             => "Dataset",
-        _                     => "Other",
+        "standard_title" => "Standard",
+        "standard_series" => "StandardSeries",
+        "dataset" => "Dataset",
+        _ => "Other",
     }
 }
 
 fn cr_xml_container_type(cm_type: &str) -> &'static str {
     match cm_type {
-        "JournalArticle"      => "Journal",
-        "BookChapter"         => "Book",
-        "ProceedingsArticle"  => "Proceedings",
-        _                     => "",
+        "JournalArticle" => "Journal",
+        "BookChapter" => "Book",
+        "ProceedingsArticle" => "Proceedings",
+        _ => "",
     }
 }
 
@@ -1774,8 +1811,8 @@ fn date_from_parts(year: &str, month: &str, day: &str) -> String {
     let d = day.trim();
     match (m.is_empty(), d.is_empty()) {
         (false, false) => format!("{}-{:0>2}-{:0>2}", y, m, d),
-        (false, true)  => format!("{}-{:0>2}", y, m),
-        _              => y.to_string(),
+        (false, true) => format!("{}-{:0>2}", y, m),
+        _ => y.to_string(),
     }
 }
 
@@ -1817,21 +1854,16 @@ fn pick_isbn(isbns: &[XmlIsbn]) -> (String, &'static str) {
 fn convert_abstract(abstracts: &[XmlJatsAbstract]) -> Vec<Description> {
     let mut out = Vec::new();
     for a in abstracts {
-        let text = a
-            .p
-            .iter()
-            .map(|p| p.text.trim())
-            .collect::<Vec<_>>()
-            .join(" ");
+        let text =
+            a.p.iter()
+                .map(|p| p.text.trim())
+                .collect::<Vec<_>>()
+                .join(" ");
         let text = text.trim();
         if text.is_empty() {
             continue;
         }
-        let type_ = if a.abstract_type.is_empty() {
-            "Abstract".to_string()
-        } else {
-            a.abstract_type.clone()
-        };
+        let type_ = map_abstract_type(&a.abstract_type);
         out.push(Description {
             description: sanitize(text),
             type_,
@@ -1839,6 +1871,18 @@ fn convert_abstract(abstracts: &[XmlJatsAbstract]) -> Vec<Description> {
         });
     }
     out
+}
+
+/// Map Crossref abstract-type attributes to commonmeta v1.0 description type enum values.
+fn map_abstract_type(raw: &str) -> String {
+    match raw {
+        "" => "Abstract",
+        "executive-summary" | "summary" => "Summary",
+        "methods" | "materials|methods" => "Methods",
+        "technical-info" | "technical_info" => "TechnicalInfo",
+        _ => "Other",
+    }
+    .to_string()
 }
 
 fn convert_contributors(contrib: &XmlContributors) -> Vec<Contributor> {
@@ -1850,10 +1894,10 @@ fn convert_contributors(contrib: &XmlContributors) -> Vec<Contributor> {
             String::new()
         };
         let role = match p.contributor_role.as_str() {
-            "editor"     => "Editor",
+            "editor" => "Editor",
             "translator" => "Translator",
-            "reviewer"   => "Reviewer",
-            _            => "Author",
+            "reviewer" => "Reviewer",
+            _ => "Author",
         };
         let affiliations: Vec<Affiliation> = if let Some(affs) = &p.affiliations {
             affs.institution
@@ -1881,37 +1925,38 @@ fn convert_contributors(contrib: &XmlContributors) -> Vec<Contributor> {
             p.affiliation
                 .iter()
                 .filter(|a| !a.is_empty())
-                .map(|a| Affiliation { name: a.clone(), ..Default::default() })
+                .map(|a| Affiliation {
+                    name: a.clone(),
+                    ..Default::default()
+                })
                 .collect()
         } else {
             Vec::new()
         };
-        out.push(Contributor {
-            id,
-            type_: "Person".to_string(),
-            given_name: p.given_name.clone(),
-            family_name: p.surname.clone(),
-            contributor_roles: vec![role.to_string()],
-            affiliations,
-            ..Default::default()
-        });
+        out.push(Contributor::person(
+            DataPerson {
+                id,
+                given_name: p.given_name.clone(),
+                family_name: p.surname.clone(),
+                affiliations,
+            },
+            normalize_contributor_roles(&[role.to_string()], role),
+        ));
     }
     for org in &contrib.organization {
         if org.name.is_empty() {
             continue;
         }
         let role = match org.contributor_role.as_str() {
-            "editor"     => "Editor",
+            "editor" => "Editor",
             "translator" => "Translator",
-            "reviewer"   => "Reviewer",
-            _            => "Author",
+            "reviewer" => "Reviewer",
+            _ => "Author",
         };
-        out.push(Contributor {
-            type_: "Organization".to_string(),
-            name: org.name.clone(),
-            contributor_roles: vec![role.to_string()],
-            ..Default::default()
-        });
+        out.push(Contributor::organization(
+            DataOrganization { id: String::new(), name: org.name.clone() },
+            normalize_contributor_roles(&[role.to_string()], role),
+        ));
     }
     out
 }
@@ -1961,7 +2006,7 @@ fn convert_funding_references(programs: &[XmlProgram]) -> Vec<FundingReference> 
         }
         if award_numbers.is_empty() {
             refs.push(FundingReference {
-                funder_identifier: funder_id.clone(),
+                funder_id: funder_id.clone(),
                 funder_identifier_type: funder_id_type.clone(),
                 funder_name: funder_name.clone(),
                 ..Default::default()
@@ -1969,7 +2014,7 @@ fn convert_funding_references(programs: &[XmlProgram]) -> Vec<FundingReference> 
         } else {
             for award in &award_numbers {
                 refs.push(FundingReference {
-                    funder_identifier: funder_id.clone(),
+                    funder_id: funder_id.clone(),
                     funder_identifier_type: funder_id_type.clone(),
                     funder_name: funder_name.clone(),
                     award_number: award.to_string(),
@@ -1986,13 +2031,17 @@ fn convert_relations(programs: &[XmlProgram]) -> Vec<Relation> {
     for prog in programs.iter().filter(|p| p.name.is_empty()) {
         for item in &prog.related_item {
             if let Some(iw) = &item.inter_work_relation {
-                if iw.text.is_empty() { continue; }
+                if iw.text.is_empty() {
+                    continue;
+                }
                 let id = resolve_relation_id(&iw.text, &iw.identifier_type);
                 let t = title_case(&iw.relationship_type);
                 out.push(Relation { id, type_: t });
             }
             if let Some(iw) = &item.intra_work_relation {
-                if iw.text.is_empty() { continue; }
+                if iw.text.is_empty() {
+                    continue;
+                }
                 let id = resolve_relation_id(&iw.text, &iw.identifier_type);
                 let t = title_case(&iw.relationship_type);
                 out.push(Relation { id, type_: t });
@@ -2004,11 +2053,15 @@ fn convert_relations(programs: &[XmlProgram]) -> Vec<Relation> {
 
 fn resolve_relation_id(text: &str, id_type: &str) -> String {
     match id_type {
-        "doi"  => normalize_doi(text),
+        "doi" => normalize_doi(text),
         "issn" => issn_as_url(text),
-        _      => {
+        _ => {
             let (pid, _) = validate_id(text);
-            if pid.is_empty() { text.to_string() } else { pid }
+            if pid.is_empty() {
+                text.to_string()
+            } else {
+                pid
+            }
         }
     }
 }
@@ -2033,7 +2086,7 @@ fn convert_citations(list: &XmlCitationList) -> Vec<Reference> {
             key: c.key.clone(),
             id,
             type_: String::new(),
-            title: c.article_title.clone(),
+            reference: c.article_title.clone(),
             publication_year: c.c_year.clone(),
             volume: c.volume.clone(),
             first_page: c.first_page.clone(),
@@ -2060,7 +2113,7 @@ fn convert_files(collections: &[XmlCollection]) -> Vec<crate::data::File> {
 fn pick_license(programs: &[XmlProgram]) -> License {
     let prog = match programs.iter().find(|p| p.name == "AccessIndicators") {
         Some(p) => p,
-        None    => return License::default(),
+        None => return License::default(),
     };
     if prog.license_ref.is_empty() {
         return License::default();
@@ -2073,8 +2126,7 @@ fn pick_license(programs: &[XmlProgram]) -> License {
     let raw = &prog.license_ref[idx].text;
     let (url, _) = normalize_cc_url(raw);
     let url = if url.is_empty() { raw.clone() } else { url };
-    let id = url_to_spdx(&url);
-    License { id, url }
+    crate::spdx::from_url(&url)
 }
 
 fn convert_item_number(item: &XmlItemNumber) -> Vec<Identifier> {
@@ -2088,16 +2140,25 @@ fn convert_item_number(item: &XmlItemNumber) -> Vec<Identifier> {
         let uuid = if s.len() == 32 {
             format!(
                 "{}-{}-{}-{}-{}",
-                &s[..8], &s[8..12], &s[12..16], &s[16..20], &s[20..]
+                &s[..8],
+                &s[8..12],
+                &s[12..16],
+                &s[16..20],
+                &s[20..]
             )
         } else {
             s.clone()
         };
         (uuid, "UUID".to_string())
-    } else if !raw_type.is_empty() {
-        (item.text.clone(), raw_type)
     } else {
-        (item.text.clone(), "Other".to_string())
+        // Map to the commonmeta identifier_type enum; unknown types fall back to "Other"
+        let id_type = match raw_type.as_str() {
+            "ARK" | "ARXIV" | "BIBCODE" | "DOI" | "HANDLE" | "ISBN" | "ISSN"
+            | "OPENALEX" | "PMID" | "PMCID" | "PURL" | "RAID" | "SWHID"
+            | "URL" | "URN" | "GUID" => raw_type,
+            _ => "Other".to_string(),
+        };
+        (item.text.clone(), id_type)
     };
     vec![Identifier {
         identifier: id_text,
@@ -2117,17 +2178,21 @@ fn from_query(query: XmlQuery) -> Data {
     data.provider = "Crossref".to_string();
 
     // Publisher info from crm-items
-    let mut publisher_id = String::new();
+    let publisher_id = String::new();
     let mut publisher_name = String::new();
     for item in &query.crm_items {
         match item.name.as_str() {
-            "member-id"      => publisher_id = format!("https://api.crossref.org/members/{}", item.text),
+            // Crossref member URLs are not ROR IDs; omit from publisher.id
+            "member-id" => { let _ = &item.text; }
             "publisher-name" => publisher_name = item.text.clone(),
-            "last-update"    => data.date.updated = item.text.clone(),
+            "last-update" => data.date_updated = item.text.clone(),
             _ => {}
         }
     }
-    data.publisher = Publisher { id: publisher_id, name: publisher_name.clone() };
+    data.publisher = Publisher {
+        id: publisher_id,
+        name: publisher_name.clone(),
+    };
 
     // Workaround: Front Matter posts registered as posted-content are blog posts
     if data.type_ == "Article" && publisher_name == "Front Matter" {
@@ -2195,8 +2260,8 @@ fn from_query(query: XmlQuery) -> Data {
                         programs.extend(cm.custom_metadata.program.clone());
                         for a in &cm.custom_metadata.assertion {
                             match a.name.as_str() {
-                                "received" => data.date.submitted = a.text.clone(),
-                                "accepted" => data.date.accepted  = a.text.clone(),
+                                "received" => data.dates.submitted = a.text.clone(),
+                                "accepted" => data.dates.accepted = a.text.clone(),
                                 _ => {}
                             }
                         }
@@ -2295,9 +2360,10 @@ fn from_query(query: XmlQuery) -> Data {
         }
         "Component" => {
             if let Some(sa) = &meta.sa_component
-                && let Some(comp) = sa.component_list.component.first() {
-                    doi_data = comp.doi_data.clone();
-                }
+                && let Some(comp) = sa.component_list.component.first()
+            {
+                doi_data = comp.doi_data.clone();
+            }
         }
         _ => {}
     }
@@ -2307,7 +2373,7 @@ fn from_query(query: XmlQuery) -> Data {
     data.url = doi_data.resource.clone();
     data.archive_locations = archive_names;
 
-    data.date.published = pick_pub_date(&pub_dates);
+    data.date_published = pick_pub_date(&pub_dates);
 
     let (container_id, container_id_type) = if !issn_pair.0.is_empty() {
         issn_pair
@@ -2339,8 +2405,16 @@ fn from_query(query: XmlQuery) -> Data {
     data.relations.extend(extra_relations);
 
     data.contributors = convert_contributors(&contributors);
-    data.descriptions = convert_abstract(&abstracts);
-    data.subjects = subjects.into_iter().map(|s| Subject { subject: s }).collect();
+    let descs = convert_abstract(&abstracts);
+    let mut desc_iter = descs.into_iter();
+    if let Some(first) = desc_iter.next() {
+        data.description = first.description;
+        data.additional_descriptions.extend(desc_iter);
+    }
+    data.subjects = subjects
+        .into_iter()
+        .map(|s| Subject { subject: s, ..Default::default() })
+        .collect();
     data.license = pick_license(&programs);
     data.funding_references = convert_funding_references(&programs);
 
@@ -2359,10 +2433,14 @@ fn from_query(query: XmlQuery) -> Data {
 
     let (title_str, subtitle_str) = extract_titles_from_meta(meta, type_str);
     if !title_str.is_empty() {
-        data.titles.push(Title { title: title_str, ..Default::default() });
+        data.title = title_str;
     }
     if !subtitle_str.is_empty() {
-        data.titles.push(Title { title: subtitle_str, type_: "Subtitle".to_string(), ..Default::default() });
+        data.additional_titles.push(Title {
+            title: subtitle_str,
+            type_: "Subtitle".to_string(),
+            ..Default::default()
+        });
     }
 
     data
@@ -2443,4 +2521,58 @@ pub fn fetch(doi: &str) -> Result<Data> {
         .text()
         .map_err(|e| Error::Http(e.to_string()))?;
     read_xml(&xml)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_doi_data, build_titles};
+    use crate::data::{Data, Identifier, Title};
+
+    #[test]
+    fn build_titles_prefers_primary_and_subtitle() {
+        let mut data = Data::default();
+        data.title = "Main Title".to_string();
+        data.additional_titles.push(Title {
+            title: "Translated Title".to_string(),
+            type_: "TranslatedTitle".to_string(),
+            ..Default::default()
+        });
+        data.additional_titles.push(Title {
+            title: "A Subtitle".to_string(),
+            type_: "Subtitle".to_string(),
+            ..Default::default()
+        });
+
+        let titles = build_titles(&data);
+        assert_eq!(titles.title, "Main Title");
+        assert_eq!(titles.subtitle, "A Subtitle");
+    }
+
+    #[test]
+    fn build_doi_data_prefers_identifier_doi_over_id() {
+        let mut data = Data {
+            id: "https://example.org/not-a-doi".to_string(),
+            url: "https://example.org/resource".to_string(),
+            ..Default::default()
+        };
+        data.identifiers.push(Identifier {
+            identifier: "https://doi.org/10.5555/12345678".to_string(),
+            identifier_type: "DOI".to_string(),
+        });
+
+        let doi_data = build_doi_data(&data);
+        assert_eq!(doi_data.doi, "10.5555/12345678");
+    }
+
+    #[test]
+    fn build_doi_data_falls_back_to_id_doi() {
+        let data = Data {
+            id: "https://doi.org/10.9999/abc".to_string(),
+            url: "https://example.org/resource".to_string(),
+            ..Default::default()
+        };
+
+        let doi_data = build_doi_data(&data);
+        assert_eq!(doi_data.doi, "10.9999/abc");
+    }
 }

@@ -3,17 +3,19 @@
 //! Convert scholarly metadata between formats. The native model is [`Data`];
 //! format modules read into it and write out of it.
 
+pub mod author_utils;
+pub mod constants;
 pub mod crockford;
 pub mod data;
 pub mod doi_utils;
 pub mod error;
 pub mod file_utils;
+mod formats;
 pub mod progress;
 pub mod schema_utils;
-mod formats;
-pub mod traits;
+pub mod spdx;
 pub mod utils;
-pub mod vocab;
+pub mod vocabularies;
 
 pub use data::Data;
 pub use error::{Error, Result};
@@ -173,8 +175,15 @@ fn batch_entry_name(base_name: &str, idx: Option<usize>) -> String {
         None => base_name.to_string(),
         Some(i) => {
             let path = std::path::Path::new(base_name);
-            let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-            let ext = path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+            let stem = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let ext = path
+                .extension()
+                .map(|e| e.to_string_lossy().to_string())
+                .unwrap_or_default();
             if ext.is_empty() {
                 format!("{}-{:05}", stem, i)
             } else {
@@ -191,7 +200,12 @@ fn batch_entry_name(base_name: &str, idx: Option<usize>) -> String {
 /// dumps are single-source per file, so this isn't read from the data
 /// itself. `limit: None` reads every row; `Some(n)` reads `n` rows starting
 /// at `offset`.
-pub fn read_vraix_sqlite(sqlite_path: &str, from: &str, limit: Option<usize>, offset: usize) -> Result<Vec<Data>> {
+pub fn read_vraix_sqlite(
+    sqlite_path: &str,
+    from: &str,
+    limit: Option<usize>,
+    offset: usize,
+) -> Result<Vec<Data>> {
     formats::vraix::read_dump(sqlite_path, from, limit, offset)
 }
 
@@ -232,15 +246,25 @@ pub fn fetch_vraix_dump(
 
     let url = format!("https://metadata.vraix.org/{}-{}.sqlite3.zst", from, date);
     let cache_key = format!("{}-{}.sqlite3.zst", from, date);
-    let (compressed, _from_cache) = file_utils::download_file_cached(&url, "vraix", &cache_key, cache_ttl)
-        .map_err(|e| Error::Http(format!("failed to download '{}': {}", url, e)))?;
+    let (compressed, _from_cache) =
+        file_utils::download_file_cached(&url, "vraix", &cache_key, cache_ttl)
+            .map_err(|e| Error::Http(format!("failed to download '{}': {}", url, e)))?;
     let decompressed = file_utils::unzst_content(&compressed)
         .map_err(|e| Error::Parse(format!("failed to decompress '{}': {}", url, e)))?;
 
-    let tmp_path = std::env::temp_dir()
-        .join(format!("commonmeta-vraix-{}-{}-{}.sqlite3", from, date, std::process::id()));
-    file_utils::write_file(&tmp_path, &decompressed)
-        .map_err(|e| Error::Parse(format!("failed to write temp file '{}': {}", tmp_path.display(), e)))?;
+    let tmp_path = std::env::temp_dir().join(format!(
+        "commonmeta-vraix-{}-{}-{}.sqlite3",
+        from,
+        date,
+        std::process::id()
+    ));
+    file_utils::write_file(&tmp_path, &decompressed).map_err(|e| {
+        Error::Parse(format!(
+            "failed to write temp file '{}': {}",
+            tmp_path.display(),
+            e
+        ))
+    })?;
 
     let result = read_vraix_sqlite(tmp_path.to_str().unwrap(), from, limit, offset);
     std::fs::remove_file(&tmp_path).ok();
@@ -270,12 +294,19 @@ mod tests {
     use super::*;
 
     fn sample_data(id: &str) -> Data {
-        Data { id: id.to_string(), type_: "JournalArticle".to_string(), ..Data::default() }
+        Data {
+            id: id.to_string(),
+            type_: "JournalArticle".to_string(),
+            ..Data::default()
+        }
     }
 
     #[test]
     fn test_write_list_json_array_formats() {
-        let list = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        let list = vec![
+            sample_data("https://doi.org/10.1/a"),
+            sample_data("https://doi.org/10.1/b"),
+        ];
         let bytes = write_list(&list, "commonmeta").unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value.as_array().unwrap().len(), 2);
@@ -283,7 +314,10 @@ mod tests {
 
     #[test]
     fn test_write_list_newline_joined_formats() {
-        let list = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        let list = vec![
+            sample_data("https://doi.org/10.1/a"),
+            sample_data("https://doi.org/10.1/b"),
+        ];
         let bytes = write_list(&list, "ris").unwrap();
         let text = String::from_utf8(bytes).unwrap();
         // Two records, newline-joined rather than a JSON array.
@@ -292,7 +326,10 @@ mod tests {
 
     #[test]
     fn test_write_list_crossref_xml_batches_into_one_doi_batch() {
-        let list = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        let list = vec![
+            sample_data("https://doi.org/10.1/a"),
+            sample_data("https://doi.org/10.1/b"),
+        ];
         let bytes = write_list(&list, "crossref_xml").unwrap();
         let text = String::from_utf8(bytes).unwrap();
         assert_eq!(text.matches("<doi_batch xmlns=").count(), 1);
@@ -302,9 +339,9 @@ mod tests {
     #[test]
     fn test_write_list_ror_uses_json_array_batch_writer() {
         let mut a = sample_data("https://ror.org/0342dzm54");
-        a.titles.push(crate::data::Title { title: "Org A".to_string(), ..Default::default() });
+        a.title = "Org A".to_string();
         let mut b = sample_data("https://ror.org/0521rfr06");
-        b.titles.push(crate::data::Title { title: "Org B".to_string(), ..Default::default() });
+        b.title = "Org B".to_string();
 
         let bytes = write_list(&[a, b], "ror").unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -314,11 +351,11 @@ mod tests {
     #[test]
     fn test_write_list_citation_renders_each_record() {
         let mut a = sample_data("https://doi.org/10.1/a");
-        a.titles.push(crate::data::Title { title: "Title A".to_string(), ..Default::default() });
-        a.date.published = "2020".to_string();
+        a.title = "Title A".to_string();
+        a.date_published = "2020".to_string();
         let mut b = sample_data("https://doi.org/10.1/b");
-        b.titles.push(crate::data::Title { title: "Title B".to_string(), ..Default::default() });
-        b.date.published = "2021".to_string();
+        b.title = "Title B".to_string();
+        b.date_published = "2021".to_string();
 
         let bytes = write_list(&[a, b], "citation").unwrap();
         let text = String::from_utf8(bytes).unwrap();
@@ -331,11 +368,12 @@ mod tests {
     #[test]
     fn test_write_list_citation_respects_style() {
         let mut a = sample_data("https://doi.org/10.1/a");
-        a.titles.push(crate::data::Title { title: "Title A".to_string(), ..Default::default() });
-        a.date.published = "2020".to_string();
+        a.title = "Title A".to_string();
+        a.date_published = "2020".to_string();
 
         let apa = write_list_citation(&[a.clone()], "citation", None, None).unwrap();
-        let chicago = write_list_citation(&[a], "citation", Some("chicago-author-date"), None).unwrap();
+        let chicago =
+            write_list_citation(&[a], "citation", Some("chicago-author-date"), None).unwrap();
         assert_ne!(apa, chicago);
     }
 
@@ -363,7 +401,10 @@ mod tests {
 
     #[test]
     fn test_write_archive_no_extension_base_name() {
-        let list = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        let list = vec![
+            sample_data("https://doi.org/10.1/a"),
+            sample_data("https://doi.org/10.1/b"),
+        ];
         let entries = write_archive(&list, "commonmeta", "out", 1).unwrap();
         assert_eq!(entries[0].0, "out-00000");
         assert_eq!(entries[1].0, "out-00001");

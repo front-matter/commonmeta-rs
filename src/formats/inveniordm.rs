@@ -1,9 +1,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::author_utils::{
+    cleanup_author, infer_contributor_type, normalize_contributor_roles, parse_affiliation_value,
+    split_person_name,
+};
+use crate::constants as C;
 use crate::data::{
-    Affiliation, Container, Contributor, Data, Description, File, FundingReference, Identifier,
-    License, Publisher, Reference, Relation, Subject, Title,
+    Citation, Container, Contributor, Data, Description, File, FundingReference, Identifier,
+    Organization, Person, Publisher, Reference, Relation, Subject,
 };
 use crate::doi_utils::normalize_doi;
 use crate::error::{Error, Result};
@@ -24,7 +29,9 @@ struct Content {
     // Zenodo conceptdoi for IsVersionOf relation
     #[serde(default)]
     conceptdoi: String,
+    #[serde(default)]
     parent: Parent,
+    #[serde(default)]
     pids: Pids,
     links: Option<ContentLinks>,
     // ISO 8601 updated timestamp
@@ -361,13 +368,10 @@ struct Journal {
     #[serde(default)]
     issn: String,
     #[serde(default)]
-    #[allow(dead_code)]
     volume: String,
     #[serde(default)]
-    #[allow(dead_code)]
     issue: String,
     #[serde(default)]
-    #[allow(dead_code)]
     pages: String,
 }
 
@@ -395,99 +399,11 @@ struct FileLinks {
 // ── Type mappings ─────────────────────────────────────────────────────────────
 
 fn invenio_to_cm_type(id: &str) -> &'static str {
-    match id {
-        "annotationcollection" => "Collection",
-        "book" => "Book",
-        "conferencepaper" => "ProceedingsArticle",
-        "datamanagementplan" => "OutputManagementPlan",
-        "dataset" => "Dataset",
-        "drawing" | "figure" | "image" | "photo" | "plot" => "Image",
-        "lesson" => "InteractiveResource",
-        "patent" => "Patent",
-        "peerreview" => "PeerReview",
-        "physicalobject" => "PhysicalObject",
-        "poster" => "Presentation",
-        "presentation" => "Presentation",
-        "preprint" => "Article",
-        "publication" => "JournalArticle",
-        "publication-annotationcollection" => "Collection",
-        "publication-article" => "JournalArticle",
-        "publication-blogpost" => "BlogPost",
-        "publication-book" => "Book",
-        "publication-conferencepaper" => "ProceedingsArticle",
-        "publication-conferenceproceeding" => "Proceedings",
-        "publication-datamanagementplan" => "OutputManagementPlan",
-        "publication-datapaper" => "JournalArticle",
-        "publication-dissertation" => "Dissertation",
-        "publication-journal" => "Journal",
-        "publication-other" => "Other",
-        "publication-patent" => "Patent",
-        "publication-peerreview" => "PeerReview",
-        "publication-preprint" => "Article",
-        "publication-report" => "Report",
-        "publication-section" => "BookChapter",
-        "publication-standard" => "Standard",
-        "publication-technicalnote" => "Report",
-        "publication-thesis" => "Dissertation",
-        "publication-workingpaper" => "Report",
-        "report" => "Report",
-        "section" => "BookChapter",
-        "software" => "Software",
-        "software-computationalnotebook" => "ComputationalNotebook",
-        "softwaredocumentation" => "Software",
-        "taxonomictreatment" => "Collection",
-        "technicalnote" => "Report",
-        "thesis" => "Dissertation",
-        "video" => "Audiovisual",
-        "workflow" => "Workflow",
-        "workingpaper" => "Report",
-        "other" => "Other",
-        _ => "",
-    }
+    C::inveniordm_to_cm(id)
 }
 
-fn license_mapping(id: &str) -> &'static str {
-    match id {
-        "cc-by-3.0" => "CC-BY-3.0",
-        "cc-by-4.0" => "CC-BY-4.0",
-        "cc-by-nc-3.0" => "CC-BY-NC-3.0",
-        "cc-by-nc-4.0" => "CC-BY-NC-4.0",
-        "cc-by-nc-nd-3.0" => "CC-BY-NC-ND-3.0",
-        "cc-by-nc-nd-4.0" => "CC-BY-NC-ND-4.0",
-        "cc-by-nc-sa-3.0" => "CC-BY-NC-SA-3.0",
-        "cc-by-nc-sa-4.0" => "CC-BY-NC-SA-4.0",
-        "cc-by-nd-3.0" => "CC-BY-ND-3.0",
-        "cc-by-nd-4.0" => "CC-BY-ND-4.0",
-        "cc-by-sa-3.0" => "CC-BY-SA-3.0",
-        "cc-by-sa-4.0" => "CC-BY-SA-4.0",
-        "cc0-1.0" => "CC0-1.0",
-        "mit" => "MIT",
-        "apache-2.0" => "Apache-2.0",
-        "gpl-3.0" => "GPL-3.0",
-        _ => "",
-    }
-}
-
-/// Valid Commonmeta relation types (from Python COMMONMETA_RELATION_TYPES).
 fn is_valid_relation_type(t: &str) -> bool {
-    matches!(
-        t,
-        "IsNewVersionOf"
-            | "IsPreviousVersionOf"
-            | "IsVersionOf"
-            | "HasVersion"
-            | "IsPartOf"
-            | "HasPart"
-            | "IsVariantFormOf"
-            | "IsOriginalFormOf"
-            | "IsIdenticalTo"
-            | "IsTranslationOf"
-            | "HasReview"
-            | "IsReviewOf"
-            | "IsPreprintOf"
-            | "HasPreprint"
-            | "IsSupplementTo"
-    )
+    C::COMMONMETA_RELATION_TYPES.contains(&t)
 }
 
 /// InvenioRDM lowercase relation_type.id → Commonmeta CamelCase type.
@@ -555,7 +471,7 @@ fn get_contributor(v: &Creator, default_role: &str) -> Contributor {
         return get_zenodo_contributor(v, default_role);
     }
 
-    let mut type_ = match v.person_or_org.type_.as_str() {
+    let raw_type = match v.person_or_org.type_.as_str() {
         "personal" => "Person",
         "organizational" => "Organization",
         _ => "",
@@ -567,87 +483,83 @@ fn get_contributor(v: &Creator, default_role: &str) -> Contributor {
         match ni.scheme.as_str() {
             "orcid" => {
                 id = normalize_orcid(&ni.identifier);
-                type_ = "Person".to_string();
                 break;
             }
             "ror" | "ROR" => {
                 id = normalize_ror(&ni.identifier);
-                type_ = "Organization".to_string();
                 break;
             }
             _ => {}
         }
     }
 
-    let name = v.person_or_org.name.clone();
+    let name = cleanup_author(Some(&v.person_or_org.name)).unwrap_or(v.person_or_org.name.clone());
     let mut given_name = v.person_or_org.given_name.clone();
     let mut family_name = v.person_or_org.family_name.clone();
 
+    let mut type_ = infer_contributor_type(
+        &raw_type,
+        &id,
+        &given_name,
+        &family_name,
+        &name,
+        None,
+    );
+
     if type_.is_empty() {
-        type_ = if !given_name.is_empty() || !family_name.is_empty() {
-            "Person".to_string()
-        } else {
-            "Organization".to_string()
-        };
+        type_ = "Organization".to_string();
     }
 
     // Split "Family, Given" for Person type when only name is provided
     let mut name_out = name.clone();
-    if type_ == "Person"
-        && !name_out.is_empty()
-        && given_name.is_empty()
-        && family_name.is_empty()
-        && let Some(comma) = name_out.find(',') {
-            given_name = name_out[comma + 1..].trim().to_string();
-            family_name = name_out[..comma].trim().to_string();
+    if type_ == "Person" && !name_out.is_empty() && given_name.is_empty() && family_name.is_empty() {
+        let (given, family, remainder) = split_person_name(&name_out);
+        if !given.is_empty() || !family.is_empty() {
+            given_name = given;
+            family_name = family;
             name_out = String::new();
+        } else {
+            name_out = remainder;
         }
+    }
 
     let affiliations = v
         .affiliations
         .iter()
         .filter_map(|a| {
-            let aff_id = normalize_ror(&a.id);
-            if aff_id.is_empty() && a.name.is_empty() {
-                None
-            } else {
-                Some(Affiliation {
-                    id: aff_id,
-                    name: a.name.clone(),
-                    ..Default::default()
-                })
-            }
+            let value = serde_json::json!({"id": a.id, "name": a.name});
+            parse_affiliation_value(&value)
         })
         .collect();
 
-    Contributor {
-        id,
-        type_,
-        name: name_out,
-        given_name,
-        family_name,
-        affiliations,
-        contributor_roles: vec![default_role.to_string()],
+    let roles = normalize_contributor_roles(&[default_role.to_string()], default_role);
+
+    if type_ == "Person" {
+        Contributor::person(
+            Person { id, given_name, family_name, affiliations },
+            roles,
+        )
+    } else {
+        Contributor::organization(
+            Organization { id, name: name_out },
+            roles,
+        )
     }
 }
 
 fn get_zenodo_contributor(v: &Creator, default_role: &str) -> Contributor {
     let mut id = String::new();
-    let mut type_ = String::new();
 
     if !v.orcid.is_empty() {
         id = normalize_orcid(&v.orcid);
-        type_ = "Person".to_string();
     }
 
-    let (given_name, family_name, name) = parse_name(&v.name);
+    let cleaned_name = cleanup_author(Some(&v.name)).unwrap_or(v.name.clone());
+    let (given_name, family_name, name) = split_person_name(&cleaned_name);
 
+    let mut type_ = infer_contributor_type("", &id, &given_name, &family_name, &cleaned_name, None);
     if type_.is_empty() {
-        type_ = if !given_name.is_empty() || !family_name.is_empty() {
-            "Person".to_string()
-        } else {
-            "Organization".to_string()
-        };
+        type_ = "Organization".to_string();
     }
 
     let mut family_name_out = family_name;
@@ -658,32 +570,25 @@ fn get_zenodo_contributor(v: &Creator, default_role: &str) -> Contributor {
     }
 
     let affiliations = if !v.affiliation.is_empty() {
-        vec![Affiliation {
-            name: v.affiliation.clone(),
-            ..Default::default()
-        }]
+        parse_affiliation_value(&Value::String(v.affiliation.clone()))
+            .into_iter()
+            .collect()
     } else {
         vec![]
     };
 
-    Contributor {
-        id,
-        type_,
-        name: name_out,
-        given_name,
-        family_name: family_name_out,
-        affiliations,
-        contributor_roles: vec![default_role.to_string()],
-    }
-}
+    let roles = normalize_contributor_roles(&[default_role.to_string()], default_role);
 
-fn parse_name(name: &str) -> (String, String, String) {
-    if let Some(comma) = name.find(',') {
-        let family = name[..comma].trim().to_string();
-        let given = name[comma + 1..].trim().to_string();
-        (given, family, String::new())
+    if type_ == "Person" {
+        Contributor::person(
+            Person { id, given_name, family_name: family_name_out, affiliations },
+            roles,
+        )
     } else {
-        (String::new(), String::new(), name.to_string())
+        Contributor::organization(
+            Organization { id, name: name_out },
+            roles,
+        )
     }
 }
 
@@ -710,6 +615,23 @@ fn normalize_relation_id(scheme: &str, identifier: &str) -> String {
         "doi" => normalize_doi(identifier),
         _ => normalize_url(identifier, true, false).unwrap_or_else(|| normalize_id(identifier)),
     }
+}
+
+fn parse_pages_range(pages: &str) -> (String, String) {
+    let trimmed = pages.trim();
+    if trimmed.is_empty() {
+        return (String::new(), String::new());
+    }
+
+    for sep in ["--", "-", "–", "—"] {
+        if let Some(idx) = trimmed.find(sep) {
+            let first = trimmed[..idx].trim().to_string();
+            let last = trimmed[idx + sep.len()..].trim().to_string();
+            return (first, last);
+        }
+    }
+
+    (trimmed.to_string(), String::new())
 }
 
 /// Map InvenioRDM relation_type.id to Commonmeta type.
@@ -825,12 +747,17 @@ fn from_content(content: Content) -> Data {
         } else {
             (String::new(), String::new())
         };
+        let (first_page, last_page) = parse_pages_range(&content.custom_fields.journal.pages);
         data.container = Container {
             type_: "Blog".to_string(),
             title: content.custom_fields.journal.title.clone(),
             identifier,
             identifier_type,
             platform: content.custom_fields.generator.clone(),
+            volume: content.custom_fields.journal.volume.clone(),
+            issue: content.custom_fields.journal.issue.clone(),
+            first_page,
+            last_page,
             ..Default::default()
         };
         data.publisher = Publisher {
@@ -846,12 +773,17 @@ fn from_content(content: Content) -> Data {
         } else {
             (String::new(), String::new())
         };
+        let (first_page, last_page) = parse_pages_range(&content.custom_fields.journal.pages);
         data.container = Container {
             type_: "Periodical".to_string(),
             title: content.custom_fields.journal.title.clone(),
             identifier,
             identifier_type,
             platform: content.custom_fields.generator.clone(),
+            volume: content.custom_fields.journal.volume.clone(),
+            issue: content.custom_fields.journal.issue.clone(),
+            first_page,
+            last_page,
             ..Default::default()
         };
     }
@@ -875,7 +807,7 @@ fn from_content(content: Content) -> Data {
         let already = data
             .contributors
             .iter()
-            .any(|e| !e.id.is_empty() && e.id == contributor.id);
+            .any(|e| !e.id().is_empty() && e.id() == contributor.id());
         if !already {
             data.contributors.push(contributor);
         }
@@ -898,7 +830,7 @@ fn from_content(content: Content) -> Data {
         let already = data
             .contributors
             .iter()
-            .any(|e| !e.id.is_empty() && e.id == contributor.id);
+            .any(|e| !e.id().is_empty() && e.id() == contributor.id());
         if !already {
             data.contributors.push(contributor);
         }
@@ -908,73 +840,67 @@ fn from_content(content: Content) -> Data {
     for d in &content.metadata.dates {
         let t = date_type_str(&d.type_);
         match t.as_str() {
-            "issued" => data.date.published = d.date.clone(),
-            "updated" => data.date.updated = d.date.clone(),
+            "issued" => data.date_published = d.date.clone(),
+            "updated" => data.date_updated = d.date.clone(),
             _ => {}
         }
     }
-    if data.date.published.is_empty() && !content.metadata.publication_date.is_empty() {
-        data.date.published = content.metadata.publication_date.clone();
+    if data.date_published.is_empty() && !content.metadata.publication_date.is_empty() {
+        data.date_published = content.metadata.publication_date.clone();
     }
     // Fallback for updated: top-level meta.updated (strip milliseconds)
-    if data.date.updated.is_empty() && !content.updated.is_empty() {
-        data.date.updated = strip_milliseconds(&content.updated);
+    if data.date_updated.is_empty() && !content.updated.is_empty() {
+        data.date_updated = strip_milliseconds(&content.updated);
     }
 
     // Descriptions: description (Abstract) + notes (Other)
-    for (i, text) in [&content.metadata.description, &content.metadata.notes]
-        .iter()
-        .enumerate()
-    {
-        if !text.is_empty() {
-            data.descriptions.push(Description {
-                description: sanitize(text),
-                type_: if i == 0 {
-                    "Abstract".to_string()
-                } else {
-                    "Other".to_string()
-                },
-                ..Default::default()
-            });
-        }
+    if !content.metadata.description.is_empty() {
+        data.description = sanitize(&content.metadata.description);
+    }
+    if !content.metadata.notes.is_empty() {
+        data.additional_descriptions.push(Description {
+            description: sanitize(&content.metadata.notes),
+            type_: "Other".to_string(),
+            ..Default::default()
+        });
     }
 
     // Feature image
     if !content.custom_fields.feature_image.is_empty() {
-        data.feature_image = content.custom_fields.feature_image.clone();
+        data.image = content.custom_fields.feature_image.clone();
     }
 
     // Files from top-level `files` list
     if let Some(files_val) = &content.files
         && let Ok(files_enabled) = serde_json::from_value::<FilesEnabled>(files_val.clone())
-            && files_enabled.enabled
-                && let Ok(entries) = serde_json::from_value::<FilesWithEntries>(files_val.clone())
-                {
-                    for f in entries.entries.values() {
-                        if let Ok(cf) = serde_json::from_value::<ContentFile>(f.clone()) {
-                            let url = cf
-                                .links
-                                .as_ref()
-                                .map(|l| l.self_.clone())
-                                .unwrap_or_default();
-                            if !url.is_empty() {
-                                let mime_type = if !cf.type_.is_empty() {
-                                    format!("application/{}", cf.type_)
-                                } else {
-                                    String::new()
-                                };
-                                data.files.push(File {
-                                    bucket: cf.bucket,
-                                    key: cf.key,
-                                    checksum: cf.checksum,
-                                    url,
-                                    size: cf.size,
-                                    mime_type,
-                                });
-                            }
-                        }
-                    }
+        && files_enabled.enabled
+        && let Ok(entries) = serde_json::from_value::<FilesWithEntries>(files_val.clone())
+    {
+        for f in entries.entries.values() {
+            if let Ok(cf) = serde_json::from_value::<ContentFile>(f.clone()) {
+                let url = cf
+                    .links
+                    .as_ref()
+                    .map(|l| l.self_.clone())
+                    .unwrap_or_default();
+                if !url.is_empty() {
+                    let mime_type = if !cf.type_.is_empty() {
+                        format!("application/{}", cf.type_)
+                    } else {
+                        String::new()
+                    };
+                    data.files.push(File {
+                        bucket: cf.bucket,
+                        key: cf.key,
+                        checksum: cf.checksum,
+                        url,
+                        size: cf.size,
+                        mime_type,
+                    });
                 }
+            }
+        }
+    }
 
     // Funding references
     if !content.metadata.funding.is_empty() {
@@ -1010,12 +936,12 @@ fn from_content(content: Content) -> Data {
                 String::new()
             };
             data.funding_references.push(FundingReference {
-                funder_identifier,
+                funder_id: funder_identifier,
                 funder_identifier_type,
                 funder_name: v.funder.name.clone(),
                 award_number,
                 award_title,
-                award_uri,
+                award_id: award_uri,
             });
         }
     } else if !content.metadata.grants.is_empty() {
@@ -1028,21 +954,23 @@ fn from_content(content: Content) -> Data {
             };
             let award_uri = normalize_url(&v.url, true, false).unwrap_or_default();
             data.funding_references.push(FundingReference {
-                funder_identifier,
+                funder_id: funder_identifier,
                 funder_identifier_type,
                 funder_name: v.funder.name.clone(),
                 award_number: v.code.clone(),
                 award_title: v.title.clone(),
-                award_uri,
+                award_id: award_uri,
             });
         }
     }
 
     // Identifiers: DOI first, then only doi/uuid/guid schemes from metadata
-    data.identifiers.push(Identifier {
-        identifier: data.id.clone(),
-        identifier_type: "DOI".to_string(),
-    });
+    if !data.id.is_empty() {
+        data.identifiers.push(Identifier {
+            identifier: data.id.clone(),
+            identifier_type: "DOI".to_string(),
+        });
+    }
     for v in &content.metadata.identifiers {
         if v.scheme == "url" {
             // URL goes into data.url, not identifiers
@@ -1062,12 +990,13 @@ fn from_content(content: Content) -> Data {
     // RID from record id field
     if let Some(id_val) = &content.id
         && let Some(s) = id_val.as_str()
-            && !s.is_empty() {
-                data.identifiers.push(Identifier {
-                    identifier: s.to_string(),
-                    identifier_type: "RID".to_string(),
-                });
-            }
+        && !s.is_empty()
+    {
+        data.identifiers.push(Identifier {
+            identifier: s.to_string(),
+            identifier_type: "RID".to_string(),
+        });
+    }
 
     // Language: metadata.language first, then metadata.languages[0].id
     if !content.metadata.language.is_empty() {
@@ -1078,19 +1007,12 @@ fn from_content(content: Content) -> Data {
 
     // License from rights list (new) or legacy license field
     if !content.metadata.rights.is_empty() {
-        let r = &content.metadata.rights[0];
-        let license_id = license_mapping(&r.id).to_string();
-        data.license = License {
-            id: license_id,
-            url: String::new(),
-        };
+        data.license = crate::spdx::from_id(&content.metadata.rights[0].id);
     } else if let Some(lic) = &content.metadata.license
-        && !lic.id.is_empty() {
-            data.license = License {
-                id: license_mapping(&lic.id).to_string(),
-                url: String::new(),
-            };
-        }
+        && !lic.id.is_empty()
+    {
+        data.license = crate::spdx::from_id(&lic.id);
+    }
 
     // Provider
     data.provider = if is_rogue_scholar {
@@ -1101,13 +1023,23 @@ fn from_content(content: Content) -> Data {
 
     // Subjects: metadata.subjects + metadata.keywords merged
     for v in &content.metadata.subjects {
-        let s = subject_string(v);
-        if s.is_empty() {
-            continue;
-        }
-        let subj = Subject { subject: s };
-        if !data.subjects.contains(&subj) {
-            data.subjects.push(subj);
+        if v.id.contains("openalex.org") {
+            let id_part = v.id.rsplit('/').next().unwrap_or("");
+            if let Some((id, subject)) = crate::vocabularies::lookup_openalex_subject(id_part) {
+                let subj = Subject { id, subject, ..Default::default() };
+                if !data.subjects.contains(&subj) {
+                    data.subjects.push(subj);
+                }
+            }
+        } else {
+            let s = subject_string(v);
+            if s.is_empty() {
+                continue;
+            }
+            let subj = Subject { subject: s, ..Default::default() };
+            if !data.subjects.contains(&subj) {
+                data.subjects.push(subj);
+            }
         }
     }
     for kw in &content.metadata.keywords {
@@ -1118,7 +1050,7 @@ fn from_content(content: Content) -> Data {
         if s.is_empty() {
             continue;
         }
-        let subj = Subject { subject: s };
+        let subj = Subject { subject: s, ..Default::default() };
         if !data.subjects.contains(&subj) {
             data.subjects.push(subj);
         }
@@ -1149,12 +1081,12 @@ fn from_content(content: Content) -> Data {
         }
     }
 
-    // Citations from custom_fields.rs:citations
+    // Citations (works that cite this resource) from custom_fields.rs:citations
     for v in &content.custom_fields.citations {
         let id = normalize_reference_id(&v.scheme, &v.identifier);
-        data.references.push(Reference {
+        data.citations.push(Citation {
             id,
-            unstructured: v.reference.clone(),
+            citation: v.reference.clone(),
             ..Default::default()
         });
     }
@@ -1171,10 +1103,7 @@ fn from_content(content: Content) -> Data {
         }
         let type_ = map_relation_type(&relation_id);
         if !type_.is_empty() && is_valid_relation_type(&type_) {
-            let rel = Relation {
-                id,
-                type_,
-            };
+            let rel = Relation { id, type_ };
             if !data.relations.contains(&rel) {
                 data.relations.push(rel);
             }
@@ -1215,10 +1144,7 @@ fn from_content(content: Content) -> Data {
 
     // Title
     if !content.metadata.title.is_empty() {
-        data.titles.push(Title {
-            title: sanitize(&content.metadata.title),
-            ..Default::default()
-        });
+        data.title = sanitize(&content.metadata.title);
     }
 
     // Version
@@ -1226,7 +1152,7 @@ fn from_content(content: Content) -> Data {
 
     // Full-text HTML
     if !content.custom_fields.content_html.is_empty() {
-        data.content_html = content.custom_fields.content_html.clone();
+        data.content = content.custom_fields.content_html.clone();
     }
 
     data
@@ -1304,7 +1230,10 @@ struct OutInveniordm {
     access: OutAccess,
     files: OutFiles,
     metadata: OutMetadata,
-    #[serde(rename = "custom_fields", skip_serializing_if = "OutCustomFields::is_empty")]
+    #[serde(
+        rename = "custom_fields",
+        skip_serializing_if = "OutCustomFields::is_empty"
+    )]
     custom_fields: OutCustomFields,
 }
 
@@ -1502,7 +1431,10 @@ struct OutRelatedIdentifier {
 
 #[derive(Serialize, Default)]
 struct OutCustomFields {
-    #[serde(rename = "journal:journal", skip_serializing_if = "OutJournal::is_empty")]
+    #[serde(
+        rename = "journal:journal",
+        skip_serializing_if = "OutJournal::is_empty"
+    )]
     journal: OutJournal,
     #[serde(rename = "rs:content_html", skip_serializing_if = "String::is_empty")]
     content_html: String,
@@ -1548,45 +1480,7 @@ impl OutJournal {
 // ── Writer type mappings ──────────────────────────────────────────────────────
 
 fn cm_to_invenio_type(cm: &str) -> &'static str {
-    match cm {
-        "Article" => "publication-preprint",
-        "Audiovisual" => "video",
-        "BlogPost" => "publication-blogpost",
-        "Book" => "publication-book",
-        "BookChapter" => "publication-section",
-        "Collection" => "publication-annotationcollection",
-        "ComputationalNotebook" => "software-computationalnotebook",
-        "Dataset" => "dataset",
-        "Dissertation" => "publication-thesis",
-        "Document" => "publication",
-        "Entry" => "publication",
-        "Event" => "event",
-        "Figure" => "image-figure",
-        "Image" => "image",
-        "Instrument" => "other",
-        "Journal" => "publication-journal",
-        "JournalArticle" => "publication-article",
-        "LegalDocument" => "publication",
-        "Manuscript" => "publication",
-        "Map" => "other",
-        "Patent" => "patent",
-        "PersonalCommunication" => "publication",
-        "PhysicalObject" => "physicalobject",
-        "Post" => "publication",
-        "Poster" => "poster",
-        "Presentation" => "presentation",
-        "ProceedingsArticle" => "publication-conferencepaper",
-        "Proceedings" => "publication-conferenceproceeding",
-        "Report" => "publication-report",
-        "Review" => "publication-peerreview",
-        "Software" => "software",
-        "Sound" => "audio",
-        "Standard" => "publication-standard",
-        "WebPage" => "publication",
-        "Workflow" => "workflow",
-        "Other" => "other",
-        _ => "other",
-    }
+    C::cm_to_inveniordm(cm)
 }
 
 fn cm_to_invenio_identifier(cm: &str) -> &'static str {
@@ -1621,27 +1515,8 @@ fn cm_to_invenio_identifier(cm: &str) -> &'static str {
 }
 
 fn cm_to_invenio_contributor_role(cm: &str) -> &'static str {
-    match cm {
-        "Editor" => "editor",
-        "Supervisor" => "supervisor",
-        "DataManager" => "datamanager",
-        "DataCollector" => "datacollector",
-        "DataCurator" => "datacurator",
-        "Distributor" => "distributor",
-        "Funder" => "funder",
-        "HostingInstitution" => "hostinginstitution",
-        "Producer" => "producer",
-        "ProjectLeader" => "projectleader",
-        "ProjectManager" => "projectmanager",
-        "ProjectMember" => "projectmember",
-        "RelatedPerson" => "relatedperson",
-        "Researcher" => "researcher",
-        "RightsHolder" => "rightsholder",
-        "Sponsor" => "sponsor",
-        "WorkPackageLeader" => "workpackageleader",
-        "ContactPerson" => "contactperson",
-        _ => "",
-    }
+    let r = C::cm_to_inveniordm_role(cm);
+    if r == "other" { "" } else { r }
 }
 
 fn cm_to_invenio_relation(cm: &str) -> &'static str {
@@ -1690,12 +1565,14 @@ fn cm_to_invenio_relation(cm: &str) -> &'static str {
 
 fn convert(data: &Data) -> OutInveniordm {
     use crate::doi_utils::validate_doi;
-    use crate::utils::{get_language, url_to_spdx, validate_id, validate_orcid, validate_ror};
+    use crate::utils::{get_language, validate_id, validate_orcid, validate_ror};
 
     let mut out = OutInveniordm::default();
 
     // DOI
-    let doi = validate_doi(&data.id).unwrap_or_default();
+    let doi = doi_from_identifiers(data)
+        .or_else(|| validate_doi(&data.id))
+        .unwrap_or_default();
     let provider = if is_rogue_scholar_doi(&data.id) {
         "crossref"
     } else {
@@ -1719,43 +1596,46 @@ fn convert(data: &Data) -> OutInveniordm {
     };
 
     // Title
-    out.metadata.title = data
-        .titles
-        .first()
-        .map(|t| t.title.clone())
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| "No title".to_string());
+    out.metadata.title = if !data.title.is_empty() {
+        data.title.clone()
+    } else {
+        "No title".to_string()
+    };
 
     // Publication date
-    out.metadata.publication_date = if !data.date.published.is_empty() {
-        parse_date(&data.date.published)
-    } else if !data.date.available.is_empty() {
-        parse_date(&data.date.available)
-    } else if !data.date.created.is_empty() {
-        parse_date(&data.date.created)
+    out.metadata.publication_date = if !data.date_published.is_empty() {
+        parse_date(&data.date_published)
+    } else if !data.dates.available.is_empty() {
+        parse_date(&data.dates.available)
+    } else if !data.dates.created.is_empty() {
+        parse_date(&data.dates.created)
     } else {
         String::new()
     };
 
     // Creators (contributors with "Author" role)
-    if data.contributors.iter().any(|c| c.contributor_roles.contains(&"Author".to_string())) {
+    if data
+        .contributors
+        .iter()
+        .any(|c| c.roles.contains(&"Author".to_string()))
+    {
         for v in &data.contributors {
-            if !v.contributor_roles.contains(&"Author".to_string()) {
+            if !v.roles.contains(&"Author".to_string()) {
                 continue;
             }
             let mut identifiers = vec![];
-            if !v.id.is_empty()
-                && let Some(orcid) = validate_orcid(&v.id) {
-                    identifiers.push(OutIdentifier {
-                        identifier: orcid,
-                        scheme: "orcid".to_string(),
-                    });
-                }
+            if !v.id().is_empty()
+                && let Some(orcid) = validate_orcid(v.id())
+            {
+                identifiers.push(OutIdentifier {
+                    identifier: orcid,
+                    scheme: "orcid".to_string(),
+                });
+            }
 
             let mut affiliations = vec![];
-            for a in &v.affiliations {
-                let aff_id = validate_ror(&a.id)
-                    .unwrap_or_default();
+            for a in v.affiliations() {
+                let aff_id = validate_ror(&a.id).unwrap_or_default();
                 let aff = OutAffiliation {
                     id: aff_id,
                     name: a.name.clone(),
@@ -1778,9 +1658,9 @@ fn convert(data: &Data) -> OutInveniordm {
             out.metadata.creators.push(OutCreator {
                 person_or_org: OutPersonOrOrg {
                     type_: ptype.to_string(),
-                    name: v.name.clone(),
-                    given_name: v.given_name.clone(),
-                    family_name: v.family_name.clone(),
+                    name: if v.type_ == "Organization" { v.name() } else { String::new() },
+                    given_name: v.given_name().to_string(),
+                    family_name: v.family_name().to_string(),
                     identifiers,
                 },
                 affiliations,
@@ -1800,7 +1680,7 @@ fn convert(data: &Data) -> OutInveniordm {
 
     // Contributors (non-Author roles)
     for v in &data.contributors {
-        for role in &v.contributor_roles {
+        for role in &v.roles {
             if role == "Author" {
                 continue;
             }
@@ -1810,17 +1690,18 @@ fn convert(data: &Data) -> OutInveniordm {
             }
 
             let mut identifiers = vec![];
-            if !v.id.is_empty()
-                && let Some(orcid) = validate_orcid(&v.id) {
-                    identifiers.push(OutIdentifier {
-                        identifier: orcid,
-                        scheme: "orcid".to_string(),
-                    });
-                }
+            if !v.id().is_empty()
+                && let Some(orcid) = validate_orcid(v.id())
+            {
+                identifiers.push(OutIdentifier {
+                    identifier: orcid,
+                    scheme: "orcid".to_string(),
+                });
+            }
 
             let mut affiliations = vec![];
             if v.type_ == "Person" {
-                for a in &v.affiliations {
+                for a in v.affiliations() {
                     let aff_id = validate_ror(&a.id).unwrap_or_default();
                     affiliations.push(OutAffiliation {
                         id: aff_id,
@@ -1838,12 +1719,14 @@ fn convert(data: &Data) -> OutInveniordm {
             out.metadata.contributors.push(OutContributor {
                 person_or_org: OutPersonOrOrg {
                     type_: ptype.to_string(),
-                    name: v.name.clone(),
-                    given_name: v.given_name.clone(),
-                    family_name: v.family_name.clone(),
+                    name: if v.type_ == "Organization" { v.name() } else { String::new() },
+                    given_name: v.given_name().to_string(),
+                    family_name: v.family_name().to_string(),
                     identifiers,
                 },
-                role: OutTypeId { id: role_id.to_string() },
+                role: OutTypeId {
+                    id: role_id.to_string(),
+                },
                 affiliations,
             });
             break; // use first non-Author role only
@@ -1878,8 +1761,8 @@ fn convert(data: &Data) -> OutInveniordm {
     }
 
     // Optional custom fields
-    out.custom_fields.content_html = data.content_html.clone();
-    out.custom_fields.feature_image = data.feature_image.clone();
+    out.custom_fields.content_html = data.content.clone();
+    out.custom_fields.feature_image = data.image.clone();
 
     // Identifiers: skip the primary DOI, add URL separately
     for v in &data.identifiers {
@@ -1888,7 +1771,9 @@ fn convert(data: &Data) -> OutInveniordm {
             continue;
         }
         // skip the record's own DOI
-        if v.identifier_type == "DOI" && normalize_id_for_doi(&v.identifier) == normalize_id_for_doi(&data.id) {
+        if v.identifier_type == "DOI"
+            && normalize_id_for_doi(&v.identifier) == normalize_id_for_doi(&data.id)
+        {
             continue;
         }
         out.metadata.identifiers.push(OutIdentifier {
@@ -1906,18 +1791,18 @@ fn convert(data: &Data) -> OutInveniordm {
 
     // Dates: iterate over Date fields
     let date_fields: &[(&str, &str)] = &[
-        ("created",     &data.date.created),
-        ("submitted",   &data.date.submitted),
-        ("accepted",    &data.date.accepted),
-        ("issued",      &data.date.published),   // "published" → "issued"
-        ("updated",     &data.date.updated),
-        ("other",       &data.date.accessed),    // "accessed" → "other"
-        ("available",   &data.date.available),
-        ("copyrighted", &data.date.copyrighted),
-        ("collected",   &data.date.collected),
-        ("valid",       &data.date.valid),
-        ("withdrawn",   &data.date.withdrawn),
-        ("other",       &data.date.other),
+        ("created", &data.dates.created),
+        ("submitted", &data.dates.submitted),
+        ("accepted", &data.dates.accepted),
+        ("issued", &data.date_published), // "published" → "issued"
+        ("updated", &data.date_updated),
+        ("other", &data.dates.accessed), // "accessed" → "other"
+        ("available", &data.dates.available),
+        ("copyrighted", &data.dates.copyrighted),
+        ("collected", &data.dates.collected),
+        ("valid", &data.dates.valid),
+        ("withdrawn", &data.dates.withdrawn),
+        ("other", &data.dates.other),
     ];
     for (id, date) in date_fields {
         if !date.is_empty() {
@@ -1929,8 +1814,8 @@ fn convert(data: &Data) -> OutInveniordm {
     }
 
     // Description
-    if let Some(d) = data.descriptions.first() {
-        out.metadata.description = d.description.clone();
+    if !data.description.is_empty() {
+        out.metadata.description = data.description.clone();
     }
 
     // Funding references
@@ -1939,9 +1824,9 @@ fn convert(data: &Data) -> OutInveniordm {
             // Crossref Funder IDs are not ROR IDs; no conversion available
             String::new()
         } else {
-            let (funder_id, funder_id_type) = validate_id(&v.funder_identifier);
+            let (validated_id, funder_id_type) = validate_id(&v.funder_id);
             if funder_id_type == "ROR" {
-                validate_ror(&funder_id).unwrap_or_default()
+                validate_ror(&validated_id).unwrap_or_default()
             } else {
                 String::new()
             }
@@ -1952,26 +1837,29 @@ fn convert(data: &Data) -> OutInveniordm {
             name: v.funder_name.clone(),
         };
 
-        let award = if !v.award_number.is_empty() || !v.award_title.is_empty() || !v.award_uri.is_empty() {
-            let mut identifiers = vec![];
-            if !v.award_uri.is_empty() {
-                let (award_id, award_id_type) = validate_id(&v.award_uri);
-                let scheme = cm_to_invenio_identifier(award_id_type);
-                if !award_id.is_empty() && !scheme.is_empty() {
-                    identifiers.push(OutIdentifier {
-                        identifier: award_id,
-                        scheme: scheme.to_string(),
-                    });
+        let award =
+            if !v.award_number.is_empty() || !v.award_title.is_empty() || !v.award_id.is_empty() {
+                let mut identifiers = vec![];
+                if !v.award_id.is_empty() {
+                    let (award_id_val, award_id_type) = validate_id(&v.award_id);
+                    let scheme = cm_to_invenio_identifier(award_id_type);
+                    if !award_id_val.is_empty() && !scheme.is_empty() {
+                        identifiers.push(OutIdentifier {
+                            identifier: award_id_val,
+                            scheme: scheme.to_string(),
+                        });
+                    }
                 }
-            }
-            OutAward {
-                number: v.award_number.clone(),
-                title: OutAwardTitle { en: v.award_title.clone() },
-                identifiers,
-            }
-        } else {
-            OutAward::default()
-        };
+                OutAward {
+                    number: v.award_number.clone(),
+                    title: OutAwardTitle {
+                        en: v.award_title.clone(),
+                    },
+                    identifiers,
+                }
+            } else {
+                OutAward::default()
+            };
 
         out.metadata.funding.push(OutFunding { funder, award });
     }
@@ -1996,7 +1884,7 @@ fn convert(data: &Data) -> OutInveniordm {
     let right_id = if !data.license.id.is_empty() {
         data.license.id.to_lowercase()
     } else if !data.license.url.is_empty() {
-        url_to_spdx(&data.license.url).to_lowercase()
+        crate::spdx::from_url(&data.license.url).id.to_lowercase()
     } else {
         String::new()
     };
@@ -2009,9 +1897,9 @@ fn convert(data: &Data) -> OutInveniordm {
         let (ref_id, ref_id_type) = validate_id(&v.id);
         let scheme = cm_to_invenio_identifier(ref_id_type).to_string();
         let unstructured = if v.unstructured.is_empty() {
-            // Build from title + year
-            let mut u = if !v.title.is_empty() {
-                v.title.clone()
+            // Build from reference + year
+            let mut u = if !v.reference.is_empty() {
+                v.reference.clone()
             } else {
                 "Unknown title".to_string()
             };
@@ -2083,11 +1971,17 @@ fn normalize_id_for_doi(id: &str) -> String {
         .to_lowercase()
 }
 
+fn doi_from_identifiers(data: &Data) -> Option<String> {
+    data.identifiers
+        .iter()
+        .find(|id| id.identifier_type == "DOI" && !id.identifier.is_empty())
+        .and_then(|id| crate::doi_utils::validate_doi(&id.identifier))
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 pub fn read_json(input: &str) -> Result<Data> {
-    let content: Content =
-        serde_json::from_str(input).map_err(|e| Error::Parse(e.to_string()))?;
+    let content: Content = serde_json::from_str(input).map_err(|e| Error::Parse(e.to_string()))?;
     Ok(from_content(content))
 }
 
@@ -2101,6 +1995,59 @@ pub fn write_all(list: &[Data]) -> Result<Vec<u8>> {
     serde_json::to_vec_pretty(&payloads).map_err(|e| Error::Parse(e.to_string()))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_read_json_maps_journal_container_details() {
+        let json = r#"{
+                    "doi": "10.5555/example",
+                    "parent": {},
+                    "pids": {},
+                    "metadata": {
+                        "resource_type": {"id": "publication-article"},
+                        "title": "Example"
+                    },
+                    "custom_fields": {
+                        "journal:journal": {
+                            "title": "Journal of Examples",
+                            "issn": "1234-5678",
+                            "volume": "12",
+                            "issue": "3",
+                            "pages": "100-110"
+                        }
+                    }
+                }"#;
+
+        let data = read_json(json).unwrap();
+        assert_eq!(data.container.title, "Journal of Examples");
+        assert_eq!(data.container.identifier, "1234-5678");
+        assert_eq!(data.container.identifier_type, "ISSN");
+        assert_eq!(data.container.volume, "12");
+        assert_eq!(data.container.issue, "3");
+        assert_eq!(data.container.first_page, "100");
+        assert_eq!(data.container.last_page, "110");
+    }
+
+    #[test]
+    fn test_write_prefers_doi_identifier_over_id() {
+        let data = Data {
+            id: "https://example.org/not-a-doi".to_string(),
+            identifiers: vec![Identifier {
+                identifier: "https://doi.org/10.5555/identifier-doi".to_string(),
+                identifier_type: "DOI".to_string(),
+            }],
+            title: "Example".to_string(),
+            ..Data::default()
+        };
+
+        let out = write(&data).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(json["pids"]["doi"]["identifier"], "10.5555/identifier-doi");
+    }
+}
+
 /// Fetch an InvenioRDM record by URL (e.g. `https://rogue-scholar.org/records/7zrtf-jkc81`).
 pub fn fetch(url: &str) -> Result<Data> {
     let parsed = url::Url::parse(url).map_err(|e| Error::Parse(e.to_string()))?;
@@ -2109,9 +2056,7 @@ pub fn fetch(url: &str) -> Result<Data> {
         .ok_or_else(|| Error::Parse("missing host in URL".to_string()))?;
     let record_id = parsed
         .path_segments()
-        .and_then(|mut segs| {
-            segs.find(|s| !s.is_empty() && *s != "records" && *s != "api")
-        })
+        .and_then(|mut segs| segs.find(|s| !s.is_empty() && *s != "records" && *s != "api"))
         .ok_or_else(|| Error::Parse("cannot extract record ID from URL".to_string()))?
         .to_string();
 
@@ -2221,13 +2166,25 @@ fn create_draft_record(
         return Err(Error::Http("rate limited".to_string()));
     }
     if status != 201 {
-        return Err(Error::Http(format!("failed to create draft record: {}", text)));
+        return Err(Error::Http(format!(
+            "failed to create draft record: {}",
+            text
+        )));
     }
     let v: Value = serde_json::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?;
     Ok((
-        v.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
-        v.get("created").and_then(Value::as_str).unwrap_or_default().to_string(),
-        v.get("updated").and_then(Value::as_str).unwrap_or_default().to_string(),
+        v.get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        v.get("created")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        v.get("updated")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
     ))
 }
 
@@ -2271,7 +2228,10 @@ fn publish_draft_record(
     token: &str,
     client: &reqwest::blocking::Client,
 ) -> Result<(String, String)> {
-    let url = format!("https://{}/api/records/{}/draft/actions/publish", host, record_id);
+    let url = format!(
+        "https://{}/api/records/{}/draft/actions/publish",
+        host, record_id
+    );
     let resp = client
         .post(&url)
         .header("Content-Type", "application/json")
@@ -2282,12 +2242,21 @@ fn publish_draft_record(
     let status = resp.status().as_u16();
     let text = resp.text().map_err(|e| Error::Http(e.to_string()))?;
     if status != 202 {
-        return Err(Error::Http(format!("failed to publish draft record: {}", text)));
+        return Err(Error::Http(format!(
+            "failed to publish draft record: {}",
+            text
+        )));
     }
     let v: Value = serde_json::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?;
     Ok((
-        v.get("created").and_then(Value::as_str).unwrap_or_default().to_string(),
-        v.get("updated").and_then(Value::as_str).unwrap_or_default().to_string(),
+        v.get("created")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        v.get("updated")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
     ))
 }
 
@@ -2298,7 +2267,10 @@ fn publish_draft_record(
 /// otherwise a new draft is created. Either way, the draft is published
 /// before returning.
 pub fn upsert(data: &Data, host: &str, token: &str) -> PushResult {
-    let mut result = PushResult { id: data.id.clone(), ..Default::default() };
+    let mut result = PushResult {
+        id: data.id.clone(),
+        ..Default::default()
+    };
 
     let doi = match crate::doi_utils::validate_doi(&data.id) {
         Some(d) => d,
@@ -2393,7 +2365,10 @@ mod push_tests {
 
     #[test]
     fn test_upsert_rejects_missing_doi() {
-        let data = Data { id: "https://example.com/not-a-doi".to_string(), ..Data::default() };
+        let data = Data {
+            id: "https://example.com/not-a-doi".to_string(),
+            ..Data::default()
+        };
         let result = upsert(&data, "example.invenio.host", "fake-token");
         assert_eq!(result.status, "failed_missing_doi");
         assert!(result.record_id.is_empty());

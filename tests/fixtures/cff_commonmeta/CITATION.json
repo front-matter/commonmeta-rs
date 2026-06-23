@@ -1,0 +1,76 @@
+{
+    "id": "https://doi.org/10.5281/zenodo.1184077",
+    "type": "Software",
+    "contributors": [
+        {
+            "type": "Person",
+            "person": {
+                "id": "https://orcid.org/0000-0002-9538-7919",
+                "given_name": "Robert",
+                "family_name": "Haines",
+                "affiliations": [
+                    {
+                        "name": "The University of Manchester, UK"
+                    }
+                ]
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Organization",
+            "organization": {
+                "name": "The Ruby Citation File Format Developers"
+            },
+            "roles": [
+                "Author"
+            ]
+        }
+    ],
+    "date_published": "2021-08-18",
+    "description": "This library provides a Ruby interface to manipulate Citation File Format files",
+    "license": {
+        "id": "Apache-2.0",
+        "title": "Apache License 2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0"
+    },
+    "publisher": {
+        "name": "GitHub"
+    },
+    "references": [
+        {
+            "id": "https://doi.org/10.5281/zenodo.1003149"
+        }
+    ],
+    "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+    "subjects": [
+        {
+            "subject": "ruby"
+        },
+        {
+            "subject": "credit"
+        },
+        {
+            "subject": "software citation"
+        },
+        {
+            "subject": "research software"
+        },
+        {
+            "subject": "software sustainability"
+        },
+        {
+            "subject": "metadata"
+        },
+        {
+            "subject": "citation file format"
+        },
+        {
+            "subject": "CFF"
+        }
+    ],
+    "title": "Ruby CFF Library",
+    "url": "https://github.com/citation-file-format/ruby-cff",
+    "version": "0.9.0"
+}

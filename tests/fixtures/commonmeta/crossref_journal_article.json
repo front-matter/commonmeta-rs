@@ -2,43 +2,46 @@
   "id": "https://doi.org/10.5555/12345678",
   "type": "JournalArticle",
   "container": {
+    "identifier": "1234-5678",
+    "identifier_type": "ISSN",
     "type": "Journal",
     "title": "Journal of Examples",
-    "identifier": "1234-5678",
-    "identifierType": "ISSN",
+    "first_page": "100",
+    "last_page": "110",
     "volume": "12",
-    "issue": "3",
-    "firstPage": "100",
-    "lastPage": "110"
+    "issue": "3"
   },
   "contributors": [
     {
-      "id": "https://orcid.org/0000-0000-0000-0000",
       "type": "Person",
-      "givenName": "Ada",
-      "familyName": "Lovelace",
-      "affiliations": [
-        {
-          "id": "https://ror.org/05dxps055",
-          "name": "Example University",
-          "assertedBy": "publisher"
-        }
-      ],
-      "contributorRoles": ["Author"]
+      "person": {
+        "id": "https://orcid.org/0000-0000-0000-0000",
+        "given_name": "Ada",
+        "family_name": "Lovelace",
+        "affiliations": [
+          {
+            "id": "https://ror.org/05dxps055",
+            "name": "Example University",
+            "asserted_by": "publisher"
+          }
+        ]
+      },
+      "roles": [
+        "Author"
+      ]
     }
   ],
-  "date": {
-    "published": "2024-03-15"
-  },
+  "date_published": "2024-03-15",
   "identifiers": [
     {
       "identifier": "https://doi.org/10.5555/12345678",
-      "identifierType": "DOI"
+      "identifier_type": "DOI"
     }
   ],
   "language": "en",
   "license": {
     "id": "CC-BY-4.0",
+    "title": "Creative Commons Attribution 4.0 International",
     "url": "https://creativecommons.org/licenses/by/4.0/legalcode"
   },
   "provider": "Crossref",
@@ -49,17 +52,14 @@
     {
       "key": "ref1",
       "id": "https://doi.org/10.1000/xyz",
-      "title": "Prior Work",
-      "publicationYear": "2020",
+      "reference": "Prior Work",
+      "publication_year": "2020",
       "first_page": "1",
       "last_page": "9",
-      "assertedBy": "publisher"
+      "asserted_by": "publisher"
     }
   ],
-  "titles": [
-    {
-      "title": "A Study of Things"
-    }
-  ],
+  "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+  "title": "A Study of Things",
   "url": "https://example.com/articles/a-study-of-things"
 }

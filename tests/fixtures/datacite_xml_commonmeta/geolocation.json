@@ -1,0 +1,75 @@
+{
+    "id": "https://doi.org/10.5072/geopointexample",
+    "type": "Dataset",
+    "contributors": [
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Kai",
+                "family_name": "Schumann"
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "David",
+                "family_name": "V\u00f6lker"
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Wilhelm Reiber",
+                "family_name": "Weinrebe"
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Organization",
+            "organization": {
+                "name": "IFM-GEOMAR Leibniz-Institute of Marine Sciences, Kiel University"
+            },
+            "roles": [
+                "HostingInstitution"
+            ]
+        }
+    ],
+    "date_published": "2011",
+    "description": "A ship-based acoustic mapping campaign was conducted at the exit of Ilulissat Ice Fjord and in the sedimentary basin of Disko Bay to the west of the fjord mouth. Submarine landscape and sediment distribution patterns are interpreted in terms of\n      glaciomarine facies types that are related to variations in the past position of the glacier front. In particular, asymmetric ridges that form a curved entity and a large sill at the fjord mouth may represent moraines hat depict at least two\n      relatively stable positions of the ice front in the Disko Bay and at the fjord mouth. In this respect, Ilulissat Glacier shows prominent differences to the East Greenland Kangerlussuaq Glacier which is comparable in present size and present role for\n      the ice discharge from the inland ice sheet. Two linear clusters of pockmarks in the center of the sedimentary basin seem to be linked to ongoing methane release due to dissociation of gas hydrates, a process fueled by climate warming in the Arctic\n      realm.",
+    "geo_locations": [
+        {
+            "geo_location_place": "Disko Bay",
+            "geo_location_point_longitude": -52.0,
+            "geo_location_point_latitude": 69.0
+        }
+    ],
+    "identifiers": [
+        {
+            "identifier": "https://doi.org/10.5072/geopointexample",
+            "identifier_type": "DOI"
+        }
+    ],
+    "language": "en",
+    "license": {
+        "url": "http://creativecommons.org/licenses/by/3.0/deed"
+    },
+    "provider": "DataCite",
+    "publisher": {
+        "name": "PANGAEA - Data Publisher for Earth & Environmental Science"
+    },
+    "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+    "subjects": [
+        {
+            "subject": "551 Geology, hydrology, meteorology"
+        }
+    ],
+    "title": "Gridded results of swath bathymetric mapping of Disko Bay, Western Greenland, 2007-2008"
+}

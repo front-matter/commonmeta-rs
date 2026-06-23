@@ -84,11 +84,18 @@ fn value_ref_to_string(value: ValueRef<'_>) -> String {
         ValueRef::Double(v) => v.to_string(),
         ValueRef::Decimal(v) => v.to_string(),
         ValueRef::Text(v) => String::from_utf8_lossy(v).into_owned(),
-        ValueRef::Blob(v) => format!("0x{}", v.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+        ValueRef::Blob(v) => format!(
+            "0x{}",
+            v.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        ),
         ValueRef::Date32(v) => v.to_string(),
         ValueRef::Time64(unit, v) => format!("{:?} {v}", unit),
         ValueRef::Timestamp(unit, v) => format!("{:?} {v}", unit),
-        ValueRef::Interval { months, days, nanos } => {
+        ValueRef::Interval {
+            months,
+            days,
+            nanos,
+        } => {
             format!("months={months}, days={days}, nanos={nanos}")
         }
         ValueRef::List(_, _)
@@ -156,7 +163,7 @@ mod tests {
             },
             ..Data::default()
         };
-        article.titles.push(Title { title: "A".to_string(), ..Default::default() });
+        article.title = "A".to_string();
 
         let mut dataset = Data {
             id: "https://doi.org/10.1/b".to_string(),
@@ -167,7 +174,7 @@ mod tests {
             },
             ..Data::default()
         };
-        dataset.titles.push(Title { title: "B".to_string(), ..Default::default() });
+        dataset.title = "B".to_string();
 
         let bytes = commonmeta::write_parquet(&[article, dataset]).unwrap();
         let path = std::env::temp_dir().join(format!(
@@ -191,7 +198,9 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         let mut stmt = conn.prepare(&sql).unwrap();
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
             .unwrap();
 
         let mut counts = Vec::new();
@@ -201,7 +210,13 @@ mod tests {
 
         std::fs::remove_file(&path).ok();
 
-        assert_eq!(counts, vec![("Dataset".to_string(), 1), ("JournalArticle".to_string(), 1)]);
+        assert_eq!(
+            counts,
+            vec![
+                ("Dataset".to_string(), 1),
+                ("JournalArticle".to_string(), 1)
+            ]
+        );
     }
 
     #[test]

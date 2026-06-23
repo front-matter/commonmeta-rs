@@ -1,21 +1,25 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+use crate::author_utils::{
+    cleanup_author, infer_contributor_type, normalize_contributor_roles, parse_affiliations,
+    split_person_name,
+};
 /// Deserialize a JSON string-or-null as String, treating null as "".
 fn null_to_string<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
     Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
 }
 
 use crate::data::{
-    Affiliation, Container, Contributor, Data, Description, FundingReference, GeoLocation,
-    GeoLocationBox, GeoLocationPoint, Identifier, License, Publisher, Reference, Relation,
-    Subject, Title,
+    Affiliation, Citation, Container, Contributor, Data, Description, FundingReference,
+    GeoLocation, Identifier, Organization, Person, Publisher, Reference, Relation, Subject, Title,
 };
+use crate::constants as C;
 use crate::doi_utils::{normalize_doi, validate_doi};
 use crate::error::{Error, Result};
 use crate::utils::{
     normalize_cc_url, normalize_id, normalize_orcid, normalize_ror, normalize_url, sanitize,
-    url_to_spdx, validate_id,
+    validate_id,
 };
 
 // ── API response structs ───────────────────────────────────────────────────────
@@ -70,13 +74,21 @@ struct DcAttributes {
 
 #[derive(Deserialize, Default)]
 struct DcAlternateIdentifier {
-    #[serde(rename = "alternateIdentifier", default, deserialize_with = "null_to_string")]
+    #[serde(
+        rename = "alternateIdentifier",
+        default,
+        deserialize_with = "null_to_string"
+    )]
     alternate_identifier: String,
-    #[serde(rename = "alternateIdentifierType", default, deserialize_with = "null_to_string")]
+    #[serde(
+        rename = "alternateIdentifierType",
+        default,
+        deserialize_with = "null_to_string"
+    )]
     alternate_identifier_type: String,
 }
 
-// Affiliation is either Vec<String> or Vec<DcAffiliationStruct>; use Value
+// Affiliation is either Vec<String> or Vec<struct>; use Value
 #[derive(Deserialize, Default)]
 struct DcContributor {
     #[serde(default, deserialize_with = "null_to_string")]
@@ -90,31 +102,39 @@ struct DcContributor {
     affiliation: Option<Value>,
     #[serde(rename = "nameIdentifiers", default)]
     name_identifiers: Vec<DcNameIdentifier>,
-    #[serde(rename = "contributorType", default, deserialize_with = "null_to_string")]
+    #[serde(
+        rename = "contributorType",
+        default,
+        deserialize_with = "null_to_string"
+    )]
     contributor_type: String,
 }
 
 #[derive(Deserialize, Default)]
 struct DcNameIdentifier {
-    #[serde(rename = "nameIdentifier", default, deserialize_with = "null_to_string")]
+    #[serde(
+        rename = "nameIdentifier",
+        default,
+        deserialize_with = "null_to_string"
+    )]
     name_identifier: String,
-    #[serde(rename = "nameIdentifierScheme", default, deserialize_with = "null_to_string")]
+    #[serde(
+        rename = "nameIdentifierScheme",
+        default,
+        deserialize_with = "null_to_string"
+    )]
     name_identifier_scheme: String,
-}
-
-#[derive(Deserialize, Default)]
-struct DcAffiliationStruct {
-    #[serde(rename = "affiliationIdentifier", default, deserialize_with = "null_to_string")]
-    affiliation_identifier: String,
-    #[serde(default, deserialize_with = "null_to_string")]
-    name: String,
 }
 
 #[derive(Deserialize, Default)]
 struct DcPublisherStruct {
     #[serde(default, deserialize_with = "null_to_string")]
     name: String,
-    #[serde(rename = "publisherIdentifier", default, deserialize_with = "null_to_string")]
+    #[serde(
+        rename = "publisherIdentifier",
+        default,
+        deserialize_with = "null_to_string"
+    )]
     publisher_identifier: String,
 }
 
@@ -124,7 +144,11 @@ struct DcContainer {
     type_: String,
     #[serde(default, deserialize_with = "null_to_string")]
     identifier: String,
-    #[serde(rename = "identifierType", default, deserialize_with = "null_to_string")]
+    #[serde(
+        rename = "identifierType",
+        default,
+        deserialize_with = "null_to_string"
+    )]
     identifier_type: String,
     #[serde(default, deserialize_with = "null_to_string")]
     title: String,
@@ -164,7 +188,11 @@ struct DcDate {
 
 #[derive(Deserialize, Default)]
 struct DcTypes {
-    #[serde(rename = "resourceTypeGeneral", default, deserialize_with = "null_to_string")]
+    #[serde(
+        rename = "resourceTypeGeneral",
+        default,
+        deserialize_with = "null_to_string"
+    )]
     resource_type_general: String,
     #[serde(rename = "resourceType", default, deserialize_with = "null_to_string")]
     resource_type: String,
@@ -172,11 +200,19 @@ struct DcTypes {
 
 #[derive(Deserialize, Default)]
 struct DcRelatedIdentifier {
-    #[serde(rename = "relatedIdentifier", default, deserialize_with = "null_to_string")]
+    #[serde(
+        rename = "relatedIdentifier",
+        default,
+        deserialize_with = "null_to_string"
+    )]
     related_identifier: String,
     #[serde(rename = "relationType", default, deserialize_with = "null_to_string")]
     relation_type: String,
-    #[serde(rename = "resourceTypeGeneral", default, deserialize_with = "null_to_string")]
+    #[serde(
+        rename = "resourceTypeGeneral",
+        default,
+        deserialize_with = "null_to_string"
+    )]
     resource_type_general: String,
 }
 
@@ -190,7 +226,11 @@ struct DcRights {
 struct DcDescription {
     #[serde(default, deserialize_with = "null_to_string")]
     description: String,
-    #[serde(rename = "descriptionType", default, deserialize_with = "null_to_string")]
+    #[serde(
+        rename = "descriptionType",
+        default,
+        deserialize_with = "null_to_string"
+    )]
     description_type: String,
     #[serde(default, deserialize_with = "null_to_string")]
     lang: String,
@@ -198,7 +238,11 @@ struct DcDescription {
 
 #[derive(Deserialize, Default)]
 struct DcGeoLocation {
-    #[serde(rename = "geoLocationPlace", default, deserialize_with = "null_to_string")]
+    #[serde(
+        rename = "geoLocationPlace",
+        default,
+        deserialize_with = "null_to_string"
+    )]
     geo_location_place: String,
     #[serde(rename = "geoLocationPoint")]
     geo_location_point: Option<DcGeoPoint>,
@@ -230,9 +274,17 @@ struct DcGeoBox {
 struct DcFundingReference {
     #[serde(rename = "funderName", default, deserialize_with = "null_to_string")]
     funder_name: String,
-    #[serde(rename = "funderIdentifier", default, deserialize_with = "null_to_string")]
+    #[serde(
+        rename = "funderIdentifier",
+        default,
+        deserialize_with = "null_to_string"
+    )]
     funder_identifier: String,
-    #[serde(rename = "funderIdentifierType", default, deserialize_with = "null_to_string")]
+    #[serde(
+        rename = "funderIdentifierType",
+        default,
+        deserialize_with = "null_to_string"
+    )]
     funder_identifier_type: String,
     #[serde(rename = "awardNumber", default, deserialize_with = "null_to_string")]
     award_number: String,
@@ -244,66 +296,31 @@ struct DcFundingReference {
 
 // ── Type mapping ───────────────────────────────────────────────────────────────
 
-fn dc_to_cm_type(dc: &str) -> &'static str {
-    match dc {
-        "Audiovisual"           => "Audiovisual",
-        "BlogPosting"           => "BlogPost",
-        "Book"                  => "Book",
-        "BookChapter"           => "BookChapter",
-        "Collection"            => "Collection",
-        "ComputationalNotebook" => "ComputationalNotebook",
-        "ConferencePaper"       => "ProceedingsArticle",
-        "ConferenceProceeding"  => "Proceedings",
-        "DataPaper"             => "JournalArticle",
-        "Dataset"               => "Dataset",
-        "Dissertation"          => "Dissertation",
-        "Event"                 => "Event",
-        "Image"                 => "Image",
-        "Instrument"            => "Instrument",
-        "InteractiveResource"   => "InteractiveResource",
-        "Journal"               => "Journal",
-        "JournalArticle"        => "JournalArticle",
-        "Model"                 => "Model",
-        "OutputManagementPlan"  => "OutputManagementPlan",
-        "PeerReview"            => "PeerReview",
-        "PhysicalObject"        => "PhysicalObject",
-        "Poster"                => "Poster",
-        "Preprint"              => "Article",
-        "Report"                => "Report",
-        "Service"               => "Service",
-        "Software"              => "Software",
-        "Sound"                 => "Sound",
-        "Standard"              => "Standard",
-        "StudyRegistration"     => "StudyRegistration",
-        "Text"                  => "Document",
-        "Thesis"                => "Dissertation",
-        "Workflow"              => "Workflow",
-        "Other"                 => "Other",
-        _                       => "",
-    }
-}
-
-fn dc_to_cm_relation(rt: &str) -> &'static str {
+pub(crate) fn dc_to_cm_relation(rt: &str) -> &'static str {
     match rt {
-        "Reviews"      => "IsReviewOf",
+        "Reviews" => "IsReviewOf",
         "IsReviewedBy" => "HasReview",
-        _              => "",
+        _ => "",
     }
 }
 
-fn parse_geo_coord(v: &Option<Value>) -> f64 {
+fn parse_geo_coord(v: &Option<Value>) -> Option<f64> {
     match v {
-        Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0),
-        Some(Value::String(s)) => s.parse().unwrap_or(0.0),
-        _ => 0.0,
+        Some(Value::Number(n)) => n.as_f64(),
+        Some(Value::String(s)) => s.parse().ok(),
+        _ => None,
     }
 }
 
-fn is_reference_relation(rt: &str) -> bool {
+pub(crate) fn is_reference_relation(rt: &str) -> bool {
     matches!(rt, "Cites" | "References")
 }
 
-fn is_supported_relation(rt: &str) -> bool {
+pub(crate) fn is_citation_relation(rt: &str) -> bool {
+    matches!(rt, "IsCitedBy" | "IsReferencedBy")
+}
+
+pub(crate) fn is_supported_relation(rt: &str) -> bool {
     matches!(
         rt,
         "IsNewVersionOf"
@@ -324,7 +341,7 @@ fn is_supported_relation(rt: &str) -> bool {
     )
 }
 
-fn is_recognized_role(role: &str) -> bool {
+pub(crate) fn is_recognized_role(role: &str) -> bool {
     matches!(
         role,
         "Author"
@@ -335,6 +352,7 @@ fn is_recognized_role(role: &str) -> bool {
             | "ContactPerson"
             | "DataCollector"
             | "DataCurator"
+            | "DataCuration"
             | "DataManager"
             | "Distributor"
             | "HostingInstitution"
@@ -350,90 +368,107 @@ fn is_recognized_role(role: &str) -> bool {
             | "RightsHolder"
             | "Sponsor"
             | "Supervisor"
+            | "Supervision"
             | "WorkPackageLeader"
             | "Other"
     )
 }
 
+pub(crate) fn normalize_commonmeta_role(role: &str) -> String {
+    match role {
+        "DataCurator" => "DataCuration".to_string(),
+        "Supervisor" => "Supervision".to_string(),
+        _ => role.to_string(),
+    }
+}
+
 // ── Contributor conversion ─────────────────────────────────────────────────────
 
 fn get_contributor(v: DcContributor, default_role: &str) -> Contributor {
+    let DcContributor {
+        name,
+        given_name,
+        family_name,
+        name_type,
+        affiliation,
+        name_identifiers,
+        contributor_type: _,
+    } = v;
+
     // DataCite uses "Personal"/"Organizational"; strip last 2 chars → "Person"/"Organization"
-    let mut name_type = match v.name_type.as_str() {
-        "Personal" | "Organizational" => v.name_type[..v.name_type.len() - 2].to_string(),
-        "Person" | "Organization" => v.name_type.clone(),
+    let name_type = match name_type.as_str() {
+        "Personal" | "Organizational" => name_type[..name_type.len() - 2].to_string(),
+        "Person" | "Organization" => name_type,
         _ => String::new(),
     };
 
     let mut id = String::new();
-    for ni in &v.name_identifiers {
-        if ni.name_identifier_scheme == "ORCID"
-            || ni.name_identifier_scheme.contains("orcid.org")
+    for ni in &name_identifiers {
+        if ni.name_identifier_scheme == "ORCID" || ni.name_identifier_scheme.contains("orcid.org")
         {
             id = normalize_orcid(&ni.name_identifier);
-            name_type = "Person".to_string();
             break;
-        } else if ni.name_identifier_scheme == "ROR" {
+        } else if ni.name_identifier_scheme == "ROR" || ni.name_identifier_scheme.contains("ror.org") {
             id = normalize_ror(&ni.name_identifier);
-            name_type = "Organization".to_string();
             break;
         }
     }
 
-    let mut name = v.name;
-    let mut given_name = v.given_name;
-    let mut family_name = v.family_name;
+    let mut name = cleanup_author(Some(&name)).unwrap_or(name);
+    let mut given_name = given_name;
+    let mut family_name = family_name;
 
-    if name_type.is_empty() {
-        name_type = if !given_name.is_empty() || !family_name.is_empty() {
-            "Person".to_string()
-        } else {
-            "Organization".to_string()
-        };
+    let mut inferred_type = infer_contributor_type(
+        &name_type,
+        &id,
+        &given_name,
+        &family_name,
+        &name,
+        None,
+    );
+    if inferred_type.is_empty() {
+        inferred_type = "Organization".to_string();
     }
 
-    // Split "Family, Given" format for Person type
-    if name_type == "Person" && !name.is_empty() && given_name.is_empty() && family_name.is_empty()
-        && let Some(comma) = name.find(',') {
-            given_name = name[comma + 1..].trim().to_string();
-            family_name = name[..comma].trim().to_string();
+    if inferred_type == "Person" && !name.is_empty() && given_name.is_empty() && family_name.is_empty() {
+        let (given, family, remainder) = split_person_name(&name);
+        if !given.is_empty() || !family.is_empty() {
+            given_name = given;
+            family_name = family;
             name = String::new();
-        }
-
-    // Affiliation: Vec<String> (old) or Vec<struct> (new)
-    let affiliations: Vec<Affiliation> = if let Some(aff_val) = v.affiliation {
-        if let Ok(names) = serde_json::from_value::<Vec<String>>(aff_val.clone()) {
-            names
-                .into_iter()
-                .filter(|n| !n.is_empty())
-                .map(|n| Affiliation { name: n, ..Default::default() })
-                .collect()
-        } else if let Ok(structs) =
-            serde_json::from_value::<Vec<DcAffiliationStruct>>(aff_val)
-        {
-            structs
-                .into_iter()
-                .map(|a| Affiliation {
-                    id: normalize_ror(&a.affiliation_identifier),
-                    name: a.name,
-                    ..Default::default()
-                })
-                .collect()
         } else {
-            vec![]
+            name = remainder;
+        }
+    }
+
+    let affiliations: Vec<Affiliation> = if let Some(aff_val) = affiliation {
+        match aff_val {
+            Value::Array(values) => parse_affiliations(&values),
+            other => {
+                let values = vec![other];
+                parse_affiliations(&values)
+            }
         }
     } else {
         vec![]
     };
 
-    Contributor {
-        id,
-        type_: name_type,
-        name,
-        given_name,
-        family_name,
-        affiliations,
-        contributor_roles: vec![default_role.to_string()],
+    let normalized_default_role = normalize_commonmeta_role(default_role);
+    let roles = normalize_contributor_roles(
+        &[normalized_default_role.clone()],
+        &normalized_default_role,
+    );
+
+    if inferred_type == "Person" {
+        Contributor::person(
+            Person { id, given_name, family_name, affiliations },
+            roles,
+        )
+    } else {
+        Contributor::organization(
+            Organization { id, name },
+            roles,
+        )
     }
 }
 
@@ -447,10 +482,10 @@ fn from_attributes(attr: DcAttributes) -> Data {
 
     // Type
     let types = attr.types.unwrap_or_default();
-    data.type_ = dc_to_cm_type(&types.resource_type_general).to_string();
+    data.type_ = C::dc_to_cm(&types.resource_type_general).to_string();
 
     // resourceType overrides resourceTypeGeneral when it maps to a CM type (schema 4.4+)
-    let additional = dc_to_cm_type(&types.resource_type);
+    let additional = C::dc_to_cm(&types.resource_type);
     if !additional.is_empty() {
         data.type_ = additional.to_string();
     } else if !types.resource_type.is_empty()
@@ -480,8 +515,13 @@ fn from_attributes(attr: DcAttributes) -> Data {
             continue;
         }
         let contrib = get_contributor(v, "Author");
-        let id = contrib.id.clone();
-        if id.is_empty() || !data.contributors.iter().any(|c| !c.id.is_empty() && c.id == id) {
+        let id = contrib.id();
+        if id.is_empty()
+            || !data
+                .contributors
+                .iter()
+                .any(|c| !c.id().is_empty() && c.id() == id)
+        {
             data.contributors.push(contrib);
         }
     }
@@ -497,8 +537,13 @@ fn from_attributes(attr: DcAttributes) -> Data {
             "Author".to_string()
         };
         let contrib = get_contributor(v, &role);
-        let id = contrib.id.clone();
-        if id.is_empty() || !data.contributors.iter().any(|c| !c.id.is_empty() && c.id == id) {
+        let id = contrib.id();
+        if id.is_empty()
+            || !data
+                .contributors
+                .iter()
+                .any(|c| !c.id().is_empty() && c.id() == id)
+        {
             data.contributors.push(contrib);
         }
     }
@@ -506,30 +551,31 @@ fn from_attributes(attr: DcAttributes) -> Data {
     // Dates
     for d in attr.dates {
         match d.date_type.as_str() {
-            "Accepted"           => data.date.accepted   = d.date,
-            "Available"          => data.date.available  = d.date,
-            "Collected"          => data.date.collected  = d.date,
-            "Created"            => data.date.created    = d.date,
-            "Issued" | "Published" => data.date.published = d.date,
-            "Submitted"          => data.date.submitted  = d.date,
-            "Updated"            => data.date.updated    = d.date,
-            "Valid"              => data.date.valid      = d.date,
-            "Withdrawn"          => data.date.withdrawn  = d.date,
-            "Other"              => data.date.other      = d.date,
+            "Accepted" => data.dates.accepted = d.date,
+            "Available" => data.dates.available = d.date,
+            "Collected" => data.dates.collected = d.date,
+            "Created" => data.dates.created = d.date,
+            "Issued" | "Published" => data.date_published = d.date,
+            "Submitted" => data.dates.submitted = d.date,
+            "Updated" => data.date_updated = d.date,
+            "Valid" => data.dates.valid = d.date,
+            "Withdrawn" => data.dates.withdrawn = d.date,
+            "Other" => data.dates.other = d.date,
             _ => {}
         }
     }
     // Fall back to publicationYear
-    if data.date.published.is_empty()
-        && let Some(py) = attr.publication_year {
-            data.date.published = match py {
-                Value::Number(n) => n.as_i64().map(|y| y.to_string()).unwrap_or_default(),
-                Value::String(s) => s,
-                _ => String::new(),
-            };
-        }
+    if data.date_published.is_empty()
+        && let Some(py) = attr.publication_year
+    {
+        data.date_published = match py {
+            Value::Number(n) => n.as_i64().map(|y| y.to_string()).unwrap_or_default(),
+            Value::String(s) => s,
+            _ => String::new(),
+        };
+    }
 
-    // Descriptions
+    // Descriptions: first Abstract/Summary → data.description; rest → additional_descriptions
     for d in attr.descriptions {
         let type_ = match d.description_type.as_str() {
             "Abstract" | "Summary" | "Methods" | "TechnicalInfo" | "Other" => {
@@ -537,11 +583,16 @@ fn from_attributes(attr: DcAttributes) -> Data {
             }
             _ => "Other".to_string(),
         };
-        data.descriptions.push(Description {
-            description: sanitize(&d.description),
-            type_,
-            language: d.lang,
-        });
+        let text = sanitize(&d.description);
+        if data.description.is_empty() && matches!(type_.as_str(), "Abstract" | "Summary") {
+            data.description = text;
+        } else {
+            data.additional_descriptions.push(Description {
+                description: text,
+                type_,
+                language: d.lang,
+            });
+        }
     }
 
     // Funding references — ROR identifier pass-through; skip live lookups
@@ -553,35 +604,25 @@ fn from_attributes(attr: DcAttributes) -> Data {
             (String::new(), String::new())
         };
         data.funding_references.push(FundingReference {
-            funder_identifier: funder_id,
+            funder_id,
             funder_identifier_type: funder_id_type,
             funder_name: f.funder_name,
             award_number: f.award_number,
             award_title: f.award_title,
-            award_uri: f.award_uri,
+            award_id: f.award_uri,
         });
     }
 
     // GeoLocations
     for g in attr.geo_locations {
-        let point = g.geo_location_point.as_ref().map_or_else(GeoLocationPoint::default, |p| {
-            GeoLocationPoint {
-                point_longitude: parse_geo_coord(&p.point_longitude),
-                point_latitude: parse_geo_coord(&p.point_latitude),
-            }
-        });
-        let box_ = g.geo_location_box.as_ref().map_or_else(GeoLocationBox::default, |b| {
-            GeoLocationBox {
-                west_bound_longitude: parse_geo_coord(&b.west_bound_longitude),
-                east_bound_longitude: parse_geo_coord(&b.east_bound_longitude),
-                south_bound_latitude: parse_geo_coord(&b.south_bound_latitude),
-                north_bound_latitude: parse_geo_coord(&b.north_bound_latitude),
-            }
-        });
         data.geo_locations.push(GeoLocation {
             geo_location_place: g.geo_location_place,
-            geo_location_point: point,
-            geo_location_box: box_,
+            geo_location_point_longitude: g.geo_location_point.as_ref().and_then(|p| parse_geo_coord(&p.point_longitude)),
+            geo_location_point_latitude: g.geo_location_point.as_ref().and_then(|p| parse_geo_coord(&p.point_latitude)),
+            geo_location_box_west_longitude: g.geo_location_box.as_ref().and_then(|b| parse_geo_coord(&b.west_bound_longitude)),
+            geo_location_box_east_longitude: g.geo_location_box.as_ref().and_then(|b| parse_geo_coord(&b.east_bound_longitude)),
+            geo_location_box_south_latitude: g.geo_location_box.as_ref().and_then(|b| parse_geo_coord(&b.south_bound_latitude)),
+            geo_location_box_north_latitude: g.geo_location_box.as_ref().and_then(|b| parse_geo_coord(&b.north_bound_latitude)),
         });
     }
 
@@ -605,19 +646,23 @@ fn from_attributes(attr: DcAttributes) -> Data {
     // Publisher: String (old) or struct (new)
     if let Some(pub_val) = attr.publisher {
         if let Some(name) = pub_val.as_str() {
-            data.publisher = Publisher { name: name.to_string(), ..Default::default() };
+            data.publisher = Publisher {
+                name: name.to_string(),
+                ..Default::default()
+            };
         } else if let Ok(p) = serde_json::from_value::<DcPublisherStruct>(pub_val)
-            && !p.name.is_empty() {
-                data.publisher = Publisher {
-                    id: normalize_ror(&p.publisher_identifier),
-                    name: p.name,
-                };
-            }
+            && !p.name.is_empty()
+        {
+            data.publisher = Publisher {
+                id: normalize_ror(&p.publisher_identifier),
+                name: p.name,
+            };
+        }
     }
 
     // Subjects (deduplicated)
     for s in attr.subjects {
-        let subject = Subject { subject: s.subject };
+        let subject = Subject { subject: s.subject, ..Default::default() };
         if !data.subjects.contains(&subject) {
             data.subjects.push(subject);
         }
@@ -627,9 +672,9 @@ fn from_attributes(attr: DcAttributes) -> Data {
 
     // License: use first entry only
     if let Some(r) = attr.rights_list.into_iter().next() {
-        let (url, _) = normalize_cc_url(&r.rights_uri);
-        let id = url_to_spdx(&url);
-        data.license = License { id, url };
+        let (url, ok) = normalize_cc_url(&r.rights_uri);
+        let url = if ok { url } else { r.rights_uri.clone() };
+        data.license = crate::spdx::from_url(&url);
     }
 
     data.provider = "DataCite".to_string();
@@ -638,8 +683,23 @@ fn from_attributes(attr: DcAttributes) -> Data {
     for r in &attr.related_identifiers {
         let id = normalize_id(&r.related_identifier);
         if !id.is_empty() && is_reference_relation(&r.relation_type) {
-            let type_ = dc_to_cm_type(&r.resource_type_general).to_string();
-            data.references.push(Reference { id, type_, ..Default::default() });
+            let type_ = C::dc_to_cm(&r.resource_type_general).to_string();
+            data.references.push(Reference {
+                id,
+                type_,
+                ..Default::default()
+            });
+        }
+    }
+
+    // Citations (works that cite this resource: IsCitedBy / IsReferencedBy)
+    for r in &attr.related_identifiers {
+        let id = normalize_id(&r.related_identifier);
+        if !id.is_empty() && is_citation_relation(&r.relation_type) {
+            data.citations.push(Citation {
+                id,
+                ..Default::default()
+            });
         }
     }
 
@@ -660,13 +720,21 @@ fn from_attributes(attr: DcAttributes) -> Data {
         }
     }
 
-    // Titles
+    // Titles: first main title → data.title; rest → additional_titles
     for t in attr.titles {
         let type_ = match t.title_type.as_str() {
             "MainTitle" | "Subtitle" | "TranslatedTitle" => t.title_type,
             _ => String::new(),
         };
-        data.titles.push(Title { title: t.title, type_, language: t.lang });
+        if data.title.is_empty() && (type_.is_empty() || type_ == "MainTitle") {
+            data.title = t.title;
+        } else {
+            data.additional_titles.push(Title {
+                title: t.title,
+                type_,
+                language: t.lang,
+            });
+        }
     }
 
     // URL
@@ -688,8 +756,7 @@ pub fn read_json(input: &str) -> Result<Data> {
 }
 
 pub fn fetch(doi: &str) -> Result<Data> {
-    let bare =
-        validate_doi(doi).ok_or_else(|| Error::Parse("invalid DOI".to_string()))?;
+    let bare = validate_doi(doi).ok_or_else(|| Error::Parse("invalid DOI".to_string()))?;
     let url = format!("https://api.datacite.org/dois/{}?affiliation=true", bare);
     let client = reqwest::blocking::Client::builder()
         .user_agent(format!(
@@ -803,13 +870,34 @@ struct OutPublisher {
 
 #[derive(Serialize, Default)]
 struct OutContainer {
+    #[serde(rename = "type", skip_serializing_if = "String::is_empty")]
+    type_: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    identifier: String,
+    #[serde(rename = "identifierType", skip_serializing_if = "String::is_empty")]
+    identifier_type: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     title: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    volume: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    issue: String,
+    #[serde(rename = "firstPage", skip_serializing_if = "String::is_empty")]
+    first_page: String,
+    #[serde(rename = "lastPage", skip_serializing_if = "String::is_empty")]
+    last_page: String,
 }
 
 impl OutContainer {
     fn is_empty(&self) -> bool {
-        self.title.is_empty()
+        self.type_.is_empty()
+            && self.identifier.is_empty()
+            && self.identifier_type.is_empty()
+            && self.title.is_empty()
+            && self.volume.is_empty()
+            && self.issue.is_empty()
+            && self.first_page.is_empty()
+            && self.last_page.is_empty()
     }
 }
 
@@ -851,7 +939,10 @@ struct OutFundingReference {
     funder_name: String,
     #[serde(rename = "funderIdentifier", skip_serializing_if = "String::is_empty")]
     funder_identifier: String,
-    #[serde(rename = "funderIdentifierType", skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "funderIdentifierType",
+        skip_serializing_if = "String::is_empty"
+    )]
     funder_identifier_type: String,
     #[serde(rename = "awardNumber", skip_serializing_if = "String::is_empty")]
     award_number: String,
@@ -863,7 +954,10 @@ struct OutFundingReference {
 struct OutGeoLocation {
     #[serde(rename = "geoLocationPlace", skip_serializing_if = "String::is_empty")]
     geo_location_place: String,
-    #[serde(rename = "geoLocationPoint", skip_serializing_if = "OutGeoPoint::is_empty")]
+    #[serde(
+        rename = "geoLocationPoint",
+        skip_serializing_if = "OutGeoPoint::is_empty"
+    )]
     geo_location_point: OutGeoPoint,
     #[serde(rename = "geoLocationBox", skip_serializing_if = "OutGeoBox::is_empty")]
     geo_location_box: OutGeoBox,
@@ -871,36 +965,36 @@ struct OutGeoLocation {
 
 #[derive(Serialize, Default)]
 struct OutGeoPoint {
-    #[serde(rename = "pointLongitude")]
-    point_longitude: f64,
-    #[serde(rename = "pointLatitude")]
-    point_latitude: f64,
+    #[serde(rename = "pointLongitude", skip_serializing_if = "Option::is_none")]
+    point_longitude: Option<f64>,
+    #[serde(rename = "pointLatitude", skip_serializing_if = "Option::is_none")]
+    point_latitude: Option<f64>,
 }
 
 impl OutGeoPoint {
     fn is_empty(&self) -> bool {
-        self.point_longitude == 0.0 && self.point_latitude == 0.0
+        self.point_longitude.is_none() && self.point_latitude.is_none()
     }
 }
 
 #[derive(Serialize, Default)]
 struct OutGeoBox {
-    #[serde(rename = "westBoundLongitude")]
-    west_bound_longitude: f64,
-    #[serde(rename = "eastBoundLongitude")]
-    east_bound_longitude: f64,
-    #[serde(rename = "southBoundLatitude")]
-    south_bound_latitude: f64,
-    #[serde(rename = "northBoundLatitude")]
-    north_bound_latitude: f64,
+    #[serde(rename = "westBoundLongitude", skip_serializing_if = "Option::is_none")]
+    west_bound_longitude: Option<f64>,
+    #[serde(rename = "eastBoundLongitude", skip_serializing_if = "Option::is_none")]
+    east_bound_longitude: Option<f64>,
+    #[serde(rename = "southBoundLatitude", skip_serializing_if = "Option::is_none")]
+    south_bound_latitude: Option<f64>,
+    #[serde(rename = "northBoundLatitude", skip_serializing_if = "Option::is_none")]
+    north_bound_latitude: Option<f64>,
 }
 
 impl OutGeoBox {
     fn is_empty(&self) -> bool {
-        self.west_bound_longitude == 0.0
-            && self.east_bound_longitude == 0.0
-            && self.south_bound_latitude == 0.0
-            && self.north_bound_latitude == 0.0
+        self.west_bound_longitude.is_none()
+            && self.east_bound_longitude.is_none()
+            && self.south_bound_latitude.is_none()
+            && self.north_bound_latitude.is_none()
     }
 }
 
@@ -929,160 +1023,47 @@ struct OutRelatedIdentifier {
     related_identifier_type: String,
     #[serde(rename = "relationType")]
     relation_type: String,
-    #[serde(rename = "resourceTypeGeneral", skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "resourceTypeGeneral",
+        skip_serializing_if = "String::is_empty"
+    )]
     resource_type_general: String,
 }
 
 // ── Type mappings (CM → DC) ───────────────────────────────────────────────────
 
-fn cm_to_dc_type(cm: &str) -> &'static str {
-    match cm {
-        "Article"               => "Preprint",
-        "Audiovisual"           => "Audiovisual",
-        "BlogPost"              => "Preprint",
-        "Book"                  => "Book",
-        "BookChapter"           => "BookChapter",
-        "Collection"            => "Collection",
-        "ComputationalNotebook" => "ComputationalNotebook",
-        "Dataset"               => "Dataset",
-        "Dissertation"          => "Dissertation",
-        "Document"              => "Text",
-        "Entry"                 => "Text",
-        "Event"                 => "Event",
-        "Figure"                => "Image",
-        "Image"                 => "Image",
-        "Instrument"            => "Instrument",
-        "InteractiveResource"   => "InteractiveResource",
-        "JournalArticle"        => "JournalArticle",
-        "LegalDocument"         => "Text",
-        "Manuscript"            => "Text",
-        "Map"                   => "Image",
-        "Model"                 => "Model",
-        "OutputManagementPlan"  => "OutputManagementPlan",
-        "Patent"                => "Text",
-        "PeerReview"            => "PeerReview",
-        "Performance"           => "Audiovisual",
-        "PersonalCommunication" => "Text",
-        "PhysicalObject"        => "PhysicalObject",
-        "Post"                  => "Text",
-        "Poster"                => "Poster",
-        "Presentation"          => "Audiovisual",
-        "ProceedingsArticle"    => "ConferencePaper",
-        "Proceedings"           => "ConferenceProceeding",
-        "Report"                => "Report",
-        "Review"                => "PeerReview",
-        "Service"               => "Service",
-        "Software"              => "Software",
-        "Sound"                 => "Sound",
-        "Standard"              => "Standard",
-        "StudyRegistration"     => "StudyRegistration",
-        "WebPage"               => "Text",
-        "Workflow"              => "Workflow",
-        _                       => "Other",
-    }
-}
-
-fn cm_to_schema_org(cm: &str) -> &'static str {
-    match cm {
-        "Article" | "BlogPost" | "JournalArticle" | "ProceedingsArticle" | "PeerReview" => "ScholarlyArticle",
-        "Book"                  => "Book",
-        "BookChapter"           => "Chapter",
-        "Collection"            => "Collection",
-        "ComputationalNotebook" => "SoftwareSourceCode",
-        "Dataset"               => "Dataset",
-        "Dissertation"          => "Thesis",
-        "Document" | "Report"   => "ScholarlyArticle",
-        "Event"                 => "Event",
-        "Figure" | "Image"      => "ImageObject",
-        "Instrument"            => "IndividualProduct",
-        "Software"              => "SoftwareSourceCode",
-        "Sound"                 => "AudioObject",
-        "Audiovisual"           => "VideoObject",
-        _                       => "CreativeWork",
-    }
-}
-
-fn cm_to_citeproc(cm: &str) -> &'static str {
-    match cm {
-        "Article" | "ProceedingsArticle" => "paper-conference",
-        "BlogPost"              => "post-weblog",
-        "Book"                  => "book",
-        "BookChapter"           => "chapter",
-        "ComputationalNotebook" => "article",
-        "Dataset"               => "dataset",
-        "Dissertation"          => "thesis",
-        "Document" | "Report"   => "report",
-        "Figure" | "Image"      => "figure",
-        "JournalArticle"        => "article-journal",
-        "PeerReview"            => "peer-review",
-        "Software"              => "software",
-        "Sound"                 => "song",
-        "Audiovisual"           => "motion_picture",
-        _                       => "article",
-    }
-}
-
-fn cm_to_bibtex(cm: &str) -> &'static str {
-    match cm {
-        "Article"               => "misc",
-        "BlogPost"              => "misc",
-        "Book"                  => "book",
-        "BookChapter"           => "inbook",
-        "ComputationalNotebook" => "misc",
-        "Dataset"               => "misc",
-        "Dissertation"          => "phdthesis",
-        "Document"              => "misc",
-        "JournalArticle"        => "article",
-        "ProceedingsArticle"    => "inproceedings",
-        "Report"                => "techreport",
-        "Software"              => "software",
-        "Sound"                 => "misc",
-        "Audiovisual"           => "misc",
-        _                       => "misc",
-    }
-}
-
-fn cm_to_ris(cm: &str) -> &'static str {
-    match cm {
-        "Article"               => "JOUR",
-        "Audiovisual"           => "VIDEO",
-        "BlogPost"              => "BLOG",
-        "Book"                  => "BOOK",
-        "BookChapter"           => "CHAP",
-        "ComputationalNotebook" => "COMP",
-        "Dataset"               => "DATA",
-        "Dissertation"          => "THES",
-        "Document"              => "GEN",
-        "JournalArticle"        => "JOUR",
-        "ProceedingsArticle"    => "CPAPER",
-        "Report"                => "RPRT",
-        "Software"              => "COMP",
-        "Sound"                 => "SOUND",
-        _                       => "GEN",
-    }
-}
-
 fn cm_to_dc_relation(cm: &str) -> &'static str {
     match cm {
         "IsReviewOf" => "Reviews",
-        "HasReview"  => "IsReviewedBy",
-        _            => "",
+        "HasReview" => "IsReviewedBy",
+        _ => "",
     }
+}
+
+fn doi_from_identifiers(data: &Data) -> Option<String> {
+    data.identifiers
+        .iter()
+        .find(|i| i.identifier_type == "DOI" && !i.identifier.is_empty())
+        .map(|i| i.identifier.clone())
 }
 
 // ── Conversion ────────────────────────────────────────────────────────────────
 
 fn convert(data: &Data) -> OutPayload {
     // DOI
-    let doi = data
-        .id
+    let doi_source = doi_from_identifiers(data).unwrap_or_else(|| data.id.clone());
+    let doi = doi_source
         .trim_start_matches("https://doi.org/")
         .to_string();
 
     // Types
     let resource_type_general = {
-        let mapped = cm_to_dc_type(&data.type_);
-        if mapped.is_empty() { "Other".to_string() } else { mapped.to_string() }
+        let mapped = C::cm_to_dc(&data.type_);
+        if mapped.is_empty() {
+            "Other".to_string()
+        } else {
+            mapped.to_string()
+        }
     };
     let resource_type = if data.type_ == "BlogPost" {
         "BlogPost".to_string()
@@ -1094,54 +1075,51 @@ fn convert(data: &Data) -> OutPayload {
     let types = OutTypes {
         resource_type_general,
         resource_type,
-        schema_org:  cm_to_schema_org(&data.type_).to_string(),
-        citeproc:    cm_to_citeproc(&data.type_).to_string(),
-        bibtex:      cm_to_bibtex(&data.type_).to_string(),
-        ris:         cm_to_ris(&data.type_).to_string(),
+        schema_org: C::cm_to_schema_org(&data.type_).to_string(),
+        citeproc: C::cm_to_citeproc(&data.type_).to_string(),
+        bibtex: C::cm_to_bib(&data.type_).to_string(),
+        ris: C::cm_to_ris(&data.type_).to_string(),
     };
 
     // Publication year
-    let publication_year: Option<i32> = if data.date.published.len() >= 4 {
-        data.date.published[..4].parse().ok()
+    let publication_year: Option<i32> = if data.date_published.len() >= 4 {
+        data.date_published[..4].parse().ok()
     } else {
         None
     };
 
     // Titles
-    let titles: Vec<OutTitle> = data
-        .titles
-        .iter()
-        .map(|t| OutTitle {
-            title: t.title.clone(),
-            title_type: t.type_.clone(),
-            lang: t.language.clone(),
-        })
-        .collect();
+    let mut titles: Vec<OutTitle> = Vec::new();
+    if !data.title.is_empty() {
+        titles.push(OutTitle { title: data.title.clone(), title_type: String::new(), lang: String::new() });
+    }
+    for t in &data.additional_titles {
+        titles.push(OutTitle { title: t.title.clone(), title_type: t.type_.clone(), lang: t.language.clone() });
+    }
 
     // Contributors → split into creators (Author role) and contributors (other roles)
     let mut creators: Vec<OutContributor> = Vec::new();
     let mut contribs: Vec<OutContributor> = Vec::new();
 
     for v in &data.contributors {
-        let name = if !v.name.is_empty() {
-            v.name.clone()
+        let name = if !v.given_name().is_empty() || !v.family_name().is_empty() {
+            format!("{}, {}", v.given_name(), v.family_name())
         } else {
-            // Go joins as "GivenName, FamilyName" — match that behaviour
-            format!("{}, {}", v.given_name, v.family_name)
+            v.name()
         };
 
-        let name_identifiers = if !v.id.is_empty() {
-            // Determine scheme from ID prefix
+        let v_id = v.id();
+        let name_identifiers = if !v_id.is_empty() {
             let (scheme, scheme_uri): (&'static str, &'static str) =
-                if v.id.starts_with("https://orcid.org/") {
+                if v_id.starts_with("https://orcid.org/") {
                     ("ORCID", "https://orcid.org")
-                } else if v.id.starts_with("https://ror.org/") {
+                } else if v_id.starts_with("https://ror.org/") {
                     ("ROR", "https://ror.org")
                 } else {
                     ("URL", "")
                 };
             vec![OutNameIdentifier {
-                name_identifier:       v.id.clone(),
+                name_identifier: v_id.to_string(),
                 name_identifier_scheme: scheme,
                 scheme_uri,
             }]
@@ -1150,7 +1128,7 @@ fn convert(data: &Data) -> OutPayload {
         };
 
         let affiliation: Vec<String> = v
-            .affiliations
+            .affiliations()
             .iter()
             .filter(|a| !a.name.is_empty())
             .map(|a| a.name.clone())
@@ -1158,28 +1136,28 @@ fn convert(data: &Data) -> OutPayload {
 
         // DataCite nameType is "Personal" / "Organizational" (add "al" suffix)
         let name_type = match v.type_.as_str() {
-            "Person"       => "Personal".to_string(),
+            "Person" => "Personal".to_string(),
             "Organization" => "Organizational".to_string(),
-            other          => other.to_string(),
+            other => other.to_string(),
         };
 
-        let is_author = v.contributor_roles.contains(&"Author".to_string());
+        let is_author = v.roles.contains(&"Author".to_string());
         if is_author {
             creators.push(OutContributor {
                 name,
-                given_name: v.given_name.clone(),
-                family_name: v.family_name.clone(),
+                given_name: v.given_name().to_string(),
+                family_name: v.family_name().to_string(),
                 name_type,
                 name_identifiers,
                 affiliation,
                 contributor_type: String::new(),
             });
         } else {
-            let contributor_type = v.contributor_roles.first().cloned().unwrap_or_default();
+            let contributor_type = v.roles.first().cloned().unwrap_or_default();
             contribs.push(OutContributor {
                 name,
-                given_name: v.given_name.clone(),
-                family_name: v.family_name.clone(),
+                given_name: v.given_name().to_string(),
+                family_name: v.family_name().to_string(),
                 name_type,
                 name_identifiers,
                 affiliation,
@@ -1189,13 +1167,24 @@ fn convert(data: &Data) -> OutPayload {
     }
 
     // Publisher
-    let publisher = OutPublisher { name: data.publisher.name.clone() };
+    let publisher = OutPublisher {
+        name: data.publisher.name.clone(),
+    };
 
     // URL
     let url = data.url.clone();
 
-    // Container (only title is mapped per the Go code)
-    let container = OutContainer { title: data.container.title.clone() };
+    // Container
+    let container = OutContainer {
+        type_: data.container.type_.clone(),
+        identifier: data.container.identifier.clone(),
+        identifier_type: data.container.identifier_type.clone(),
+        title: data.container.title.clone(),
+        volume: data.container.volume.clone(),
+        issue: data.container.issue.clone(),
+        first_page: data.container.first_page.clone(),
+        last_page: data.container.last_page.clone(),
+    };
 
     // Alternate identifiers (exclude the DOI itself)
     let doi_id = normalize_doi(&data.id);
@@ -1209,46 +1198,58 @@ fn convert(data: &Data) -> OutPayload {
         })
         .collect();
 
-    // Dates — Go uses if-else chain; only the first non-empty date is emitted
-    let dates: Vec<OutDate> = {
-        let mut v: Vec<OutDate> = Vec::new();
-        let d = &data.date;
-        if !d.created.is_empty() {
-            v.push(OutDate { date: d.created.clone(), date_type: "Created" });
-        } else if !d.submitted.is_empty() {
-            v.push(OutDate { date: d.submitted.clone(), date_type: "Submitted" });
-        } else if !d.accepted.is_empty() {
-            v.push(OutDate { date: d.accepted.clone(), date_type: "Accepted" });
-        } else if !d.published.is_empty() {
-            v.push(OutDate { date: d.published.clone(), date_type: "Issued" });
-        } else if !d.updated.is_empty() {
-            v.push(OutDate { date: d.updated.clone(), date_type: "Updated" });
-        } else if !d.accessed.is_empty() {
-            v.push(OutDate { date: d.accessed.clone(), date_type: "Accessed" });
-        } else if !d.available.is_empty() {
-            v.push(OutDate { date: d.available.clone(), date_type: "Available" });
-        } else if !d.collected.is_empty() {
-            v.push(OutDate { date: d.collected.clone(), date_type: "Collected" });
-        } else if !d.valid.is_empty() {
-            v.push(OutDate { date: d.valid.clone(), date_type: "Valid" });
-        } else if !d.withdrawn.is_empty() {
-            v.push(OutDate { date: d.withdrawn.clone(), date_type: "Withdrawn" });
-        } else if !d.other.is_empty() {
-            v.push(OutDate { date: d.other.clone(), date_type: "Other" });
-        }
-        v
-    };
+    // Emit all relevant date fields present in the record.
+    let mut dates: Vec<OutDate> = Vec::new();
+    if !data.dates.created.is_empty() {
+        dates.push(OutDate { date: data.dates.created.clone(), date_type: "Created" });
+    }
+    if !data.dates.submitted.is_empty() {
+        dates.push(OutDate { date: data.dates.submitted.clone(), date_type: "Submitted" });
+    }
+    if !data.dates.accepted.is_empty() {
+        dates.push(OutDate { date: data.dates.accepted.clone(), date_type: "Accepted" });
+    }
+    if !data.date_published.is_empty() {
+        dates.push(OutDate { date: data.date_published.clone(), date_type: "Issued" });
+    }
+    if !data.date_updated.is_empty() {
+        dates.push(OutDate { date: data.date_updated.clone(), date_type: "Updated" });
+    }
+    if !data.dates.accessed.is_empty() {
+        dates.push(OutDate { date: data.dates.accessed.clone(), date_type: "Accessed" });
+    }
+    if !data.dates.available.is_empty() {
+        dates.push(OutDate { date: data.dates.available.clone(), date_type: "Available" });
+    }
+    if !data.dates.collected.is_empty() {
+        dates.push(OutDate { date: data.dates.collected.clone(), date_type: "Collected" });
+    }
+    if !data.dates.valid.is_empty() {
+        dates.push(OutDate { date: data.dates.valid.clone(), date_type: "Valid" });
+    }
+    if !data.dates.withdrawn.is_empty() {
+        dates.push(OutDate { date: data.dates.withdrawn.clone(), date_type: "Withdrawn" });
+    }
+    if !data.dates.other.is_empty() {
+        dates.push(OutDate { date: data.dates.other.clone(), date_type: "Other" });
+    }
 
     // Descriptions
-    let descriptions: Vec<OutDescription> = data
-        .descriptions
-        .iter()
-        .map(|d| OutDescription {
+    let mut descriptions: Vec<OutDescription> = Vec::new();
+    if !data.description.is_empty() {
+        descriptions.push(OutDescription {
+            description: data.description.clone(),
+            description_type: String::new(),
+            lang: String::new(),
+        });
+    }
+    for d in &data.additional_descriptions {
+        descriptions.push(OutDescription {
             description: d.description.clone(),
             description_type: d.type_.clone(),
             lang: d.language.clone(),
-        })
-        .collect();
+        });
+    }
 
     // Funding references
     let funding_references: Vec<OutFundingReference> = data
@@ -1256,10 +1257,10 @@ fn convert(data: &Data) -> OutPayload {
         .iter()
         .map(|f| OutFundingReference {
             funder_name: f.funder_name.clone(),
-            funder_identifier: f.funder_identifier.clone(),
+            funder_identifier: f.funder_id.clone(),
             funder_identifier_type: f.funder_identifier_type.clone(),
             award_number: f.award_number.clone(),
-            award_uri: f.award_uri.clone(),
+            award_uri: f.award_id.clone(),
         })
         .collect();
 
@@ -1270,14 +1271,14 @@ fn convert(data: &Data) -> OutPayload {
         .map(|g| OutGeoLocation {
             geo_location_place: g.geo_location_place.clone(),
             geo_location_point: OutGeoPoint {
-                point_longitude: g.geo_location_point.point_longitude,
-                point_latitude: g.geo_location_point.point_latitude,
+                point_longitude: g.geo_location_point_longitude,
+                point_latitude: g.geo_location_point_latitude,
             },
             geo_location_box: OutGeoBox {
-                west_bound_longitude: g.geo_location_box.west_bound_longitude,
-                east_bound_longitude: g.geo_location_box.east_bound_longitude,
-                south_bound_latitude: g.geo_location_box.south_bound_latitude,
-                north_bound_latitude: g.geo_location_box.north_bound_latitude,
+                west_bound_longitude: g.geo_location_box_west_longitude,
+                east_bound_longitude: g.geo_location_box_east_longitude,
+                south_bound_latitude: g.geo_location_box_south_latitude,
+                north_bound_latitude: g.geo_location_box_north_latitude,
             },
         })
         .collect();
@@ -1286,7 +1287,9 @@ fn convert(data: &Data) -> OutPayload {
     let subjects: Vec<OutSubject> = data
         .subjects
         .iter()
-        .map(|s| OutSubject { subject: s.subject.clone() })
+        .map(|s| OutSubject {
+            subject: s.subject.clone(),
+        })
         .collect();
 
     // License
@@ -1311,7 +1314,11 @@ fn convert(data: &Data) -> OutPayload {
             continue;
         }
         let mapped = cm_to_dc_relation(&r.type_);
-        let relation_type = if mapped.is_empty() { r.type_.clone() } else { mapped.to_string() };
+        let relation_type = if mapped.is_empty() {
+            r.type_.clone()
+        } else {
+            mapped.to_string()
+        };
         related_identifiers.push(OutRelatedIdentifier {
             related_identifier: identifier,
             related_identifier_type: identifier_type.to_string(),
@@ -1325,7 +1332,7 @@ fn convert(data: &Data) -> OutPayload {
         if identifier.is_empty() {
             continue;
         }
-        let resource_type_general = cm_to_dc_type(&r.type_).to_string();
+        let resource_type_general = C::cm_to_dc(&r.type_).to_string();
         related_identifiers.push(OutRelatedIdentifier {
             related_identifier: identifier,
             related_identifier_type: identifier_type.to_string(),
@@ -1385,7 +1392,7 @@ mod tests {
         }}}"#;
         let data = read_json(json).unwrap();
         assert_eq!(data.id, "https://doi.org/10.25828/jnkz-s804");
-        assert_eq!(data.contributors[0].name, "Some Org");
+        assert_eq!(data.contributors[0].name(), "Some Org");
     }
 
     /// `descriptions[]` entries sometimes carry only a `descriptionType`
@@ -1398,7 +1405,36 @@ mod tests {
             "descriptions":[{"descriptionType":"Other"}]
         }}}"#;
         let data = read_json(json).unwrap();
-        assert_eq!(data.descriptions[0].description, "");
-        assert_eq!(data.descriptions[0].type_, "Other");
+        assert_eq!(data.additional_descriptions[0].description, "");
+        assert_eq!(data.additional_descriptions[0].type_, "Other");
+    }
+
+    #[test]
+    fn test_read_json_normalizes_legacy_contributor_role_names() {
+        let json = r#"{"data":{"id":"10.1/a","attributes":{
+            "doi":"10.1/a",
+            "titles":[{"title":"A Title"}],
+            "creators":[{"name":"Jane Doe","nameType":"Personal"}],
+            "contributors":[{"name":"John Doe","nameType":"Personal","contributorType":"DataCurator"}]
+        }}}"#;
+        let data = read_json(json).unwrap();
+        assert_eq!(data.contributors[1].roles[0], "DataCuration");
+    }
+
+    #[test]
+    fn test_write_prefers_doi_identifier_over_id() {
+        let mut data = Data {
+            id: "https://example.org/not-a-doi".to_string(),
+            type_: "JournalArticle".to_string(),
+            ..Default::default()
+        };
+        data.identifiers.push(Identifier {
+            identifier: "https://doi.org/10.1234/identifier".to_string(),
+            identifier_type: "DOI".to_string(),
+        });
+
+        let out = write(&data).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["doi"], "10.1234/identifier");
     }
 }

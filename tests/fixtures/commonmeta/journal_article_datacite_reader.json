@@ -1,52 +1,50 @@
 {
   "id": "https://doi.org/10.5555/12345678",
   "type": "JournalArticle",
-  "url": "https://example.org/article/1",
-  "language": "en",
-  "provider": "DataCite",
-  "titles": [
-    {
-      "title": "A Study of Things"
-    }
-  ],
+  "container": {
+    "title": "Journal of Examples"
+  },
   "contributors": [
     {
       "type": "Person",
-      "givenName": "Ada",
-      "familyName": "Lovelace",
-      "affiliations": [
-        {
-          "name": "Example University"
-        }
-      ],
-      "contributorRoles": [
+      "person": {
+        "given_name": "Ada",
+        "family_name": "Lovelace",
+        "affiliations": [
+          {
+            "name": "Example University"
+          }
+        ]
+      },
+      "roles": [
         "Author"
       ]
     }
   ],
-  "publisher": {
-    "name": "Example Publisher"
-  },
-  "date": {
-    "published": "2024-03-15"
-  },
-  "container": {
-    "title": "Journal of Examples"
-  },
+  "date_published": "2024-03-15",
   "identifiers": [
     {
       "identifier": "https://doi.org/10.5555/12345678",
-      "identifierType": "DOI"
+      "identifier_type": "DOI"
     }
   ],
+  "language": "en",
   "license": {
     "id": "CC-BY-4.0",
+    "title": "Creative Commons Attribution 4.0 International",
     "url": "https://creativecommons.org/licenses/by/4.0/legalcode"
+  },
+  "provider": "DataCite",
+  "publisher": {
+    "name": "Example Publisher"
   },
   "references": [
     {
       "id": "https://doi.org/10.1000/xyz",
       "type": "Other"
     }
-  ]
+  ],
+  "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+  "title": "A Study of Things",
+  "url": "https://example.org/article/1"
 }

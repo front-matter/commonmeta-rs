@@ -32,9 +32,19 @@ pub fn command() -> Command {
 
 pub fn execute(matches: &ArgMatches) -> Result<(), String> {
     let input = matches.get_one::<String>("input").expect("required");
-    let from = matches.get_one::<String>("from").map(String::as_str).unwrap_or("ror");
-    let to = matches.get_one::<String>("to").map(String::as_str).unwrap_or("ror");
-    let to = if to.is_empty() || to == "commonmeta" { "ror" } else { to };
+    let from = matches
+        .get_one::<String>("from")
+        .map(String::as_str)
+        .unwrap_or("ror");
+    let to = matches
+        .get_one::<String>("to")
+        .map(String::as_str)
+        .unwrap_or("ror");
+    let to = if to.is_empty() || to == "commonmeta" {
+        "ror"
+    } else {
+        to
+    };
 
     if from != "ror" {
         println!("No valid input format. Currently only 'ror' is supported.");
@@ -69,8 +79,14 @@ mod tests {
     #[test]
     fn test_command_defaults() {
         let matches = command().get_matches_from(vec!["match", "Leibniz Universität Hannover"]);
-        assert_eq!(matches.get_one::<String>("from").map(String::as_str), Some("ror"));
-        assert_eq!(matches.get_one::<String>("to").map(String::as_str), Some("ror"));
+        assert_eq!(
+            matches.get_one::<String>("from").map(String::as_str),
+            Some("ror")
+        );
+        assert_eq!(
+            matches.get_one::<String>("to").map(String::as_str),
+            Some("ror")
+        );
         assert_eq!(
             matches.get_one::<String>("input").map(String::as_str),
             Some("Leibniz Universität Hannover")

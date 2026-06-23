@@ -1,45 +1,54 @@
 //! Core Commonmeta data model.
 //!
-//! Translated field-for-field from the Go `commonmeta` package (`reader.go`).
-//! Each struct uses `rename_all = "camelCase"` to match the Go JSON tags, with
-//! explicit `rename` overrides for the handful of irregular tags in the source
-//! (`contentHTML`, `first_page`, `last_page`, and the reserved word `type`).
-//! Go `omitempty` is reproduced with `skip_serializing_if`; Go pointer fields
-//! become `Option<T>`.
+//! `Data` mirrors the commonmeta v1.0 JSON schema
+//! (`resources/commonmeta_v1.0.json`) directly — field names and nesting
+//! match the schema 1:1, the same way `commonmeta-py`'s `Metadata` class
+//! *is* the v1.0 shape rather than an internal model translated to/from it.
+//!
+//! A few sub-structs carry fields beyond what the schema defines, because
+//! other formats' writers genuinely need them for round-tripping (e.g.
+//! `Reference.unstructured`/`.asserted_by`, `Dates.collected`/`.valid`/
+//! `.other`/`.copyrighted`). These ride along unserialized-by-default
+//! wherever empty and don't affect schema validation, since the schema's
+//! nested item definitions don't set `additionalProperties: false`.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 fn is_zero_i64(n: &i64) -> bool {
     *n == 0
 }
-fn is_zero_f64(n: &f64) -> bool {
-    *n == 0.0
-}
 
-/// The native Commonmeta record. Mirrors `commonmeta.Data`.
+/// The native Commonmeta record, shaped like the v1.0 JSON schema.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Data {
     pub id: String,
     #[serde(rename = "type")]
     pub type_: String,
 
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_descriptions: Vec<Description>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_titles: Vec<Title>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub additional_type: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub archive_locations: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub citations: Vec<Citation>,
+    #[serde(default, skip_serializing_if = "Container::is_empty")]
     pub container: Container,
-    #[serde(rename = "contentHTML", default, skip_serializing_if = "String::is_empty")]
-    pub content_html: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contributors: Vec<Contributor>,
-    #[serde(default)]
-    pub date: Date,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub descriptions: Vec<Description>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub feature_image: String,
+    pub date_published: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub date_updated: String,
+    #[serde(default, skip_serializing_if = "Dates::is_empty")]
+    pub dates: Dates,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<File>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -49,21 +58,25 @@ pub struct Data {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub identifiers: Vec<Identifier>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub image: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub language: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "License::is_empty")]
     pub license: License,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub provider: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Publisher::is_empty")]
     pub publisher: Publisher,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<Reference>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<Relation>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub schema_version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subjects: Vec<Subject>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub titles: Vec<Title>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -71,7 +84,6 @@ pub struct Data {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Affiliation {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
@@ -82,7 +94,18 @@ pub struct Affiliation {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+pub struct Citation {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    #[serde(rename = "type", default, skip_serializing_if = "String::is_empty")]
+    pub type_: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub citation: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Container {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub identifier: String,
@@ -101,7 +124,7 @@ pub struct Container {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub platform: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub favicon: String,
+    pub image: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub first_page: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -112,29 +135,195 @@ pub struct Container {
     pub issue: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+impl Container {
+    pub fn is_empty(&self) -> bool {
+        self.identifier.is_empty()
+            && self.identifier_type.is_empty()
+            && self.type_.is_empty()
+            && self.title.is_empty()
+            && self.description.is_empty()
+            && self.language.is_empty()
+            && self.license.is_none()
+            && self.platform.is_empty()
+            && self.image.is_empty()
+            && self.first_page.is_empty()
+            && self.last_page.is_empty()
+            && self.volume.is_empty()
+            && self.issue.is_empty()
+    }
+}
+
+/// `type_` is "Person" or "Organization"; exactly one of `person`/
+/// `organization` is set accordingly.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Contributor {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub id: String,
     #[serde(rename = "type", default, skip_serializing_if = "String::is_empty")]
     pub type_: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person: Option<Person>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization: Option<Organization>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty", alias = "contributor_roles")]
+    pub roles: Vec<String>,
+}
+
+impl Contributor {
+    pub fn person(person: Person, roles: Vec<String>) -> Self {
+        Contributor {
+            type_: "Person".to_string(),
+            person: Some(person),
+            organization: None,
+            roles,
+        }
+    }
+
+    pub fn organization(organization: Organization, roles: Vec<String>) -> Self {
+        Contributor {
+            type_: "Organization".to_string(),
+            person: None,
+            organization: Some(organization),
+            roles,
+        }
+    }
+
+    pub fn given_name(&self) -> &str {
+        self.person.as_ref().map_or("", |p| p.given_name.as_str())
+    }
+
+    pub fn family_name(&self) -> &str {
+        self.person.as_ref().map_or("", |p| p.family_name.as_str())
+    }
+
+    /// The person's ORCID, or the organization's name when this contributor
+    /// has no person (i.e. a display name regardless of contributor type).
+    pub fn name(&self) -> String {
+        if let Some(p) = &self.person {
+            format!("{} {}", p.given_name, p.family_name)
+                .trim()
+                .to_string()
+        } else {
+            self.organization
+                .as_ref()
+                .map(|o| o.name.clone())
+                .unwrap_or_default()
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        self.person
+            .as_ref()
+            .map(|p| p.id.as_str())
+            .or_else(|| self.organization.as_ref().map(|o| o.id.as_str()))
+            .unwrap_or("")
+    }
+
+    pub fn affiliations(&self) -> &[Affiliation] {
+        self.person.as_ref().map_or(&[], |p| p.affiliations.as_slice())
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ContributorInput {
+    #[serde(default)]
+    id: String,
+    #[serde(rename = "type", default)]
+    type_: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default, alias = "givenName", alias = "given_name")]
+    given_name: String,
+    #[serde(default, alias = "familyName", alias = "family_name")]
+    family_name: String,
+    #[serde(default)]
+    affiliations: Vec<Affiliation>,
+    #[serde(default, alias = "roles", alias = "contributor_roles")]
+    roles: Vec<String>,
+    #[serde(default)]
+    person: Option<Person>,
+    #[serde(default)]
+    organization: Option<Organization>,
+}
+
+/// Accepts both the v1.0 `{type, person: {...}, organization: {...}, roles}`
+/// shape and a flat legacy shape (`id`/`name`/`given_name`/`family_name`/
+/// `affiliations`/`contributor_roles` directly on the contributor object).
+impl<'de> Deserialize<'de> for Contributor {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let input = ContributorInput::deserialize(deserializer)?;
+
+        let person = input.person.or_else(|| {
+            if input.given_name.is_empty() && input.family_name.is_empty() && input.id.is_empty()
+            {
+                None
+            } else {
+                Some(Person {
+                    id: input.id.clone(),
+                    given_name: input.given_name,
+                    family_name: input.family_name,
+                    affiliations: input.affiliations.clone(),
+                })
+            }
+        });
+
+        let organization = input.organization.or_else(|| {
+            if person.is_some() || input.name.is_empty() {
+                None
+            } else {
+                Some(Organization {
+                    id: input.id.clone(),
+                    name: input.name,
+                })
+            }
+        });
+
+        let type_ = if !input.type_.is_empty() {
+            input.type_
+        } else if person.is_some() {
+            "Person".to_string()
+        } else if organization.is_some() {
+            "Organization".to_string()
+        } else {
+            String::new()
+        };
+
+        Ok(Contributor {
+            type_,
+            person,
+            organization,
+            roles: input.roles,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Person {
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub name: String,
+    pub id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub given_name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub family_name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub affiliations: Vec<Affiliation>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub contributor_roles: Vec<String>,
 }
 
-/// All fields are ISO 8601 date strings.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Date {
+pub struct Organization {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+}
+
+/// "Other dates" beyond `date_published`/`date_updated`. All fields are
+/// ISO 8601 date strings. `collected`/`valid`/`other`/`copyrighted` are
+/// carried for DataCite/InvenioRDM round-tripping and aren't part of the
+/// v1.0 schema's `dates` definition.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Dates {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub created: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -142,27 +331,37 @@ pub struct Date {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub accepted: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub published: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub updated: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub accessed: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub available: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub copyrighted: String,
+    pub withdrawn: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub collected: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub valid: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub withdrawn: String,
+    pub copyrighted: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub other: String,
 }
 
+impl Dates {
+    pub fn is_empty(&self) -> bool {
+        self.created.is_empty()
+            && self.submitted.is_empty()
+            && self.accepted.is_empty()
+            && self.accessed.is_empty()
+            && self.available.is_empty()
+            && self.withdrawn.is_empty()
+            && self.collected.is_empty()
+            && self.valid.is_empty()
+            && self.copyrighted.is_empty()
+            && self.other.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Description {
     pub description: String,
     #[serde(rename = "type", default, skip_serializing_if = "String::is_empty")]
@@ -172,7 +371,6 @@ pub struct Description {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct File {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub bucket: String,
@@ -187,102 +385,68 @@ pub struct File {
     pub mime_type: String,
 }
 
+/// `funder_identifier_type` rides along for internal use (e.g. deciding
+/// whether a Crossref Funder ID needs ROR translation); it isn't part of
+/// the v1.0 schema's `funding_references` definition.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct FundingReference {
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub funder_identifier: String,
+    pub funder_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub funder_identifier_type: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub funder_name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub award_number: String,
+    pub award_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub award_title: String,
-    #[serde(rename = "awardUri", default, skip_serializing_if = "String::is_empty")]
-    pub award_uri: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub award_number: String,
 }
 
+/// Flattened to match the v1.0 schema's `geo_locations` shape directly
+/// (no nested point/box objects).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct GeoLocation {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub geo_location_place: String,
-    #[serde(default, skip_serializing_if = "GeoLocationPoint::is_empty")]
-    pub geo_location_point: GeoLocationPoint,
-    #[serde(default, skip_serializing_if = "GeoLocationBox::is_empty")]
-    pub geo_location_box: GeoLocationBox,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_location_point_longitude: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_location_point_latitude: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_location_box_west_longitude: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_location_box_east_longitude: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_location_box_south_latitude: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_location_box_north_latitude: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GeoLocationPoint {
-    #[serde(default, skip_serializing_if = "is_zero_f64")]
-    pub point_longitude: f64,
-    #[serde(default, skip_serializing_if = "is_zero_f64")]
-    pub point_latitude: f64,
-}
-
-impl GeoLocationPoint {
-    pub fn is_empty(&self) -> bool {
-        self.point_longitude == 0.0 && self.point_latitude == 0.0
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GeoLocationBox {
-    #[serde(default, skip_serializing_if = "is_zero_f64")]
-    pub east_bound_longitude: f64,
-    #[serde(default, skip_serializing_if = "is_zero_f64")]
-    pub west_bound_longitude: f64,
-    #[serde(default, skip_serializing_if = "is_zero_f64")]
-    pub south_bound_latitude: f64,
-    #[serde(default, skip_serializing_if = "is_zero_f64")]
-    pub north_bound_latitude: f64,
-}
-
-impl GeoLocationBox {
-    pub fn is_empty(&self) -> bool {
-        self.east_bound_longitude == 0.0
-            && self.west_bound_longitude == 0.0
-            && self.south_bound_latitude == 0.0
-            && self.north_bound_latitude == 0.0
-    }
-}
-
-/// The Go source uses snake_case JSON tags for the polygon fields.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct GeoLocationPolygon {
-    #[serde(rename = "polygon_points", default, skip_serializing_if = "Vec::is_empty")]
-    pub polygon_points: Vec<GeoLocationPoint>,
-    #[serde(
-        rename = "in_polygon_point",
-        default,
-        skip_serializing_if = "GeoLocationPoint::is_empty"
-    )]
-    pub in_polygon_point: GeoLocationPoint,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Identifier {
     pub identifier: String,
     pub identifier_type: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct License {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
 }
 
+impl License {
+    pub fn is_empty(&self) -> bool {
+        self.id.is_empty() && self.title.is_empty() && self.url.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Publisher {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
@@ -290,9 +454,17 @@ pub struct Publisher {
     pub name: String,
 }
 
-/// `first_page`/`last_page` keep the Go source's snake_case JSON tags.
+impl Publisher {
+    pub fn is_empty(&self) -> bool {
+        self.id.is_empty() && self.name.is_empty()
+    }
+}
+
+/// `publisher`/`publication_year`/`volume`/`issue`/`first_page`/`last_page`/
+/// `unstructured`/`asserted_by` ride along for internal use (e.g. the
+/// crossref_xml and InvenioRDM writers); only `key`/`id`/`type_`/
+/// `reference` are part of the v1.0 schema's `references` definition.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Reference {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub key: String,
@@ -301,7 +473,7 @@ pub struct Reference {
     #[serde(rename = "type", default, skip_serializing_if = "String::is_empty")]
     pub type_: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub title: String,
+    pub reference: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub publisher: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -310,9 +482,9 @@ pub struct Reference {
     pub volume: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub issue: String,
-    #[serde(rename = "first_page", default, skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub first_page: String,
-    #[serde(rename = "last_page", default, skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub last_page: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub unstructured: String,
@@ -329,11 +501,14 @@ pub struct Relation {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Subject {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub subject: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub language: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Title {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,

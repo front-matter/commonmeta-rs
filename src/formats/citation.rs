@@ -3,13 +3,13 @@ use std::str::FromStr;
 
 use unic_langid::LanguageIdentifier;
 
-use hayagriva::citationberg::Style;
 use hayagriva::archive::{ArchivedStyle, locales};
+use hayagriva::citationberg::LocaleCode;
+use hayagriva::citationberg::Style;
 use hayagriva::types::{
     Date, EntryType, FormatString, MaybeTyped, Numeric, Person, Publisher, QualifiedUrl,
     SerialNumber,
 };
-use hayagriva::citationberg::LocaleCode;
 use hayagriva::{
     BibliographyDriver, BibliographyRequest, BufWriteFormat, CitationItem, CitationRequest, Entry,
 };
@@ -51,23 +51,23 @@ fn parent_type(t: &str) -> Option<EntryType> {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn to_person(c: &crate::data::Contributor) -> Option<Person> {
-    if c.type_ == "Organization" || (!c.name.is_empty() && c.family_name.is_empty()) {
+    if c.type_ == "Organization" || (!c.name().is_empty() && c.family_name().is_empty()) {
         // Use organisation name as a literal (no given name)
         Some(Person {
-            name: c.name.clone(),
+            name: c.name(),
             given_name: None,
             prefix: None,
             suffix: None,
             comma_suffix: false,
             alias: None,
         })
-    } else if !c.family_name.is_empty() {
+    } else if !c.family_name().is_empty() {
         Some(Person {
-            name: c.family_name.clone(),
-            given_name: if c.given_name.is_empty() {
+            name: c.family_name().to_string(),
+            given_name: if c.given_name().is_empty() {
                 None
             } else {
-                Some(c.given_name.clone())
+                Some(c.given_name().to_string())
             },
             prefix: None,
             suffix: None,
@@ -88,7 +88,11 @@ fn parse_date(s: &str) -> Option<Date> {
 }
 
 fn fmt_string(s: &str) -> Option<FormatString> {
-    if s.is_empty() { None } else { FormatString::from_str(s).ok() }
+    if s.is_empty() {
+        None
+    } else {
+        FormatString::from_str(s).ok()
+    }
 }
 
 // ─── Entry builder ────────────────────────────────────────────────────────────
@@ -103,16 +107,15 @@ fn build_entry(data: &Data) -> Entry {
     let mut entry = Entry::new(&key, entry_type);
 
     // Title
-    if let Some(t) = data.titles.first()
-        && let Some(fs) = fmt_string(&t.title) {
-            entry.set_title(fs);
-        }
+    if let Some(fs) = fmt_string(&data.title) {
+        entry.set_title(fs);
+    }
 
     // Authors
     let authors: Vec<Person> = data
         .contributors
         .iter()
-        .filter(|c| c.contributor_roles.iter().any(|r| r == "Author"))
+        .filter(|c| c.roles.iter().any(|r| r == "Author"))
         .filter_map(to_person)
         .collect();
     if !authors.is_empty() {
@@ -123,7 +126,7 @@ fn build_entry(data: &Data) -> Entry {
     let editors: Vec<Person> = data
         .contributors
         .iter()
-        .filter(|c| c.contributor_roles.iter().any(|r| r == "Editor"))
+        .filter(|c| c.roles.iter().any(|r| r == "Editor"))
         .filter_map(to_person)
         .collect();
     if !editors.is_empty() {
@@ -131,17 +134,17 @@ fn build_entry(data: &Data) -> Entry {
     }
 
     // Date (prefer published, fall back to created)
-    let date = parse_date(&data.date.published)
-        .or_else(|| parse_date(&data.date.created));
+    let date = parse_date(&data.date_published).or_else(|| parse_date(&data.dates.created));
     if let Some(d) = date {
         entry.set_date(d);
     }
 
     // URL
     if !data.url.is_empty()
-        && let Ok(qurl) = QualifiedUrl::from_str(&data.url) {
-            entry.set_url(qurl);
-        }
+        && let Ok(qurl) = QualifiedUrl::from_str(&data.url)
+    {
+        entry.set_url(qurl);
+    }
 
     // DOI + ISSN/ISBN via serial-number
     let doi = data
@@ -160,9 +163,10 @@ fn build_entry(data: &Data) -> Entry {
 
     // Publisher
     if !data.publisher.name.is_empty()
-        && let Ok(p) = Publisher::from_str(&data.publisher.name) {
-            entry.set_publisher(p);
-        }
+        && let Ok(p) = Publisher::from_str(&data.publisher.name)
+    {
+        entry.set_publisher(p);
+    }
 
     // Volume, issue, page-range from container
     let container = &data.container;
@@ -178,25 +182,28 @@ fn build_entry(data: &Data) -> Entry {
         (f, l) => format!("{f}-{l}"),
     };
     if !page_str.is_empty()
-        && let Ok(pr) = hayagriva::types::PageRanges::from_str(&page_str) {
-            entry.set_page_range(MaybeTyped::Typed(pr));
-        }
+        && let Ok(pr) = hayagriva::types::PageRanges::from_str(&page_str)
+    {
+        entry.set_page_range(MaybeTyped::Typed(pr));
+    }
 
     // Language
     if !data.language.is_empty()
-        && let Ok(lang) = data.language.parse::<LanguageIdentifier>() {
-            entry.set_language(lang);
-        }
+        && let Ok(lang) = data.language.parse::<LanguageIdentifier>()
+    {
+        entry.set_language(lang);
+    }
 
     // Parent entry (journal / book / proceedings)
     if let Some(ptype) = parent_type(&data.type_)
-        && !container.title.is_empty() {
-            let mut parent = Entry::new(&format!("{key}-parent"), ptype);
-            if let Some(fs) = fmt_string(&container.title) {
-                parent.set_title(fs);
-            }
-            entry.set_parents(vec![parent]);
+        && !container.title.is_empty()
+    {
+        let mut parent = Entry::new(&format!("{key}-parent"), ptype);
+        if let Some(fs) = fmt_string(&container.title) {
+            parent.set_title(fs);
         }
+        entry.set_parents(vec![parent]);
+    }
 
     entry
 }
@@ -245,7 +252,9 @@ pub fn write(data: &Data, style_name: Option<&str>, locale: Option<&str>) -> Res
         .and_then(|bib| bib.items.into_iter().next())
         .map(|item| {
             let mut buf = String::new();
-            item.content.write_buf(&mut buf, BufWriteFormat::Html).unwrap_or(());
+            item.content
+                .write_buf(&mut buf, BufWriteFormat::Html)
+                .unwrap_or(());
             buf
         })
         .unwrap_or_default();
@@ -265,7 +274,8 @@ pub fn write_all(list: &[Data], style_name: Option<&str>, locale: Option<&str>) 
     let locale_list = locales();
 
     let entries: Vec<Entry> = list.iter().map(build_entry).collect();
-    let items: Vec<CitationItem<'_, Entry>> = entries.iter().map(CitationItem::with_entry).collect();
+    let items: Vec<CitationItem<'_, Entry>> =
+        entries.iter().map(CitationItem::with_entry).collect();
 
     let mut driver = BibliographyDriver::new();
     driver.citation(CitationRequest::new(
@@ -289,7 +299,9 @@ pub fn write_all(list: &[Data], style_name: Option<&str>, locale: Option<&str>) 
                 .into_iter()
                 .map(|item| {
                     let mut buf = String::new();
-                    item.content.write_buf(&mut buf, BufWriteFormat::Html).unwrap_or(());
+                    item.content
+                        .write_buf(&mut buf, BufWriteFormat::Html)
+                        .unwrap_or(());
                     buf
                 })
                 .collect()
@@ -309,7 +321,8 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/commonmeta")
             .join(name);
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        let json = std::fs::read_to_string(path).unwrap();
+        crate::formats::commonmeta::read(&json).unwrap()
     }
 
     #[test]
@@ -338,7 +351,11 @@ mod tests {
         let out = write_all(&[first, second], None, None).unwrap();
         let text = String::from_utf8(out).unwrap();
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 2, "expected one rendered citation per line: {text}");
+        assert_eq!(
+            lines.len(),
+            2,
+            "expected one rendered citation per line: {text}"
+        );
         assert!(lines[0].contains("Lovelace") || lines[1].contains("Lovelace"));
     }
 }

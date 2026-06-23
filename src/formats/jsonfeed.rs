@@ -3,6 +3,12 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Deserializer};
 
+use crate::author_utils::{
+    cleanup_author, infer_contributor_type, normalize_contributor_roles, parse_affiliation_value,
+    split_person_name,
+};
+use crate::constants as C;
+
 /// Deserializes a JSON null as T::default() instead of an error.
 fn null_default<'de, D, T>(d: D) -> std::result::Result<T, D::Error>
 where
@@ -13,12 +19,12 @@ where
 }
 
 use crate::data::{
-    Affiliation, Container, Contributor, Data, Date, Description, File, FundingReference,
-    Identifier, License, Publisher, Reference, Relation, Subject, Title,
+    Container, Contributor, Data, File, FundingReference, Identifier, Organization, Person,
+    Publisher, Reference, Relation, Subject,
 };
 use crate::doi_utils::{normalize_doi, validate_doi, validate_prefix};
 use crate::error::{Error, Result};
-use crate::utils::validate_orcid;
+use crate::utils::normalize_orcid;
 
 // ─── Input structs ────────────────────────────────────────────────────────────
 
@@ -128,7 +134,7 @@ pub struct Blog {
     pub description: String,
     #[serde(default, deserialize_with = "null_default")]
     pub favicon: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub funding: JfFundingReference,
     #[serde(default, deserialize_with = "null_default")]
     pub generator: String,
@@ -207,19 +213,13 @@ pub struct JfReference {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const ROGUE_SCHOLAR_CROSSREF_PREFIXES: &[&str] = &[
-    "10.13003", "10.53731", "10.54900", "10.57689", "10.59347",
-    "10.59348", "10.59349", "10.59350", "10.63485", "10.64000",
+    "10.13003", "10.53731", "10.54900", "10.57689", "10.59347", "10.59348", "10.59349", "10.59350",
+    "10.63485", "10.64000",
 ];
 
-const ROGUE_SCHOLAR_DATACITE_PREFIXES: &[&str] = &[
-    "10.5438", "10.34732", "10.57689", "10.58079", "10.60804",
-];
+const ROGUE_SCHOLAR_DATACITE_PREFIXES: &[&str] =
+    &["10.5438", "10.34732", "10.57689", "10.58079", "10.60804"];
 
-const RELATION_TYPES: &[&str] = &[
-    "IsPartOf", "HasPart", "IsVariantFormOf", "IsOriginalFormOf", "IsIdenticalTo",
-    "IsTranslationOf", "IsReviewOf", "HasReview", "IsPreprintOf", "HasPreprint",
-    "IsSupplementTo", "IsSupplementedBy",
-];
 
 fn is_rogue_scholar_doi(doi: &str) -> bool {
     let prefix = match validate_prefix(doi) {
@@ -239,13 +239,6 @@ fn unix_to_iso(ts: i64) -> String {
         .unwrap_or_default()
 }
 
-fn normalize_orcid(url: &str) -> String {
-    if let Some(id) = validate_orcid(url) {
-        return format!("https://orcid.org/{}", id);
-    }
-    String::new()
-}
-
 fn issn_as_url(issn: &str) -> String {
     if issn.is_empty() {
         return String::new();
@@ -260,49 +253,12 @@ fn community_slug_as_url(slug: &str) -> String {
     format!("https://rogue-scholar.org/api/communities/{}", slug)
 }
 
-fn url_to_spdx(url: &str) -> String {
-    match url {
-        u if u.contains("/licenses/by/4.0") => "CC-BY-4.0",
-        u if u.contains("/licenses/by/3.0") => "CC-BY-3.0",
-        u if u.contains("/licenses/by-sa/4.0") => "CC-BY-SA-4.0",
-        u if u.contains("/licenses/by-sa/3.0") => "CC-BY-SA-3.0",
-        u if u.contains("/licenses/by-nc/4.0") => "CC-BY-NC-4.0",
-        u if u.contains("/licenses/by-nc-sa/4.0") => "CC-BY-NC-SA-4.0",
-        u if u.contains("/licenses/by-nd/4.0") => "CC-BY-ND-4.0",
-        u if u.contains("publicdomain/zero/1.0") => "CC0-1.0",
-        _ => "",
-    }
-    .to_string()
-}
-
 fn sanitize(html: &str) -> String {
     lazy_static! {
         static ref TAG_RE: Regex = Regex::new(r"<[^>]+>").unwrap();
     }
     TAG_RE.replace_all(html, "").trim().to_string()
 }
-
-/// Split "Family, Given" or "Given Family" into (given, family, org_name).
-fn parse_name(name: &str) -> (String, String, String) {
-    let name = name.trim();
-    if name.is_empty() {
-        return (String::new(), String::new(), String::new());
-    }
-    // "Family, Given" format
-    if let Some(comma) = name.find(',') {
-        let family = name[..comma].trim().to_string();
-        let given = name[comma + 1..].trim().to_string();
-        return (given, family, String::new());
-    }
-    // "Given Family" — last token is family
-    let parts: Vec<&str> = name.splitn(2, ' ').collect();
-    if parts.len() == 2 {
-        return (parts[0].to_string(), parts[1].to_string(), String::new());
-    }
-    // Single token — treat as organization
-    (String::new(), String::new(), name.to_string())
-}
-
 
 // ─── Core reader ─────────────────────────────────────────────────────────────
 
@@ -324,13 +280,18 @@ pub fn read(content: &Content) -> Result<Data> {
     } else if !content.guid.is_empty() && !content.blog.prefix.is_empty() {
         // Python: validate_doi_from_guid(prefix, guid[:-2], checksum=False)
         // Try treating the GUID as a DOI directly (after stripping last 2 chars checksum)
-        let trimmed = if content.guid.len() > 2 { &content.guid[..content.guid.len() - 2] } else { "" };
+        let trimmed = if content.guid.len() > 2 {
+            &content.guid[..content.guid.len() - 2]
+        } else {
+            ""
+        };
         let candidate = normalize_doi(trimmed);
         if !candidate.is_empty()
             && let Some(p) = validate_prefix(&candidate)
-                && p == content.blog.prefix {
-                    data.id = content.guid.clone();
-                }
+            && p == content.blog.prefix
+        {
+            data.id = content.guid.clone();
+        }
     }
     if data.id.is_empty() && !content.blog.prefix.is_empty() {
         data.id = crate::doi_utils::encode_doi(&content.blog.prefix);
@@ -378,42 +339,60 @@ pub fn read(content: &Content) -> Result<Data> {
 
     // ── Contributors ──
     for author in &content.authors {
-        let (given, family, org_name) = if author.given.is_empty() && author.family.is_empty() {
-            if author.name.is_empty() {
-                continue;
-            }
-            parse_name(&author.name)
-        } else {
-            (author.given.clone(), author.family.clone(), String::new())
-        };
-
-        let type_ = if !given.is_empty() { "Person" } else { "Organization" }.to_string();
         let id = normalize_orcid(&author.url);
 
-        let affiliations: Vec<Affiliation> = author
+        let mut given = author.given.clone();
+        let mut family = author.family.clone();
+        let mut org_name = String::new();
+        let cleaned_name = cleanup_author(Some(&author.name)).unwrap_or(author.name.clone());
+        if given.is_empty() && family.is_empty() {
+            if cleaned_name.is_empty() {
+                continue;
+            }
+            let (g, f, org) = split_person_name(&cleaned_name);
+            given = g;
+            family = f;
+            org_name = org;
+        }
+
+        let mut type_ = infer_contributor_type("", &id, &given, &family, &cleaned_name, None);
+        if type_.is_empty() {
+            type_ = "Organization".to_string();
+        }
+        if type_ == "Person" {
+            org_name = String::new();
+        } else if org_name.is_empty() {
+            org_name = cleaned_name;
+        }
+
+        let affiliations = author
             .affiliation
             .iter()
-            .filter(|a| !a.name.is_empty())
-            .map(|a| Affiliation { id: a.id.clone(), name: a.name.clone(), ..Default::default() })
+            .filter_map(|a| {
+                let value = serde_json::json!({"id": a.id, "name": a.name});
+                parse_affiliation_value(&value)
+            })
             .collect();
 
-        data.contributors.push(Contributor {
-            id,
-            type_,
-            name: org_name,
-            given_name: given,
-            family_name: family,
-            affiliations,
-            contributor_roles: vec!["Author".to_string()],
-        });
+        let roles = normalize_contributor_roles(&["Author".to_string()], "Author");
+
+        let contributor = if type_ == "Person" {
+            Contributor::person(
+                Person { id, given_name: given, family_name: family, affiliations },
+                roles,
+            )
+        } else {
+            Contributor::organization(
+                Organization { id, name: org_name },
+                roles,
+            )
+        };
+        data.contributors.push(contributor);
     }
 
     // ── Dates ──
-    data.date = Date {
-        published: unix_to_iso(content.published_at),
-        updated: unix_to_iso(content.updated_at),
-        ..Default::default()
-    };
+    data.date_published = unix_to_iso(content.published_at);
+    data.date_updated = unix_to_iso(content.updated_at);
 
     // ── Description ──
     let description = if !content.abstract_.is_empty() {
@@ -422,11 +401,7 @@ pub fn read(content: &Content) -> Result<Data> {
         sanitize(&content.summary)
     };
     if !description.is_empty() {
-        data.descriptions.push(Description {
-            description,
-            type_: "Abstract".to_string(),
-            language: String::new(),
-        });
+        data.description = description;
     }
 
     // ── Files: feature image + images array (Python style) ──
@@ -438,7 +413,10 @@ pub fn read(content: &Content) -> Result<Data> {
     }
     for img in &content.images {
         if !img.src.is_empty() {
-            data.files.push(File { url: img.src.clone(), ..Default::default() });
+            data.files.push(File {
+                url: img.src.clone(),
+                ..Default::default()
+            });
         }
     }
     // Deduplicate files by URL
@@ -446,8 +424,8 @@ pub fn read(content: &Content) -> Result<Data> {
 
     // ── Provider ──
     let is_rs_doi = is_rogue_scholar_doi(&data.id);
-    let rs_url_in_container = identifier_type == "URL"
-        && data.container.identifier.contains("rogue-scholar.org");
+    let rs_url_in_container =
+        identifier_type == "URL" && data.container.identifier.contains("rogue-scholar.org");
     if is_rs_doi || rs_url_in_container {
         data.provider = "Crossref".to_string();
     }
@@ -455,12 +433,32 @@ pub fn read(content: &Content) -> Result<Data> {
     // ── Funding references ──
     data.funding_references = get_funding_references(content);
 
-    // ── Identifiers: only guid (Python only stores guid) ──
-    if !content.guid.is_empty() {
+    // ── Identifiers (v1.0): prefer DOI, keep GUID for non-DOI GUID values ──
+    if let Some(id) = validate_doi(&data.id) {
         data.identifiers.push(Identifier {
-            identifier: content.guid.clone(),
-            identifier_type: "GUID".to_string(),
+            identifier: normalize_doi(&id),
+            identifier_type: "DOI".to_string(),
         });
+    }
+    if !content.guid.is_empty() {
+        if validate_doi(&content.guid).is_some() {
+            let doi = normalize_doi(&content.guid);
+            let exists = data
+                .identifiers
+                .iter()
+                .any(|i| i.identifier_type == "DOI" && i.identifier == doi);
+            if !exists {
+                data.identifiers.push(Identifier {
+                    identifier: doi,
+                    identifier_type: "DOI".to_string(),
+                });
+            }
+        } else {
+            data.identifiers.push(Identifier {
+                identifier: content.guid.clone(),
+                identifier_type: "GUID".to_string(),
+            });
+        }
     }
 
     // ── Language ──
@@ -468,23 +466,28 @@ pub fn read(content: &Content) -> Result<Data> {
 
     // ── License ──
     let license_url = normalize_license_url(&content.blog.license);
-    let spdx_id = url_to_spdx(&license_url);
-    data.license = License { id: spdx_id, url: license_url };
+    data.license = crate::spdx::from_url(&license_url);
 
     // ── Publisher: Front Matter for Rogue Scholar DOIs or rogue-scholar.org container ──
     if is_rs_doi || rs_url_in_container {
-        data.publisher = Publisher { name: "Front Matter".to_string(), ..Default::default() };
+        data.publisher = Publisher {
+            name: "Front Matter".to_string(),
+            ..Default::default()
+        };
     }
 
     // ── Relations from `relationships` ──
     for rel in &content.relationships {
-        if !RELATION_TYPES.contains(&rel.type_.as_str()) {
+        if !C::COMMONMETA_RELATION_TYPES.contains(&rel.type_.as_str()) {
             continue;
         }
         for u in rel.all_urls() {
             let normalized = normalize_url(u);
             if !normalized.is_empty() {
-                data.relations.push(Relation { id: normalized, type_: rel.type_.clone() });
+                data.relations.push(Relation {
+                    id: normalized,
+                    type_: rel.type_.clone(),
+                });
             }
         }
     }
@@ -506,6 +509,7 @@ pub fn read(content: &Content) -> Result<Data> {
             key: r.key.clone(),
             id,
             type_: r.type_.clone(),
+            reference: r.unstructured.clone(),
             unstructured: r.unstructured.clone(),
             ..Default::default()
         };
@@ -517,17 +521,18 @@ pub fn read(content: &Content) -> Result<Data> {
         }
     }
 
-    // ── Subjects: OpenAlex subfield from blog.subfield + tags ──
+    // ── Subjects: look up OpenAlex subfield, then free tags ──
     if !content.blog.subfield.is_empty() {
-        // Subfield label will be looked up externally; store subject with id when available
-        data.subjects.push(Subject { subject: content.blog.subfield.clone() });
+        if let Some((id, subject)) = crate::vocabularies::lookup_openalex_subject(&content.blog.subfield) {
+            data.subjects.push(Subject { id, subject, ..Default::default() });
+        }
     }
     for tag in &content.tags {
-        data.subjects.push(Subject { subject: tag.clone() });
+        data.subjects.push(Subject { subject: tag.clone(), ..Default::default() });
     }
 
     // ── Title ──
-    data.titles.push(Title { title: sanitize(&content.title), ..Default::default() });
+    data.title = sanitize(&content.title);
 
     // ── Version ──
     data.version = if content.version.is_empty() {
@@ -536,8 +541,8 @@ pub fn read(content: &Content) -> Result<Data> {
         content.version.clone()
     };
 
-    data.content_html = content.content_html.clone();
-    data.feature_image = content.feature_image.clone();
+    data.content = content.content_html.clone();
+    data.image = content.feature_image.clone();
 
     Ok(data)
 }
@@ -548,11 +553,12 @@ fn get_funding_references(content: &Content) -> Vec<FundingReference> {
     if !content.blog.funding.funder_name.is_empty() {
         refs.push(FundingReference {
             funder_name: content.blog.funding.funder_name.clone(),
-            funder_identifier: content.blog.funding.funder_identifier.clone(),
+            funder_id: content.blog.funding.funder_identifier.clone(),
             funder_identifier_type: content.blog.funding.funder_identifier_type.clone(),
             award_title: content.blog.funding.award_title.clone(),
             award_number: content.blog.funding.award_number.clone(),
-            award_uri: content.blog.funding.award_uri.clone(),
+            award_id: content.blog.funding.award_uri.clone(),
+            ..Default::default()
         });
     }
 
@@ -560,11 +566,12 @@ fn get_funding_references(content: &Content) -> Vec<FundingReference> {
         for v in &content.funding_references {
             refs.push(FundingReference {
                 funder_name: v.funder_name.clone(),
-                funder_identifier: v.funder_identifier.clone(),
+                funder_id: v.funder_identifier.clone(),
                 funder_identifier_type: v.funder_identifier_type.clone(),
                 award_title: v.award_title.clone(),
                 award_number: v.award_number.clone(),
-                award_uri: v.award_uri.clone(),
+                award_id: v.award_uri.clone(),
+                ..Default::default()
             });
         }
         return refs;
@@ -585,14 +592,17 @@ fn get_funding_references(content: &Content) -> Vec<FundingReference> {
             if prefix == "10.3030" || is_cordis {
                 let award_number = url::Url::parse(u)
                     .ok()
-                    .and_then(|p| p.path_segments().and_then(|mut s| s.next_back().map(String::from)))
+                    .and_then(|p| {
+                        p.path_segments()
+                            .and_then(|mut s| s.next_back().map(String::from))
+                    })
                     .unwrap_or_default();
                 refs.push(FundingReference {
                     funder_name: "European Commission".to_string(),
-                    funder_identifier: "https://ror.org/00k4n6c32".to_string(),
+                    funder_id: "https://ror.org/00k4n6c32".to_string(),
                     funder_identifier_type: "ROR".to_string(),
                     award_number,
-                    award_uri: u.to_string(),
+                    award_id: u.to_string(),
                     ..Default::default()
                 });
             }
@@ -614,19 +624,19 @@ fn get_funding_references(content: &Content) -> Vec<FundingReference> {
                 let award_number = extract_award_number(award_url);
                 refs.push(FundingReference {
                     funder_name,
-                    funder_identifier: funder_id,
+                    funder_id,
                     funder_identifier_type: funder_id_type,
                     award_number,
-                    award_uri: award_url.to_string(),
+                    award_id: award_url.to_string(),
                     ..Default::default()
                 });
             } else if crate::utils::validate_ror(funder_url).is_some() {
                 let award_number = extract_award_number(award_url);
                 refs.push(FundingReference {
-                    funder_identifier: funder_url.to_string(),
+                    funder_id: funder_url.to_string(),
                     funder_identifier_type: "ROR".to_string(),
                     award_number,
-                    award_uri: award_url.to_string(),
+                    award_id: award_url.to_string(),
                     ..Default::default()
                 });
             }
@@ -644,7 +654,10 @@ fn extract_award_number(u: &str) -> String {
             p.query_pairs()
                 .find(|(k, _)| k == "awd_id")
                 .map(|(_, v)| v.into_owned())
-                .or_else(|| p.path_segments().and_then(|mut s| s.next_back().map(String::from)))
+                .or_else(|| {
+                    p.path_segments()
+                        .and_then(|mut s| s.next_back().map(String::from))
+                })
         })
         .unwrap_or_default()
 }
@@ -676,8 +689,7 @@ fn normalize_license_url(u: &str) -> String {
 
 /// Parse a single JSON Feed item (as returned by the Rogue Scholar API).
 pub fn read_json(json: &str) -> Result<Data> {
-    let content: Content =
-        serde_json::from_str(json).map_err(|e| Error::Parse(e.to_string()))?;
+    let content: Content = serde_json::from_str(json).map_err(|e| Error::Parse(e.to_string()))?;
     read(&content)
 }
 
@@ -736,7 +748,7 @@ mod tests {
         let data = read_json(&json).unwrap();
         assert_eq!(data.type_, "BlogPost");
         assert!(!data.id.is_empty(), "id should be set");
-        assert!(!data.titles.is_empty(), "should have a title");
+        assert!(!data.title.is_empty(), "should have a title");
     }
 
     #[test]
@@ -747,27 +759,39 @@ mod tests {
 
     #[test]
     fn parse_name_formats() {
-        let (g, f, o) = parse_name("Lovelace, Ada");
+        let (g, f, o) = split_person_name("Lovelace, Ada");
         assert_eq!(f, "Lovelace");
         assert_eq!(g, "Ada");
         assert!(o.is_empty());
 
-        let (g2, f2, o2) = parse_name("Ada Lovelace");
+        let (g2, f2, o2) = split_person_name("Ada Lovelace");
         assert_eq!(g2, "Ada");
         assert_eq!(f2, "Lovelace");
         assert!(o2.is_empty());
 
         // Single token → org
-        let (g3, f3, o3) = parse_name("Anthropic");
+        let (g3, f3, o3) = split_person_name("Anthropic");
         assert!(g3.is_empty());
         assert!(f3.is_empty());
         assert_eq!(o3, "Anthropic");
     }
 
     #[test]
-    fn spdx_mapping() {
-        assert_eq!(url_to_spdx("https://creativecommons.org/licenses/by/4.0/legalcode"), "CC-BY-4.0");
-        assert_eq!(url_to_spdx("https://creativecommons.org/publicdomain/zero/1.0/legalcode"), "CC0-1.0");
-        assert_eq!(url_to_spdx("https://example.com/unknown"), "");
+    fn jsonfeed_reader_uses_doi_identifier_type_for_doi_guid() {
+        let json = load_fixture("jsonfeed_blog_post.json");
+        let data = read_json(&json).unwrap();
+        assert!(
+            data.identifiers
+                .iter()
+                .any(|i| i.identifier_type == "DOI" && i.identifier == data.id),
+            "expected DOI identifier matching record id"
+        );
+        assert!(
+            !data
+                .identifiers
+                .iter()
+                .any(|i| i.identifier_type == "GUID" && i.identifier == data.id),
+            "DOI values must not be mislabeled as GUID"
+        );
     }
 }

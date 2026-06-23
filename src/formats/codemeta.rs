@@ -1,10 +1,11 @@
 use serde_json::Value;
 
-use crate::data::{Data, Date, Description, License, Publisher, Subject, Title};
+use crate::data::{Data, License, Publisher, Subject};
 use crate::error::{Error, Result};
 use crate::utils::{normalize_id, sanitize};
 
-use super::schemaorg::{get_contributor, so_to_cm_type, value_to_contributors};
+use crate::constants as C;
+use super::schemaorg::{get_contributor, value_to_contributors};
 
 // ── GitHub URL utilities ──────────────────────────────────────────────────────
 
@@ -14,12 +15,12 @@ fn github_from_url(url: &str) -> Option<(String, String, Option<String>, Option<
     if !host.ends_with("github.com") && !host.ends_with("githubusercontent.com") {
         return None;
     }
-    let words: Vec<&str> = parsed
-        .path()
-        .trim_start_matches('/')
-        .split('/')
-        .collect();
-    let owner = words.first().copied().filter(|s| !s.is_empty())?.to_string();
+    let words: Vec<&str> = parsed.path().trim_start_matches('/').split('/').collect();
+    let owner = words
+        .first()
+        .copied()
+        .filter(|s| !s.is_empty())?
+        .to_string();
     let repo = words.get(1).copied().filter(|s| !s.is_empty())?.to_string();
     // GitHub web URLs: owner/repo/tree/<branch>/<path...>
     // words: [0]=owner [1]=repo [2]="tree"|"blob" [3]=branch [4+]=path
@@ -42,13 +43,14 @@ fn github_from_url(url: &str) -> Option<(String, String, Option<String>, Option<
 fn github_as_codemeta_url(url: &str) -> Option<String> {
     let (owner, repo, release, path) = github_from_url(url)?;
     if let Some(p) = &path
-        && p.ends_with("codemeta.json") {
-            let branch = release.as_deref().unwrap_or("main");
-            return Some(format!(
-                "https://raw.githubusercontent.com/{}/{}/{}/{}",
-                owner, repo, branch, p
-            ));
-        }
+        && p.ends_with("codemeta.json")
+    {
+        let branch = release.as_deref().unwrap_or("main");
+        return Some(format!(
+            "https://raw.githubusercontent.com/{}/{}/{}/{}",
+            owner, repo, branch, p
+        ));
+    }
     Some(format!(
         "https://raw.githubusercontent.com/{}/{}/main/codemeta.json",
         owner, repo
@@ -89,7 +91,10 @@ fn parse_publisher(v: &Value) -> Publisher {
                 .and_then(|n| n.as_str())
                 .unwrap_or("")
                 .to_string();
-            Publisher { name, ..Default::default() }
+            Publisher {
+                name,
+                ..Default::default()
+            }
         }
         _ => Publisher::default(),
     }
@@ -101,13 +106,19 @@ fn parse_keywords(v: &Value) -> Vec<Subject> {
     match v.get("keywords") {
         Some(Value::String(s)) => s
             .split(',')
-            .map(|k| Subject { subject: k.trim().to_string() })
+            .map(|k| Subject {
+                subject: k.trim().to_string(),
+                ..Default::default()
+            })
             .filter(|s| !s.subject.is_empty())
             .collect(),
         Some(Value::Array(arr)) => arr
             .iter()
             .filter_map(|k| k.as_str())
-            .map(|k| Subject { subject: k.trim().to_string() })
+            .map(|k| Subject {
+                subject: k.trim().to_string(),
+                ..Default::default()
+            })
             .filter(|s| !s.subject.is_empty())
             .collect(),
         _ => vec![],
@@ -121,15 +132,23 @@ fn from_value(doc: &Value) -> Data {
     let id_raw = {
         let from_id = str_field(doc, "@id");
         let from_identifier = str_field(doc, "identifier");
-        if !from_id.is_empty() { from_id } else { from_identifier }
+        if !from_id.is_empty() {
+            from_id
+        } else {
+            from_identifier
+        }
     };
     let id = normalize_id(id_raw);
 
     // Type — @type via SO_TO_CM_TRANSLATIONS; default "Software"
     let type_raw = str_field(doc, "@type");
     let type_ = {
-        let mapped = so_to_cm_type(type_raw);
-        if mapped.is_empty() { "Software" } else { mapped }
+        let mapped = C::so_to_cm(type_raw);
+        if mapped.is_empty() {
+            "Software"
+        } else {
+            mapped
+        }
     }
     .to_string();
 
@@ -139,14 +158,13 @@ fn from_value(doc: &Value) -> Data {
     // Title — prefer "title", fall back to "name"
     let title = {
         let t = str_field(doc, "title");
-        if !t.is_empty() { t } else { str_field(doc, "name") }
+        if !t.is_empty() {
+            t
+        } else {
+            str_field(doc, "name")
+        }
     }
     .to_string();
-    let titles = if !title.is_empty() {
-        vec![Title { title, ..Default::default() }]
-    } else {
-        vec![]
-    };
 
     // Contributors — "agents" takes priority over "authors"
     let author_val = doc
@@ -171,32 +189,25 @@ fn from_value(doc: &Value) -> Data {
     }
 
     // Dates
-    let date = Date {
-        created: str_field(doc, "dateCreated").to_string(),
-        published: str_field(doc, "datePublished").to_string(),
-        updated: str_field(doc, "dateModified").to_string(),
-        ..Default::default()
-    };
+    let date_created = str_field(doc, "dateCreated").to_string();
+    let date_published = str_field(doc, "datePublished").to_string();
+    let date_updated = str_field(doc, "dateModified").to_string();
 
     // Publisher
     let publisher = parse_publisher(doc);
 
     // Description
     let desc_raw = str_field(doc, "description");
-    let descriptions = if !desc_raw.is_empty() {
-        vec![Description {
-            description: sanitize(desc_raw),
-            type_: "Abstract".to_string(),
-            ..Default::default()
-        }]
+    let description = if !desc_raw.is_empty() {
+        sanitize(desc_raw)
     } else {
-        vec![]
+        String::new()
     };
 
     // License — codemeta uses "licenseId" as an SPDX identifier
     let license_id = str_field(doc, "licenseId").to_string();
     let license = if !license_id.is_empty() {
-        License { id: license_id, ..Default::default() }
+        crate::spdx::from_id(&license_id)
     } else {
         License::default()
     };
@@ -211,11 +222,16 @@ fn from_value(doc: &Value) -> Data {
         id,
         type_,
         url,
-        titles,
+        title,
         contributors,
-        date,
+        date_published,
+        dates: crate::data::Dates {
+            created: date_created,
+            ..Default::default()
+        },
+        date_updated,
         publisher,
-        descriptions,
+        description,
         license,
         version,
         subjects,
@@ -232,9 +248,8 @@ pub fn read_json(input: &str) -> Result<Data> {
 
 /// Fetch a codemeta.json from a GitHub repository URL and parse it.
 pub fn fetch(url: &str) -> Result<Data> {
-    let codemeta_url = github_as_codemeta_url(url).ok_or_else(|| {
-        Error::Parse(format!("cannot derive codemeta.json URL from: {}", url))
-    })?;
+    let codemeta_url = github_as_codemeta_url(url)
+        .ok_or_else(|| Error::Parse(format!("cannot derive codemeta.json URL from: {}", url)))?;
 
     let client = reqwest::blocking::Client::builder()
         .user_agent(format!(
@@ -255,9 +270,10 @@ pub fn fetch(url: &str) -> Result<Data> {
 
     // If codeRepository is absent, fill from the canonical repo URL
     if doc.get("codeRepository").is_none_or(|v| v.is_null())
-        && let Some(repo_url) = github_as_repo_url(&codemeta_url) {
-            doc["codeRepository"] = Value::String(repo_url);
-        }
+        && let Some(repo_url) = github_as_repo_url(&codemeta_url)
+    {
+        doc["codeRepository"] = Value::String(repo_url);
+    }
 
     Ok(from_value(&doc))
 }
@@ -308,7 +324,7 @@ mod tests {
         assert_eq!(data.type_, "Software");
         assert_eq!(data.id, "https://doi.org/10.5281/zenodo.6154694");
         assert_eq!(data.url, "https://github.com/front-matter/commonmeta-ruby");
-        assert_eq!(data.titles[0].title, "Commonmeta Ruby");
+        assert_eq!(data.title, "Commonmeta Ruby");
         assert_eq!(data.version, "2.1.0");
         assert_eq!(data.license.id, "MIT");
         assert_eq!(data.publisher.name, "GitHub");
@@ -317,9 +333,9 @@ mod tests {
     #[test]
     fn test_codemeta_dates() {
         let data = read_json(CODEMETA_SOFTWARE).unwrap();
-        assert_eq!(data.date.created, "2022-01-01");
-        assert_eq!(data.date.published, "2022-02-15");
-        assert_eq!(data.date.updated, "2023-05-10");
+        assert_eq!(data.dates.created, "2022-01-01");
+        assert_eq!(data.date_published, "2022-02-15");
+        assert_eq!(data.date_updated, "2023-05-10");
     }
 
     #[test]
@@ -330,16 +346,16 @@ mod tests {
         assert_eq!(data.contributors.len(), 2);
         let author = &data.contributors[0];
         assert_eq!(author.type_, "Person");
-        assert_eq!(author.given_name, "Martin");
-        assert_eq!(author.family_name, "Fenner");
-        assert_eq!(author.id, "https://orcid.org/0000-0003-1419-2405");
-        assert_eq!(author.affiliations[0].name, "Front Matter");
-        assert!(author.contributor_roles.contains(&"Author".to_string()));
+        assert_eq!(author.given_name(), "Martin");
+        assert_eq!(author.family_name(), "Fenner");
+        assert_eq!(author.id(), "https://orcid.org/0000-0003-1419-2405");
+        assert_eq!(author.affiliations()[0].name, "Front Matter");
+        assert!(author.roles.contains(&"Author".to_string()));
 
         // Editor
         let editor = &data.contributors[1];
-        assert_eq!(editor.family_name, "Doe");
-        assert!(editor.contributor_roles.contains(&"Editor".to_string()));
+        assert_eq!(editor.family_name(), "Doe");
+        assert!(editor.roles.contains(&"Editor".to_string()));
     }
 
     #[test]
@@ -353,12 +369,10 @@ mod tests {
     #[test]
     fn test_codemeta_description() {
         let data = read_json(CODEMETA_SOFTWARE).unwrap();
-        assert_eq!(data.descriptions.len(), 1);
         assert_eq!(
-            data.descriptions[0].description,
+            data.description,
             "Ruby library for conversion of scholarly metadata."
         );
-        assert_eq!(data.descriptions[0].type_, "Abstract");
     }
 
     #[test]
@@ -371,19 +385,20 @@ mod tests {
 }"#;
         let data = read_json(json).unwrap();
         // agents takes priority over authors
-        assert_eq!(data.contributors[0].family_name, "Agent");
+        assert_eq!(data.contributors[0].family_name(), "Agent");
     }
 
     #[test]
     fn test_codemeta_title_fallback() {
         // "title" takes priority; falls back to "name"
-        let with_title = r#"{"@type":"SoftwareSourceCode","title":"Title Field","name":"Name Field"}"#;
+        let with_title =
+            r#"{"@type":"SoftwareSourceCode","title":"Title Field","name":"Name Field"}"#;
         let data = read_json(with_title).unwrap();
-        assert_eq!(data.titles[0].title, "Title Field");
+        assert_eq!(data.title, "Title Field");
 
         let with_name_only = r#"{"@type":"SoftwareSourceCode","name":"Name Field"}"#;
         let data = read_json(with_name_only).unwrap();
-        assert_eq!(data.titles[0].title, "Name Field");
+        assert_eq!(data.title, "Name Field");
     }
 
     #[test]

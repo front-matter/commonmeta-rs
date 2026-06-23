@@ -3,29 +3,35 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::data::{
-    Affiliation, Contributor, Data, Description, Identifier, License, Publisher, Subject, Title,
+use crate::author_utils::{
+    cleanup_author, infer_contributor_type, normalize_contributor_roles, parse_affiliation_value,
+    split_person_name,
 };
+use crate::constants as C;
+use crate::data::{Contributor, Data, Identifier, Organization, Person, Publisher, Subject, Title};
 use crate::doi_utils::{normalize_doi, validate_doi};
 use crate::error::{Error, Result};
 use crate::utils::{
     normalize_cc_url, normalize_id, normalize_orcid, normalize_ror, normalize_url, sanitize,
-    url_to_spdx, validate_id,
+    validate_id,
 };
-use crate::vocab::CONTRIBUTOR_ROLES;
+
+/// Extract a language code from an `inLanguage` value, which can be either a
+/// bare string (`"en"`) or an object (`{"alternateName":"en","name":"English"}`).
+fn extract_in_language(v: &Option<serde_json::Value>) -> String {
+    match v {
+        None => String::new(),
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Object(m)) => m
+            .get("alternateName")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        _ => String::new(),
+    }
+}
 
 // ── Input structs ─────────────────────────────────────────────────────────────
-
-/// Flexible affiliation — @id (optional) + sameAs (optional) + name.
-#[derive(Deserialize, Default, Clone)]
-pub(crate) struct SoOrganization {
-    #[serde(rename = "@id", default)]
-    pub(crate) id: String,
-    #[serde(rename = "sameAs", default)]
-    pub(crate) same_as: String,
-    #[serde(default)]
-    pub(crate) name: String,
-}
 
 /// Schema.org contributor (author / creator / editor / contributor).
 #[derive(Deserialize, Default, Clone)]
@@ -120,8 +126,9 @@ struct SoContent {
     // identifier can be a single string or array
     #[serde(default)]
     identifier: Option<Value>,
+    // inLanguage can be a string ("en") or an object {"@type":"Language","alternateName":"en"}
     #[serde(rename = "inLanguage", default)]
-    in_language: String,
+    in_language: Option<Value>,
     // keywords can be comma-separated string or array
     #[serde(default)]
     keywords: Option<Value>,
@@ -141,28 +148,6 @@ struct SoContent {
     version: Option<Value>,
 }
 
-// ── Type mapping ──────────────────────────────────────────────────────────────
-
-pub(crate) fn so_to_cm_type(so: &str) -> &'static str {
-    match so {
-        "Article"           => "Article",
-        "BlogPosting"       => "BlogPost",
-        "Book"              => "Book",
-        "BookChapter"       => "BookChapter",
-        "CreativeWork"      => "Other",
-        "Dataset"           => "Dataset",
-        "DigitalDocument"   => "Document",
-        "Dissertation"      => "Dissertation",
-        "Instrument"        => "Instrument",
-        "NewsArticle"       => "Article",
-        "Legislation"       => "LegalDocument",
-        "Report"            => "Report",
-        "ScholarlyArticle"  => "JournalArticle",
-        "SoftwareSourceCode" => "Software",
-        _                   => "",
-    }
-}
-
 // ── Contributor helpers ───────────────────────────────────────────────────────
 
 /// Deserialise a `Value` that is either a single SoContributor object or an
@@ -173,42 +158,18 @@ pub(crate) fn value_to_contributors(v: &Value) -> Vec<SoContributor> {
     }
     if let Ok(single) = serde_json::from_value::<SoContributor>(v.clone()) {
         // Only treat as a single contributor if it has at least one name field
-        if !single.name.is_empty() || !single.given_name.is_empty() || !single.family_name.is_empty() {
+        if !single.name.is_empty()
+            || !single.given_name.is_empty()
+            || !single.family_name.is_empty()
+        {
             return vec![single];
         }
     }
     serde_json::from_value::<Vec<SoContributor>>(v.clone()).unwrap_or_default()
 }
 
-/// Convert a raw JSON affiliation value into an `Affiliation`.
-pub(crate) fn parse_affiliation(v: &Value) -> Option<Affiliation> {
-    // affiliation can be an Organization object or a plain string
-    if let Some(s) = v.as_str() {
-        if !s.is_empty() {
-            return Some(Affiliation { name: s.to_string(), ..Default::default() });
-        }
-        return None;
-    }
-    if let Ok(org) = serde_json::from_value::<SoOrganization>(v.clone()) {
-        if org.name.is_empty() {
-            return None;
-        }
-        let id = {
-            let ror = normalize_ror(&org.id);
-            if !ror.is_empty() {
-                ror
-            } else {
-                normalize_ror(&org.same_as)
-            }
-        };
-        return Some(Affiliation { id, name: org.name, ..Default::default() });
-    }
-    None
-}
-
 /// Mirror of Go `GetContributor`.
 pub(crate) fn get_contributor(v: SoContributor, default_role: &str) -> Contributor {
-    let mut type_ = v.type_.clone();
     let mut id = String::new();
 
     // Resolve @id — try ORCID first, then ROR
@@ -216,74 +177,75 @@ pub(crate) fn get_contributor(v: SoContributor, default_role: &str) -> Contribut
         let orcid = normalize_orcid(&v.id);
         if !orcid.is_empty() {
             id = orcid;
-            type_ = "Person".to_string();
         } else {
             let ror = normalize_ror(&v.id);
             if !ror.is_empty() {
                 id = ror;
-                type_ = "Organization".to_string();
             }
         }
     }
 
-    let mut name = v.name.clone();
+    let mut name = cleanup_author(Some(&v.name)).unwrap_or_default();
     let mut given_name = v.given_name.clone();
     let mut family_name = v.family_name.clone();
 
-    // Infer type from names if still unknown
+    // Only treat explicit Person/Organization values as real contributor types.
+    let raw_type = match v.type_.as_str() {
+        "Person" | "Organization" => v.type_.as_str(),
+        _ => "",
+    };
+
+    let mut type_ = infer_contributor_type(
+        raw_type,
+        &id,
+        &given_name,
+        &family_name,
+        &name,
+        None,
+    );
     if type_.is_empty() {
-        if !given_name.is_empty() || !family_name.is_empty() {
-            type_ = "Person".to_string();
-        } else {
-            type_ = "Organization".to_string();
-        }
+        type_ = "Organization".to_string();
     }
 
     // Split combined name for Persons
     if type_ == "Person" && !name.is_empty() && given_name.is_empty() && family_name.is_empty() {
-        // Try "Family, Given"
-        if let Some(comma) = name.find(',') {
-            family_name = name[..comma].trim().to_string();
-            given_name = name[comma + 1..].trim().to_string();
+        let (given, family, remainder) = split_person_name(&name);
+        if !given.is_empty() || !family.is_empty() {
+            given_name = given;
+            family_name = family;
             name = String::new();
         } else {
-            // "Given Family" — first token is given, rest is family
-            let parts: Vec<&str> = name.splitn(2, ' ').collect();
-            if parts.len() == 2 {
-                given_name = parts[0].to_string();
-                family_name = parts[1].to_string();
-                name = String::new();
-            }
+            name = remainder;
         }
     }
 
     // Affiliation
-    let affiliations: Vec<Affiliation> = if let Some(aff_val) = &v.affiliation {
+    let affiliations = if let Some(aff_val) = &v.affiliation {
         // Can be a single object/string or an array
         if let Ok(list) = serde_json::from_value::<Vec<Value>>(aff_val.clone()) {
-            list.iter().filter_map(parse_affiliation).collect()
+            list.iter().filter_map(parse_affiliation_value).collect()
         } else {
-            parse_affiliation(aff_val).into_iter().collect()
+            parse_affiliation_value(aff_val).into_iter().collect()
         }
     } else {
         vec![]
     };
 
-    // Role: honour if the @type is a known contributor role, else default
-    let role = if CONTRIBUTOR_ROLES.contains(&v.type_.as_str()) {
-        v.type_.clone()
-    } else {
-        default_role.to_string()
-    };
+    let raw_roles = vec![v.type_.clone()];
+    let roles = normalize_contributor_roles(&raw_roles, default_role);
 
-    Contributor {
-        id,
-        type_,
-        name,
-        given_name,
-        family_name,
-        affiliations,
-        contributor_roles: vec![role],
+    if type_ == "Person" {
+        Contributor::person(
+            Person {
+                id,
+                given_name,
+                family_name,
+                affiliations,
+            },
+            roles,
+        )
+    } else {
+        Contributor::organization(Organization { id, name }, roles)
     }
 }
 
@@ -292,7 +254,7 @@ pub(crate) fn get_contributor(v: SoContributor, default_role: &str) -> Contribut
 fn from_content(content: SoContent) -> Data {
     // ID and Type computed up front for struct init
     let id = normalize_id(&content.id);
-    let cm_type = so_to_cm_type(&content.type_);
+    let cm_type = C::so_to_cm(&content.type_);
     let type_ = if cm_type.is_empty() {
         "WebPage".to_string()
     } else {
@@ -305,6 +267,24 @@ fn from_content(content: SoContent) -> Data {
         ..Data::default()
     };
 
+    let idents: Vec<String> = match &content.identifier {
+        Some(Value::String(s)) => vec![s.clone()],
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        _ => vec![],
+    };
+
+    // If @id is absent, recover canonical DOI id from identifier values.
+    if data.id.is_empty()
+        && let Some(doi_ident) = idents
+            .iter()
+            .find_map(|raw| validate_doi(raw).as_deref().map(normalize_doi))
+    {
+        data.id = doi_ident;
+    }
+
     // Contributors from author/creator (role = Author)
     let author_val = content.author.or(content.creator).unwrap_or(Value::Null);
     for v in value_to_contributors(&author_val) {
@@ -312,8 +292,11 @@ fn from_content(content: SoContent) -> Data {
             continue;
         }
         let contrib = get_contributor(v, "Author");
-        let dup = !contrib.id.is_empty()
-            && data.contributors.iter().any(|c| !c.id.is_empty() && c.id == contrib.id);
+        let dup = !contrib.id().is_empty()
+            && data
+                .contributors
+                .iter()
+                .any(|c| !c.id().is_empty() && c.id() == contrib.id());
         if !dup {
             data.contributors.push(contrib);
         }
@@ -326,8 +309,11 @@ fn from_content(content: SoContent) -> Data {
                 continue;
             }
             let contrib = get_contributor(v, "Author");
-            let dup = !contrib.id.is_empty()
-                && data.contributors.iter().any(|c| !c.id.is_empty() && c.id == contrib.id);
+            let dup = !contrib.id().is_empty()
+                && data
+                    .contributors
+                    .iter()
+                    .any(|c| !c.id().is_empty() && c.id() == contrib.id());
             if !dup {
                 data.contributors.push(contrib);
             }
@@ -341,8 +327,11 @@ fn from_content(content: SoContent) -> Data {
                 continue;
             }
             let contrib = get_contributor(v, "Editor");
-            let dup = !contrib.id.is_empty()
-                && data.contributors.iter().any(|c| !c.id.is_empty() && c.id == contrib.id);
+            let dup = !contrib.id().is_empty()
+                && data
+                    .contributors
+                    .iter()
+                    .any(|c| !c.id().is_empty() && c.id() == contrib.id());
             if !dup {
                 data.contributors.push(contrib);
             }
@@ -351,57 +340,56 @@ fn from_content(content: SoContent) -> Data {
 
     // Dates
     if !content.date_published.is_empty() {
-        data.date.published = content.date_published.clone();
+        data.date_published = content.date_published.clone();
     }
     if !content.date_modified.is_empty() {
-        data.date.updated = content.date_modified.clone();
+        data.date_updated = content.date_modified.clone();
     }
     if !content.date_created.is_empty() {
-        data.date.created = content.date_created.clone();
+        data.dates.created = content.date_created.clone();
     }
 
     // Description
     if !content.description.is_empty() {
-        data.descriptions.push(Description {
-            description: sanitize(&content.description),
-            type_: "Abstract".to_string(),
-            language: String::new(),
-        });
+        data.description = sanitize(&content.description);
     }
 
-    // Identifiers — string or array
-    let idents: Vec<String> = match &content.identifier {
-        Some(Value::String(s)) => vec![s.clone()],
-        Some(Value::Array(arr)) => arr
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect(),
-        _ => vec![],
-    };
+    // Identifiers
+    if let Some(doi) = validate_doi(&data.id) {
+        data.identifiers.push(Identifier {
+            identifier: normalize_doi(&doi),
+            identifier_type: "DOI".to_string(),
+        });
+    }
     for id_str in &idents {
-        if id_str != &data.id {
-            let (identifier, identifier_type) = validate_id(id_str);
-            if !identifier.is_empty() {
-                let identifier = if identifier_type == "DOI" {
-                    normalize_doi(&identifier)
-                } else {
-                    identifier
-                };
-                data.identifiers.push(Identifier { identifier, identifier_type: identifier_type.to_string() });
+        let (identifier, identifier_type) = validate_id(id_str);
+        if !identifier.is_empty() {
+            let identifier = if identifier_type == "DOI" {
+                normalize_doi(&identifier)
+            } else {
+                identifier
+            };
+            let duplicate = data
+                .identifiers
+                .iter()
+                .any(|i| i.identifier == identifier && i.identifier_type == identifier_type);
+            if !duplicate {
+                data.identifiers.push(Identifier {
+                    identifier,
+                    identifier_type: identifier_type.to_string(),
+                });
             }
         }
     }
 
-    // Language
-    data.language = content.in_language.clone();
+    // Language — inLanguage can be "en" or {"@type":"Language","alternateName":"en","name":"English"}
+    data.language = extract_in_language(&content.in_language);
 
     // License
     if !content.license.is_empty() {
         let (url, ok) = normalize_cc_url(&content.license);
-        if ok {
-            let id = url_to_spdx(&url);
-            data.license = License { id, url };
-        }
+        let url = if ok { url } else { content.license.clone() };
+        data.license = crate::spdx::from_url(&url);
     }
 
     // Provider — inferred from DOI RA
@@ -414,9 +402,13 @@ fn from_content(content: SoContent) -> Data {
 
     // Publisher
     if let Some(pub_) = content.publisher
-        && !pub_.name.is_empty() {
-            data.publisher = Publisher { name: pub_.name, ..Default::default() };
-        }
+        && !pub_.name.is_empty()
+    {
+        data.publisher = Publisher {
+            name: pub_.name,
+            ..Default::default()
+        };
+    }
 
     // Subjects (keywords — string or array)
     let keywords: Vec<String> = match &content.keywords {
@@ -429,15 +421,27 @@ fn from_content(content: SoContent) -> Data {
     };
     for kw in keywords {
         if !kw.is_empty() {
-            data.subjects.push(Subject { subject: kw });
+            data.subjects.push(Subject {
+                subject: kw,
+                ..Default::default()
+            });
         }
     }
 
     // Titles
     if !content.name.is_empty() {
-        data.titles.push(Title { title: content.name.clone(), ..Default::default() });
-    } else if !content.headline.is_empty() {
-        data.titles.push(Title { title: content.headline.clone(), ..Default::default() });
+        data.title = content.name.clone();
+    }
+    if !content.headline.is_empty() {
+        if data.title.is_empty() {
+            data.title = content.headline.clone();
+        } else {
+            data.additional_titles.push(Title {
+                title: content.headline.clone(),
+                type_: "Subtitle".to_string(),
+                ..Default::default()
+            });
+        }
     }
 
     // URL
@@ -514,8 +518,7 @@ fn extract_content(html: &str) -> Result<SoContent> {
     let doc = Html::parse_document(html);
 
     // ── JSON-LD ───────────────────────────────────────────────────────────────
-    let script_sel =
-        Selector::parse("script[type='application/ld+json']").expect("valid selector");
+    let script_sel = Selector::parse("script[type='application/ld+json']").expect("valid selector");
     let mut content = SoContent::default();
     for el in doc.select(&script_sel) {
         let text = el.text().collect::<String>();
@@ -536,10 +539,11 @@ fn extract_content(html: &str) -> Result<SoContent> {
         for sel_str in &meta_names {
             if let Ok(sel) = Selector::parse(sel_str)
                 && let Some(el) = doc.select(&sel).next()
-                    && let Some(val) = el.value().attr("content") {
-                        content.id = val.to_string();
-                        break;
-                    }
+                && let Some(val) = el.value().attr("content")
+            {
+                content.id = val.to_string();
+                break;
+            }
         }
     }
 
@@ -553,10 +557,11 @@ fn extract_content(html: &str) -> Result<SoContent> {
         for sel_str in &type_metas {
             if let Ok(sel) = Selector::parse(sel_str)
                 && let Some(el) = doc.select(&sel).next()
-                    && let Some(val) = el.value().attr("content") {
-                        content.type_ = val.to_string();
-                        break;
-                    }
+                && let Some(val) = el.value().attr("content")
+            {
+                content.type_ = val.to_string();
+                break;
+            }
         }
     }
 
@@ -571,18 +576,14 @@ fn extract_content(html: &str) -> Result<SoContent> {
         ];
         for sel_str in &name_metas {
             if let Ok(sel) = Selector::parse(sel_str)
-                && let Some(el) = doc.select(&sel).next() {
-                    let val = el
-                        .value()
-                        .attr("content")
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
-                    if !val.is_empty() {
-                        content.name = val;
-                        break;
-                    }
+                && let Some(el) = doc.select(&sel).next()
+            {
+                let val = el.value().attr("content").unwrap_or("").trim().to_string();
+                if !val.is_empty() {
+                    content.name = val;
+                    break;
                 }
+            }
         }
     }
 
@@ -596,18 +597,14 @@ fn extract_content(html: &str) -> Result<SoContent> {
         ];
         for sel_str in &desc_metas {
             if let Ok(sel) = Selector::parse(sel_str)
-                && let Some(el) = doc.select(&sel).next() {
-                    let val = el
-                        .value()
-                        .attr("content")
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
-                    if !val.is_empty() {
-                        content.description = val;
-                        break;
-                    }
+                && let Some(el) = doc.select(&sel).next()
+            {
+                let val = el.value().attr("content").unwrap_or("").trim().to_string();
+                if !val.is_empty() {
+                    content.description = val;
+                    break;
                 }
+            }
         }
     }
 
@@ -622,10 +619,11 @@ fn extract_content(html: &str) -> Result<SoContent> {
         for sel_str in &date_metas {
             if let Ok(sel) = Selector::parse(sel_str)
                 && let Some(el) = doc.select(&sel).next()
-                    && let Some(val) = el.value().attr("content") {
-                        content.date_published = val.to_string();
-                        break;
-                    }
+                && let Some(val) = el.value().attr("content")
+            {
+                content.date_published = val.to_string();
+                break;
+            }
         }
     }
 
@@ -638,34 +636,38 @@ fn extract_content(html: &str) -> Result<SoContent> {
         for sel_str in &mod_metas {
             if let Ok(sel) = Selector::parse(sel_str)
                 && let Some(el) = doc.select(&sel).next()
-                    && let Some(val) = el.value().attr("content") {
-                        content.date_modified = val.to_string();
-                        break;
-                    }
+                && let Some(val) = el.value().attr("content")
+            {
+                content.date_modified = val.to_string();
+                break;
+            }
         }
     }
 
     // ── Language fallback ─────────────────────────────────────────────────────
-    if content.in_language.is_empty()
+    if extract_in_language(&content.in_language).is_empty()
         && let Ok(sel) = Selector::parse("html")
-            && let Some(el) = doc.select(&sel).next()
-                && let Some(lang) = el.value().attr("lang") {
-                    content.in_language = lang.to_string();
-                }
+        && let Some(el) = doc.select(&sel).next()
+        && let Some(lang) = el.value().attr("lang")
+    {
+        content.in_language = Some(Value::String(lang.to_string()));
+    }
 
     // ── License fallback ──────────────────────────────────────────────────────
     if content.license.is_empty()
         && let Ok(sel) = Selector::parse("link[rel='license']")
-            && let Some(el) = doc.select(&sel).next()
-                && let Some(href) = el.value().attr("href") {
-                    content.license = href.to_string();
-                }
+        && let Some(el) = doc.select(&sel).next()
+        && let Some(href) = el.value().attr("href")
+    {
+        content.license = href.to_string();
+    }
 
     // ── author/creator synonyms ───────────────────────────────────────────────
     if content.author.is_none()
-        && let Some(creator) = content.creator.take() {
-            content.author = Some(creator);
-        }
+        && let Some(creator) = content.creator.take()
+    {
+        content.author = Some(creator);
+    }
 
     Ok(content)
 }
@@ -778,7 +780,10 @@ struct OutPayload {
     editor: Vec<OutContributor>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     citation: Vec<OutCitation>,
-    #[serde(rename = "includedInDataCatalog", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "includedInDataCatalog",
+        skip_serializing_if = "Option::is_none"
+    )]
     included_in_data_catalog: Option<OutDataCatalog>,
     #[serde(skip_serializing_if = "Option::is_none")]
     periodical: Option<OutPeriodical>,
@@ -790,6 +795,8 @@ struct OutPayload {
     date_modified: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     description: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    headline: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     distribution: Vec<OutMediaObject>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -816,32 +823,6 @@ struct OutPayload {
     version: String,
 }
 
-// ── CM → Schema.org type mapping ─────────────────────────────────────────────
-
-fn cm_to_so_type(cm: &str) -> &'static str {
-    match cm {
-        "Article"               => "Article",
-        "Audiovisual"           => "CreativeWork",
-        "BlogPost"              => "BlogPosting",
-        "Book"                  => "Book",
-        "BookChapter"           => "BookChapter",
-        "Collection"            => "CreativeWork",
-        "Dataset"               => "Dataset",
-        "Dissertation"          => "Dissertation",
-        "Document"              => "CreativeWork",
-        "Entry"                 => "CreativeWork",
-        "Event"                 => "CreativeWork",
-        "Figure"                => "CreativeWork",
-        "Image"                 => "CreativeWork",
-        "Instrument"            => "Instrument",
-        "JournalArticle"        => "ScholarlyArticle",
-        "LegalDocument"         => "Legislation",
-        "Software"              => "SoftwareSourceCode",
-        "Presentation"          => "PresentationDigitalDocument",
-        _                       => "CreativeWork",
-    }
-}
-
 // ── Conversion ────────────────────────────────────────────────────────────────
 
 fn convert(data: &crate::data::Data) -> OutPayload {
@@ -850,13 +831,13 @@ fn convert(data: &crate::data::Data) -> OutPayload {
     let mut editors: Vec<OutContributor> = Vec::new();
 
     for c in &data.contributors {
-        let is_author = c.contributor_roles.contains(&"Author".to_string());
-        let is_editor = c.contributor_roles.contains(&"Editor".to_string());
+        let is_author = c.roles.contains(&"Author".to_string());
+        let is_editor = c.roles.contains(&"Editor".to_string());
         if !is_author && !is_editor {
             continue;
         }
 
-        let affiliation = c.affiliations.first().map(|a| OutOrganization {
+        let affiliation = c.affiliations().first().map(|a| OutOrganization {
             id: a.id.clone(),
             type_: "Organization",
             name: a.name.clone(),
@@ -864,19 +845,19 @@ fn convert(data: &crate::data::Data) -> OutPayload {
 
         let out = if c.type_ == "Organization" {
             OutContributor {
-                id: c.id.clone(),
+                id: c.id().to_string(),
                 type_: "Organization",
                 given_name: String::new(),
                 family_name: String::new(),
-                name: c.name.clone(),
+                name: c.name(),
                 affiliation: None,
             }
         } else {
             OutContributor {
-                id: c.id.clone(),
+                id: c.id().to_string(),
                 type_: "Person",
-                given_name: c.given_name.clone(),
-                family_name: c.family_name.clone(),
+                given_name: c.given_name().to_string(),
+                family_name: c.family_name().to_string(),
                 name: String::new(),
                 affiliation,
             }
@@ -900,7 +881,11 @@ fn convert(data: &crate::data::Data) -> OutPayload {
             } else {
                 "CreativeWork".to_string()
             };
-            OutCitation { id: r.id.clone(), type_, name: r.title.clone() }
+            OutCitation {
+                id: r.id.clone(),
+                type_,
+                name: r.reference.clone(),
+            }
         })
         .collect();
 
@@ -942,7 +927,11 @@ fn convert(data: &crate::data::Data) -> OutPayload {
             encoding_format: f.mime_type.clone(),
             name: f.key.clone(),
             sha256: f.checksum.clone(),
-            size: if f.size > 0 { f.size.to_string() } else { String::new() },
+            size: if f.size > 0 {
+                f.size.to_string()
+            } else {
+                String::new()
+            },
         })
         .collect();
 
@@ -953,11 +942,13 @@ fn convert(data: &crate::data::Data) -> OutPayload {
     };
 
     // Identifiers
-    let identifier: Vec<String> = data
-        .identifiers
-        .iter()
-        .map(|i| i.identifier.clone())
-        .collect();
+    let mut identifier: Vec<String> = data.identifiers.iter().map(|i| i.identifier.clone()).collect();
+    if let Some(doi) = validate_doi(&data.id) {
+        let doi_url = normalize_doi(&doi);
+        if !identifier.iter().any(|i| i == &doi_url) {
+            identifier.push(doi_url);
+        }
+    }
 
     // Keywords
     let keywords = if data.subjects.is_empty() {
@@ -972,28 +963,30 @@ fn convert(data: &crate::data::Data) -> OutPayload {
     };
 
     // Title
-    let name = data.titles.first().map(|t| t.title.clone()).unwrap_or_default();
+    let name = data.title.clone();
+    let headline = data
+        .additional_titles
+        .iter()
+        .find(|t| !t.title.is_empty() && t.type_ == "Subtitle")
+        .map(|t| t.title.clone())
+        .unwrap_or_default();
 
     // Description
-    let description = data
-        .descriptions
-        .first()
-        .map(|d| d.description.clone())
-        .unwrap_or_default();
+    let description = data.description.clone();
 
     OutPayload {
         context: "http://schema.org",
         id: data.id.clone(),
-        type_: cm_to_so_type(&data.type_).to_string(),
+        type_: C::cm_to_so(&data.type_).to_string(),
         additional_type: data.additional_type.clone(),
         author: authors,
         editor: editors,
         citation,
         included_in_data_catalog,
         periodical,
-        date_created: data.date.created.clone(),
-        date_published: data.date.published.clone(),
-        date_modified: data.date.updated.clone(),
+        date_created: data.dates.created.clone(),
+        date_published: data.date_published.clone(),
+        date_modified: data.date_updated.clone(),
         description,
         distribution,
         encoding,
@@ -1001,11 +994,18 @@ fn convert(data: &crate::data::Data) -> OutPayload {
         in_language: data.language.clone(),
         keywords,
         license: data.license.url.clone(),
+        headline,
         name,
         page_start: data.container.first_page.clone(),
         page_end: data.container.last_page.clone(),
-        provider: OutProvider { type_: "Organization", name: data.provider.clone() },
-        publisher: OutPublisher { type_: "Organization", name: data.publisher.name.clone() },
+        provider: OutProvider {
+            type_: "Organization",
+            name: data.provider.clone(),
+        },
+        publisher: OutPublisher {
+            type_: "Organization",
+            name: data.publisher.name.clone(),
+        },
         url: data.url.clone(),
         version: data.version.clone(),
     }
@@ -1018,6 +1018,60 @@ pub fn write(data: &crate::data::Data) -> crate::error::Result<Vec<u8>> {
 
 pub fn write_all(list: &[crate::data::Data]) -> crate::error::Result<Vec<u8>> {
     let payloads: Vec<OutPayload> = list.iter().map(convert).collect();
-    serde_json::to_vec_pretty(&payloads)
-        .map_err(|e| crate::error::Error::Serialize(e.to_string()))
+    serde_json::to_vec_pretty(&payloads).map_err(|e| crate::error::Error::Serialize(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schemaorg_reader_adds_doi_identifier_from_id() {
+        let input = r#"{
+          "@context": "https://schema.org",
+          "@id": "https://doi.org/10.5555/12345678",
+          "@type": "ScholarlyArticle",
+          "name": "A Study of Things"
+        }"#;
+
+        let data = read_json(input).unwrap();
+        assert!(data.identifiers.iter().any(|i| {
+            i.identifier_type == "DOI" && i.identifier == "https://doi.org/10.5555/12345678"
+        }));
+    }
+
+    #[test]
+    fn schemaorg_reader_maps_headline_as_subtitle_when_name_present() {
+        let input = r#"{
+          "@context": "https://schema.org",
+          "@type": "ScholarlyArticle",
+          "name": "Main Title",
+          "headline": "Subtitle Text"
+        }"#;
+
+        let data = read_json(input).unwrap();
+        assert_eq!(data.title, "Main Title");
+        assert_eq!(data.additional_titles.len(), 1);
+        assert_eq!(data.additional_titles[0].title, "Subtitle Text");
+        assert_eq!(data.additional_titles[0].type_, "Subtitle");
+    }
+
+    #[test]
+    fn schemaorg_writer_prefers_primary_title_and_sets_headline_from_subtitle() {
+        let data = Data {
+            type_: "JournalArticle".to_string(),
+            title: "Primary Title".to_string(),
+            additional_titles: vec![Title {
+                title: "Only Subtitle".to_string(),
+                type_: "Subtitle".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let out = write(&data).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(json["name"], "Primary Title");
+        assert_eq!(json["headline"], "Only Subtitle");
+    }
 }

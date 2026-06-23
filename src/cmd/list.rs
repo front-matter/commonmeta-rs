@@ -96,10 +96,18 @@ pub fn command() -> Command {
         .arg(Arg::new("client").long("client").help("DataCite client ID"))
         .arg(Arg::new("type").long("type").help("Work type filter"))
         .arg(Arg::new("year").long("year").help("Publication year"))
-        .arg(Arg::new("language").long("language").help("Language filter"))
+        .arg(
+            Arg::new("language")
+                .long("language")
+                .help("Language filter"),
+        )
         .arg(Arg::new("orcid").long("orcid").help("Filter by ORCID"))
         .arg(Arg::new("ror").long("ror").help("Filter by ROR"))
-        .arg(Arg::new("email").long("email").help("Email for OpenAlex mailto parameter"))
+        .arg(
+            Arg::new("email")
+                .long("email")
+                .help("Email for OpenAlex mailto parameter"),
+        )
         .arg(
             Arg::new("sample")
                 .long("sample")
@@ -159,15 +167,11 @@ pub fn command() -> Command {
                 .long("file")
                 .help("Write output to file instead of stdout"),
         )
-        .arg(
-            Arg::new("date")
-                .long("date")
-                .help(
-                    "Date (YYYY-MM-DD) of a VRAIX daily dump, used with --from crossref or \
+        .arg(Arg::new("date").long("date").help(
+            "Date (YYYY-MM-DD) of a VRAIX daily dump, used with --from crossref or \
                      --from datacite; downloads {from}-{date}.sqlite3.zst from \
                      metadata.vraix.org unless an input file path is also given",
-                ),
-        )
+        ))
         .arg(
             Arg::new("timers")
                 .long("timers")
@@ -367,7 +371,10 @@ fn write_parquet_batch(data: &[Data], base_path: &Path) -> Result<(), String> {
 /// Build the output path for the Parquet file: `{base}.zst`.
 fn parquet_batch_path(base_path: &Path) -> PathBuf {
     let mut path = base_path.to_path_buf();
-    let name = format!("{}.zst", path.file_name().unwrap_or_default().to_string_lossy());
+    let name = format!(
+        "{}.zst",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    );
     path.set_file_name(name);
     path
 }
@@ -381,7 +388,11 @@ fn write_parquet_archive(data: &[Data], out_path: &str, compress: &str) -> Resul
     }
 
     let (base_path, _extension, _compress) = file_utils::get_extension(out_path, ".parquet");
-    let base_name = base_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let base_name = base_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
 
     let entry = parquet_archive_entry(data, &base_name)?;
 
@@ -426,15 +437,24 @@ fn write_archive_batches(
 ) -> Result<(), String> {
     let (base_path, inner_ext, _) = file_utils::get_extension(out_path, ".json");
     let base_path = if base_path.extension().is_none() {
-        let inner_ext = if inner_ext.is_empty() { ".json" } else { &inner_ext };
+        let inner_ext = if inner_ext.is_empty() {
+            ".json"
+        } else {
+            &inner_ext
+        };
         base_path.with_extension(inner_ext.trim_start_matches('.'))
     } else {
         base_path
     };
-    let base_name = base_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let base_name = base_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
 
-    let entries = commonmeta::write_archive_citation(data, to, &base_name, BATCH_SIZE, style, locale)
-        .map_err(|e| e.to_string())?;
+    let entries =
+        commonmeta::write_archive_citation(data, to, &base_name, BATCH_SIZE, style, locale)
+            .map_err(|e| e.to_string())?;
 
     match compress {
         "zip" => file_utils::write_zip_archive(out_path, &entries)
@@ -443,11 +463,21 @@ fn write_archive_batches(
             .map_err(|e| format!("failed to write tgz '{}': {}", out_path, e))?,
         other => return Err(format!("list: unsupported archive compression: {}", other)),
     }
-    println!("wrote {} ({} records in {} batch(es))", out_path, data.len(), entries.len());
+    println!(
+        "wrote {} ({} records in {} batch(es))",
+        out_path,
+        data.len(),
+        entries.len()
+    );
     Ok(())
 }
 
-fn write_output(data: &[Data], to: &str, style: Option<&str>, locale: Option<&str>) -> Result<Vec<u8>, String> {
+fn write_output(
+    data: &[Data],
+    to: &str,
+    style: Option<&str>,
+    locale: Option<&str>,
+) -> Result<Vec<u8>, String> {
     commonmeta::write_list_citation(data, to, style, locale).map_err(|e| e.to_string())
 }
 
@@ -496,7 +526,11 @@ pub(crate) fn fetch_list_from_api(matches: &ArgMatches, from: &str) -> Result<Ve
     }
 }
 
-fn fetch_datacite_list(matches: &ArgMatches, number: usize, page: usize) -> Result<Vec<Data>, String> {
+fn fetch_datacite_list(
+    matches: &ArgMatches,
+    number: usize,
+    page: usize,
+) -> Result<Vec<Data>, String> {
     let mut url =
         Url::parse("https://api.datacite.org/dois").map_err(|e| format!("invalid URL: {}", e))?;
     {
@@ -506,31 +540,40 @@ fn fetch_datacite_list(matches: &ArgMatches, number: usize, page: usize) -> Resu
         query.append_pair("affiliation", "true");
 
         if let Some(client_id) = matches.get_one::<String>("client")
-            && !client_id.is_empty() {
-                query.append_pair("client-id", client_id);
-            }
+            && !client_id.is_empty()
+        {
+            query.append_pair("client-id", client_id);
+        }
 
         let mut search_terms: Vec<String> = Vec::new();
         if let Some(type_) = matches.get_one::<String>("type")
-            && !type_.is_empty() {
-                search_terms.push(format!("types.resourceTypeGeneral:{}", type_));
-            }
+            && !type_.is_empty()
+        {
+            search_terms.push(format!("types.resourceTypeGeneral:{}", type_));
+        }
         if let Some(year) = matches.get_one::<String>("year")
-            && !year.is_empty() {
-                search_terms.push(format!("publicationYear:{}", year));
-            }
+            && !year.is_empty()
+        {
+            search_terms.push(format!("publicationYear:{}", year));
+        }
         if let Some(language) = matches.get_one::<String>("language")
-            && !language.is_empty() {
-                search_terms.push(format!("language:{}", language));
-            }
+            && !language.is_empty()
+        {
+            search_terms.push(format!("language:{}", language));
+        }
         if let Some(orcid) = matches.get_one::<String>("orcid")
-            && !orcid.is_empty() {
-                search_terms.push(format!("creators.nameIdentifiers.nameIdentifier:{}", orcid));
-            }
+            && !orcid.is_empty()
+        {
+            search_terms.push(format!("creators.nameIdentifiers.nameIdentifier:{}", orcid));
+        }
         if let Some(ror) = matches.get_one::<String>("ror")
-            && !ror.is_empty() {
-                search_terms.push(format!("creators.affiliation.affiliationIdentifier:{}", ror));
-            }
+            && !ror.is_empty()
+        {
+            search_terms.push(format!(
+                "creators.affiliation.affiliationIdentifier:{}",
+                ror
+            ));
+        }
         if !search_terms.is_empty() {
             query.append_pair("query", &search_terms.join(" "));
         }
@@ -567,7 +610,11 @@ fn fetch_datacite_list(matches: &ArgMatches, number: usize, page: usize) -> Resu
     Ok(out)
 }
 
-fn fetch_openalex_list(matches: &ArgMatches, number: usize, page: usize) -> Result<Vec<Data>, String> {
+fn fetch_openalex_list(
+    matches: &ArgMatches,
+    number: usize,
+    page: usize,
+) -> Result<Vec<Data>, String> {
     let mut url =
         Url::parse("https://api.openalex.org/works").map_err(|e| format!("invalid URL: {}", e))?;
     {
@@ -575,28 +622,33 @@ fn fetch_openalex_list(matches: &ArgMatches, number: usize, page: usize) -> Resu
         query.append_pair("per-page", &number.clamp(1, 200).to_string());
         query.append_pair("page", &page.max(1).to_string());
         if let Some(email) = matches.get_one::<String>("email")
-            && !email.is_empty() {
-                query.append_pair("mailto", email);
-            }
+            && !email.is_empty()
+        {
+            query.append_pair("mailto", email);
+        }
 
         let mut filters: Vec<String> = Vec::new();
         if let Some(type_) = matches.get_one::<String>("type")
-            && !type_.is_empty() {
-                filters.push(format!("type_crossref:{}", type_));
-            }
+            && !type_.is_empty()
+        {
+            filters.push(format!("type_crossref:{}", type_));
+        }
         if let Some(year) = matches.get_one::<String>("year")
-            && !year.is_empty() {
-                filters.push(format!("from_publication_date:{}-01-01", year));
-                filters.push(format!("to_publication_date:{}-12-31", year));
-            }
+            && !year.is_empty()
+        {
+            filters.push(format!("from_publication_date:{}-01-01", year));
+            filters.push(format!("to_publication_date:{}-12-31", year));
+        }
         if let Some(orcid) = matches.get_one::<String>("orcid")
-            && !orcid.is_empty() {
-                filters.push(format!("author.orcid:{}", orcid));
-            }
+            && !orcid.is_empty()
+        {
+            filters.push(format!("author.orcid:{}", orcid));
+        }
         if let Some(ror) = matches.get_one::<String>("ror")
-            && !ror.is_empty() {
-                filters.push(format!("institutions.ror:{}", ror));
-            }
+            && !ror.is_empty()
+        {
+            filters.push(format!("institutions.ror:{}", ror));
+        }
         if matches.get_flag("has-abstract") {
             filters.push("has_abstract:true".to_string());
         }
@@ -673,17 +725,24 @@ fn load_commonmeta_list_from_parquet(path: &str) -> Result<Vec<Data>, String> {
     // every entry and concatenate the records they parse to.
     let compressed_batches: Vec<Vec<u8>> = match compress.as_str() {
         "zip" => {
-            let raw = file_utils::read_file(path).map_err(|e| format!("failed to read '{}': {}", path, e))?;
-            file_utils::read_zip_entries(&raw).map_err(|e| format!("failed to read zip '{}': {}", path, e))?
+            let raw = file_utils::read_file(path)
+                .map_err(|e| format!("failed to read '{}': {}", path, e))?;
+            file_utils::read_zip_entries(&raw)
+                .map_err(|e| format!("failed to read zip '{}': {}", path, e))?
         }
         "tgz" => {
-            let raw = file_utils::read_file(path).map_err(|e| format!("failed to read '{}': {}", path, e))?;
+            let raw = file_utils::read_file(path)
+                .map_err(|e| format!("failed to read '{}': {}", path, e))?;
             file_utils::read_tar_gz_entries(&raw)
                 .map_err(|e| format!("failed to read tgz '{}': {}", path, e))?
         }
-        "zst" => vec![file_utils::read_zst_file(path)
-            .map_err(|e| format!("failed to read zstd-compressed '{}': {}", path, e))?],
-        _ => vec![file_utils::read_file(path).map_err(|e| format!("failed to read '{}': {}", path, e))?],
+        "zst" => vec![
+            file_utils::read_zst_file(path)
+                .map_err(|e| format!("failed to read zstd-compressed '{}': {}", path, e))?,
+        ],
+        _ => vec![
+            file_utils::read_file(path).map_err(|e| format!("failed to read '{}': {}", path, e))?,
+        ],
     };
 
     let parquet_batches: Vec<Vec<u8>> = if matches!(compress.as_str(), "zip" | "tgz") {
@@ -700,16 +759,16 @@ fn load_commonmeta_list_from_parquet(path: &str) -> Result<Vec<Data>, String> {
 
     let mut out = Vec::new();
     for bytes in parquet_batches {
-        let records =
-            commonmeta::read_parquet(&bytes).map_err(|e| format!("failed to parse Parquet '{}': {}", path, e))?;
+        let records = commonmeta::read_parquet(&bytes)
+            .map_err(|e| format!("failed to parse Parquet '{}': {}", path, e))?;
         out.extend(records);
     }
     Ok(out)
 }
 
 fn load_crossref_list_from_file(path: &str) -> Result<Vec<Data>, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("failed to read '{}': {}", path, e))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("failed to read '{}': {}", path, e))?;
 
     if path.ends_with(".jsonl") || path.ends_with(".jsonlines") {
         return parse_crossref_jsonlines(&content);
@@ -742,7 +801,10 @@ fn load_crossref_list_from_file(path: &str) -> Result<Vec<Data>, String> {
         return Ok(out);
     }
 
-    Err("unsupported Crossref list file format; expected JSON array, {items:[...]}, or JSON Lines".to_string())
+    Err(
+        "unsupported Crossref list file format; expected JSON array, {items:[...]}, or JSON Lines"
+            .to_string(),
+    )
 }
 
 fn parse_crossref_jsonlines(content: &str) -> Result<Vec<Data>, String> {
@@ -764,12 +826,13 @@ fn convert_crossref_item(item: &serde_json::Value) -> Result<Data, String> {
     let input = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
     let bytes = commonmeta::convert("crossref", "commonmeta", &input)
         .map_err(|e| format!("crossref conversion failed: {}", e))?;
-    serde_json::from_slice::<Data>(&bytes).map_err(|e| format!("failed to parse output JSON: {}", e))
+    serde_json::from_slice::<Data>(&bytes)
+        .map_err(|e| format!("failed to parse output JSON: {}", e))
 }
 
 fn load_datacite_list_from_file(path: &str) -> Result<Vec<Data>, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("failed to read '{}': {}", path, e))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("failed to read '{}': {}", path, e))?;
 
     if path.ends_with(".jsonl") || path.ends_with(".jsonlines") {
         let mut out: Vec<Data> = Vec::new();
@@ -802,7 +865,10 @@ fn load_datacite_list_from_file(path: &str) -> Result<Vec<Data>, String> {
         return Ok(out);
     }
 
-    Err("unsupported DataCite list file format; expected JSON array, {data:[...]}, or JSON Lines".to_string())
+    Err(
+        "unsupported DataCite list file format; expected JSON array, {data:[...]}, or JSON Lines"
+            .to_string(),
+    )
 }
 
 fn convert_datacite_item(item: &serde_json::Value) -> Result<Data, String> {
@@ -814,12 +880,13 @@ fn convert_datacite_item(item: &serde_json::Value) -> Result<Data, String> {
     let input = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
     let bytes = commonmeta::convert("datacite", "commonmeta", &input)
         .map_err(|e| format!("datacite conversion failed: {}", e))?;
-    serde_json::from_slice::<Data>(&bytes).map_err(|e| format!("failed to parse output JSON: {}", e))
+    serde_json::from_slice::<Data>(&bytes)
+        .map_err(|e| format!("failed to parse output JSON: {}", e))
 }
 
 fn load_openalex_list_from_file(path: &str) -> Result<Vec<Data>, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("failed to read '{}': {}", path, e))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("failed to read '{}': {}", path, e))?;
 
     if path.ends_with(".jsonl") || path.ends_with(".jsonlines") {
         let mut out: Vec<Data> = Vec::new();
@@ -857,7 +924,8 @@ fn convert_openalex_item(item: &serde_json::Value) -> Result<Data, String> {
     let input = serde_json::to_string(item).map_err(|e| e.to_string())?;
     let bytes = commonmeta::convert("openalex", "commonmeta", &input)
         .map_err(|e| format!("openalex conversion failed: {}", e))?;
-    serde_json::from_slice::<Data>(&bytes).map_err(|e| format!("failed to parse output JSON: {}", e))
+    serde_json::from_slice::<Data>(&bytes)
+        .map_err(|e| format!("failed to parse output JSON: {}", e))
 }
 
 /// Load a VRAIX daily dump for `--from crossref`/`--from datacite` combined
@@ -888,11 +956,16 @@ fn load_vraix_list_for_date(
             // read_zst_file already decompresses; despite the name it
             // returns the decompressed bytes, ready to write straight to
             // a temp sqlite file (sqlite needs a real file path, not bytes).
-            let tmp_path = std::env::temp_dir()
-                .join(format!("commonmeta-vraix-local-{}-{}.sqlite3", from, std::process::id()));
-            file_utils::write_file(&tmp_path, &compressed)
-                .map_err(|e| format!("failed to write temp file '{}': {}", tmp_path.display(), e))?;
-            let result = commonmeta::read_vraix_sqlite(tmp_path.to_str().unwrap(), from, limit, offset);
+            let tmp_path = std::env::temp_dir().join(format!(
+                "commonmeta-vraix-local-{}-{}.sqlite3",
+                from,
+                std::process::id()
+            ));
+            file_utils::write_file(&tmp_path, &compressed).map_err(|e| {
+                format!("failed to write temp file '{}': {}", tmp_path.display(), e)
+            })?;
+            let result =
+                commonmeta::read_vraix_sqlite(tmp_path.to_str().unwrap(), from, limit, offset);
             std::fs::remove_file(&tmp_path).ok();
             result.map_err(|e| e.to_string())?
         } else {
@@ -935,8 +1008,12 @@ fn load_vraix_list_for_date(
     let decompressed = file_utils::unzst_content(&compressed)
         .map_err(|e| format!("failed to decompress '{}': {}", url, e))?;
 
-    let tmp_path = std::env::temp_dir()
-        .join(format!("commonmeta-vraix-{}-{}-{}.sqlite3", from, date, std::process::id()));
+    let tmp_path = std::env::temp_dir().join(format!(
+        "commonmeta-vraix-{}-{}-{}.sqlite3",
+        from,
+        date,
+        std::process::id()
+    ));
     file_utils::write_file(&tmp_path, &decompressed)
         .map_err(|e| format!("failed to write temp file '{}': {}", tmp_path.display(), e))?;
 
@@ -959,7 +1036,11 @@ mod tests {
     use rusqlite::Connection;
 
     fn sample_data(id: &str) -> Data {
-        Data { id: id.to_string(), type_: "JournalArticle".to_string(), ..Data::default() }
+        Data {
+            id: id.to_string(),
+            type_: "JournalArticle".to_string(),
+            ..Data::default()
+        }
     }
 
     #[test]
@@ -980,8 +1061,19 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.zip");
 
-        let data = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
-        write_archive_batches(&data, "commonmeta", out_path.to_str().unwrap(), "zip", None, None).unwrap();
+        let data = vec![
+            sample_data("https://doi.org/10.1/a"),
+            sample_data("https://doi.org/10.1/b"),
+        ];
+        write_archive_batches(
+            &data,
+            "commonmeta",
+            out_path.to_str().unwrap(),
+            "zip",
+            None,
+            None,
+        )
+        .unwrap();
 
         assert!(out_path.exists());
         let mut archive = zip::ZipArchive::new(std::fs::File::open(&out_path).unwrap()).unwrap();
@@ -998,7 +1090,15 @@ mod tests {
         let out_path = dir.join("out.tgz");
 
         let data = vec![sample_data("https://doi.org/10.1/a")];
-        write_archive_batches(&data, "commonmeta", out_path.to_str().unwrap(), "tgz", None, None).unwrap();
+        write_archive_batches(
+            &data,
+            "commonmeta",
+            out_path.to_str().unwrap(),
+            "tgz",
+            None,
+            None,
+        )
+        .unwrap();
 
         assert!(out_path.exists());
         let decoder = flate2::read::GzDecoder::new(std::fs::File::open(&out_path).unwrap());
@@ -1016,7 +1116,8 @@ mod tests {
 
     #[test]
     fn test_write_archive_batches_empty_data_errors() {
-        let result = write_archive_batches(&[], "commonmeta", "/tmp/whatever.zip", "zip", None, None);
+        let result =
+            write_archive_batches(&[], "commonmeta", "/tmp/whatever.zip", "zip", None, None);
         assert!(result.is_err());
     }
 
@@ -1026,7 +1127,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.parquet");
 
-        let data = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        let data = vec![
+            sample_data("https://doi.org/10.1/a"),
+            sample_data("https://doi.org/10.1/b"),
+        ];
         write_parquet_batches(&data, out_path.to_str().unwrap()).unwrap();
 
         let zst_path = dir.join("out.parquet.zst");
@@ -1046,7 +1150,9 @@ mod tests {
         // Internally this would span multiple Parquet row groups if
         // ROW_GROUP_SIZE were small, but that's an implementation detail of
         // commonmeta::write_parquet now — the CLI always writes one file.
-        let data: Vec<Data> = (0..5).map(|i| sample_data(&format!("https://doi.org/10.1/{i}"))).collect();
+        let data: Vec<Data> = (0..5)
+            .map(|i| sample_data(&format!("https://doi.org/10.1/{i}")))
+            .collect();
         write_parquet_batches(&data, out_path.to_str().unwrap()).unwrap();
 
         assert!(dir.join("out.parquet.zst").exists());
@@ -1061,7 +1167,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.parquet.zip");
 
-        let data = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        let data = vec![
+            sample_data("https://doi.org/10.1/a"),
+            sample_data("https://doi.org/10.1/b"),
+        ];
         write_parquet_archive(&data, out_path.to_str().unwrap(), "zip").unwrap();
 
         assert!(out_path.exists());
@@ -1074,14 +1183,18 @@ mod tests {
 
     #[test]
     fn test_write_parquet_archive_tgz_single_entry() {
-        let (name, bytes) = parquet_archive_entry(&[sample_data("https://doi.org/10.1/a")], "out.parquet").unwrap();
+        let (name, bytes) =
+            parquet_archive_entry(&[sample_data("https://doi.org/10.1/a")], "out.parquet").unwrap();
         assert_eq!(name, "out.parquet.zst");
         assert!(!bytes.is_empty());
 
         let dir = std::env::temp_dir().join("commonmeta_list_parquet_archive_tgz");
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.parquet.tgz");
-        let data = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        let data = vec![
+            sample_data("https://doi.org/10.1/a"),
+            sample_data("https://doi.org/10.1/b"),
+        ];
         write_parquet_archive(&data, out_path.to_str().unwrap(), "tgz").unwrap();
 
         let decoder = flate2::read::GzDecoder::new(std::fs::File::open(&out_path).unwrap());
@@ -1108,7 +1221,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("batch-commonmeta.parquet");
 
-        let data = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        let data = vec![
+            sample_data("https://doi.org/10.1/a"),
+            sample_data("https://doi.org/10.1/b"),
+        ];
         write_parquet_batches(&data, out_path.to_str().unwrap()).unwrap();
 
         let zst_path = dir.join("batch-commonmeta.parquet.zst");
@@ -1126,7 +1242,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.parquet.zip");
 
-        let data = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        let data = vec![
+            sample_data("https://doi.org/10.1/a"),
+            sample_data("https://doi.org/10.1/b"),
+        ];
         write_parquet_archive(&data, out_path.to_str().unwrap(), "zip").unwrap();
 
         let loaded = load_commonmeta_list_from_parquet(out_path.to_str().unwrap()).unwrap();
@@ -1143,7 +1262,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.parquet.tgz");
 
-        let data = vec![sample_data("https://doi.org/10.1/a"), sample_data("https://doi.org/10.1/b")];
+        let data = vec![
+            sample_data("https://doi.org/10.1/a"),
+            sample_data("https://doi.org/10.1/b"),
+        ];
         write_parquet_archive(&data, out_path.to_str().unwrap(), "tgz").unwrap();
 
         let loaded = load_commonmeta_list_from_parquet(out_path.to_str().unwrap()).unwrap();
@@ -1253,7 +1375,10 @@ mod tests {
         let path = dir.join("datacite.sqlite3");
         write_vraix_sqlite(
             &path,
-            &[("10.5678/b", r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#)],
+            &[(
+                "10.5678/b",
+                r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b","types":{"resourceTypeGeneral":"Dataset"},"titles":[{"title":"Test"}]}}}"#,
+            )],
         );
 
         let matches = command().get_matches_from(vec!["list", "--number", "10", "--page", "1"]);
@@ -1287,8 +1412,8 @@ mod tests {
     #[test]
     fn test_write_output_renders_citation_with_style() {
         let mut data = sample_data("https://doi.org/10.1/a");
-        data.titles.push(commonmeta::data::Title { title: "A Title".to_string(), ..Default::default() });
-        data.date.published = "2020".to_string();
+        data.title = "A Title".to_string();
+        data.date_published = "2020".to_string();
 
         let apa = write_output(&[data.clone()], "citation", None, None).unwrap();
         let chicago = write_output(&[data], "citation", Some("chicago-author-date"), None).unwrap();
@@ -1302,7 +1427,10 @@ mod tests {
         let sqlite_path = dir.join("datacite.sqlite3");
         write_vraix_sqlite(
             &sqlite_path,
-            &[("10.5678/b", r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#)],
+            &[(
+                "10.5678/b",
+                r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b","types":{"resourceTypeGeneral":"Dataset"},"titles":[{"title":"Test"}]}}}"#,
+            )],
         );
 
         let raw = std::fs::read(&sqlite_path).unwrap();
@@ -1332,14 +1460,21 @@ mod tests {
         let sqlite_path = dir.join("datacite.sqlite3");
         write_vraix_sqlite(
             &sqlite_path,
-            &[("10.5678/b", r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#)],
+            &[(
+                "10.5678/b",
+                r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b","types":{"resourceTypeGeneral":"Dataset"},"titles":[{"title":"Test"}]}}}"#,
+            )],
         );
 
         // No --date here: the .sqlite3 input extension alone must be enough
         // to route into the VRAIX loader instead of the plain JSON loaders
         // (which would otherwise try `read_to_string` on this binary file).
-        let matches = command()
-            .get_matches_from(vec!["list", sqlite_path.to_str().unwrap(), "--from", "datacite"]);
+        let matches = command().get_matches_from(vec![
+            "list",
+            sqlite_path.to_str().unwrap(),
+            "--from",
+            "datacite",
+        ]);
         let result = execute(&matches);
         assert!(result.is_ok(), "expected success, got: {:?}", result);
 
@@ -1353,15 +1488,22 @@ mod tests {
         let sqlite_path = dir.join("datacite.sqlite3");
         write_vraix_sqlite(
             &sqlite_path,
-            &[("10.5678/b", r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#)],
+            &[(
+                "10.5678/b",
+                r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b","types":{"resourceTypeGeneral":"Dataset"},"titles":[{"title":"Test"}]}}}"#,
+            )],
         );
         let raw = std::fs::read(&sqlite_path).unwrap();
         let compressed = zstd::stream::encode_all(std::io::Cursor::new(raw), 0).unwrap();
         let zst_path = dir.join("datacite.sqlite3.zst");
         std::fs::write(&zst_path, compressed).unwrap();
 
-        let matches =
-            command().get_matches_from(vec!["list", zst_path.to_str().unwrap(), "--from", "datacite"]);
+        let matches = command().get_matches_from(vec![
+            "list",
+            zst_path.to_str().unwrap(),
+            "--from",
+            "datacite",
+        ]);
         let result = execute(&matches);
         assert!(result.is_ok(), "expected success, got: {:?}", result);
 

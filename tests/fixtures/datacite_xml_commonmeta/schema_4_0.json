@@ -1,0 +1,228 @@
+{
+    "id": "https://doi.org/10.6071/z7wc73",
+    "type": "Dataset",
+    "additional_descriptions": [
+        {
+            "description": "Soil volumetric water content (VWC) and soil temperature measured using\n      Decagon Devices ECHO-TM at depths of 10, 30, 60, an 90 cm below the\n      mineral soil surface. Sensor now equivalent to 5TM\n      (http://www.decagon.com/soil-moisture-sensors/). Distance to snow/soil\n      surface and air temperature measured with Judd Communications ultrasonic\n      depth sensor, using analog control ( http://www.juddcom.com/ ). Data\n      control and storage on Campbell Scientific CR1000 datalogger, using\n      AM16/32B multiplexer ( http://www.campbellsci.com ). Program for data\n      acquisition are located on UC Merced-SNRI digital library (\n      https://eng.ucmerced.edu/snsjho/files/MHWG/Field/Southern...)",
+            "type": "Methods"
+        },
+        {
+            "description": "Lower and upper Providence Creek, Subcatchment basin P301.acde: white fir\n      drip edge; acuc: white fir under canopy; cdde: incense-cedar drip edge;\n      cduc: incense-cedar under canopy; open: open canopy; plde: sugar pine drip\n      edge; pluc: sugar pine under canopy; ppde: Ponderosa pine drip; edge ppde:\n      Ponderosa pine drip edge; ppuc: Ponderosa pine under canopy; ppuc:\n      Ponderosa pine under canopy; qkde: black oak drip edge; qkuc: black oak\n      under canopy",
+            "type": "Other"
+        }
+    ],
+    "contributors": [
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Roger",
+                "family_name": "Bales",
+                "affiliations": [
+                    {
+                        "name": "UC Merced"
+                    }
+                ]
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Matt",
+                "family_name": "Meadows",
+                "affiliations": [
+                    {
+                        "name": "UC Merced"
+                    }
+                ]
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "id": "https://orcid.org/0000-0002-8862-1404",
+                "given_name": "Erin",
+                "family_name": "Stacy",
+                "affiliations": [
+                    {
+                        "name": "UC Merced"
+                    }
+                ]
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "id": "https://orcid.org/0000-0002-9627-2427",
+                "given_name": "Martha",
+                "family_name": "Conklin",
+                "affiliations": [
+                    {
+                        "name": "UC Merced"
+                    }
+                ]
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Xiande",
+                "family_name": "Meng",
+                "affiliations": [
+                    {
+                        "name": "UC Merced"
+                    }
+                ]
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "SSCZO",
+                "family_name": "Southern Sierra Critical Zone Observatory",
+                "affiliations": [
+                    {
+                        "name": "NSF"
+                    }
+                ]
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Roger",
+                "family_name": "Bales",
+                "affiliations": [
+                    {
+                        "name": "University of California, Merced"
+                    }
+                ]
+            },
+            "roles": [
+                "ProjectLeader"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Matt",
+                "family_name": "Meadows",
+                "affiliations": [
+                    {
+                        "name": "University of California, Merced"
+                    }
+                ]
+            },
+            "roles": [
+                "DataCollector"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Xiande",
+                "family_name": "Meng",
+                "affiliations": [
+                    {
+                        "name": "University of California, Merced"
+                    }
+                ]
+            },
+            "roles": [
+                "DataManager"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Southern Sierra Critical Zone",
+                "family_name": "Observatory"
+            },
+            "roles": [
+                "ResearchGroup"
+            ]
+        }
+    ],
+    "date_published": "2013",
+    "date_updated": "2014-10-17",
+    "dates": {
+        "available": "2016-03-14T17:02:02Z"
+    },
+    "description": "Snow depth, soil moisture and soil temperature are measured at lower\n      Providence South facing (LowMetS) and North facing (LowMetN), Upper\n      Providence South facing (UpMetS), North facing (UpMetN) and Flat aspect\n      (UpMetF), and Subcatchment basin P301 (P301) with a wireless sensor\n      network, using a Campbell Scientific logger to control peripheral devices.\n      Snow depth is measured in the open, at the drip edge and under canopies.\n      Soil moisture and temperature are measured at 10, 30, 60 and 90 cm depths\n      coincident with the snow depth nodes. 10 watt solar panels provides power\n      for monitoring at 10 minute intervals. Raw data have been processed to\n      level 1 (QA/QC) and level 2 (gap-filled, derived) data. Time period: water\n      year 2008 through water year 2012 (version 1), 2013 to 2016 (version 2).",
+    "funding_references": [
+        {
+            "funder_name": "National Science Foundation, Division of Earth Sciences, Critical Zone\n        Observatories",
+            "award_number": "1331939, 0725097"
+        }
+    ],
+    "geo_locations": [
+        {
+            "geo_location_place": "Providence Creek (Lower, Upper and P301)",
+            "geo_location_point_longitude": -119.221094,
+            "geo_location_point_latitude": 37.047756,
+            "geo_location_box_west_longitude": -119.211,
+            "geo_location_box_east_longitude": -119.182,
+            "geo_location_box_south_latitude": 37.046,
+            "geo_location_box_north_latitude": 37.075
+        }
+    ],
+    "identifiers": [
+        {
+            "identifier": "https://doi.org/10.6071/z7wc73",
+            "identifier_type": "DOI"
+        }
+    ],
+    "language": "en",
+    "license": {
+        "id": "CC-BY-4.0",
+        "title": "Creative Commons Attribution 4.0 International",
+        "url": "https://creativecommons.org/licenses/by/4.0/legalcode"
+    },
+    "provider": "DataCite",
+    "publisher": {
+        "name": "UC Merced"
+    },
+    "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+    "subjects": [
+        {
+            "subject": "Earth sciences"
+        },
+        {
+            "subject": "soil moisture"
+        },
+        {
+            "subject": "soil temperature"
+        },
+        {
+            "subject": "snow depth"
+        },
+        {
+            "subject": "air temperature"
+        },
+        {
+            "subject": "water balance"
+        },
+        {
+            "subject": "Nevada, Sierra (mountain range)"
+        }
+    ],
+    "title": "Southern Sierra Critical Zone Observatory (SSCZO), Providence Creek\n      meteorological data, soil moisture and temperature, snow depth and air\n      temperature",
+    "version": "2"
+}

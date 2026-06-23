@@ -1,6 +1,13 @@
 {
   "container": {
-    "title": "Journal of Examples"
+    "type": "Journal",
+    "identifier": "1234-5678",
+    "identifierType": "ISSN",
+    "title": "Journal of Examples",
+    "volume": "12",
+    "issue": "3",
+    "firstPage": "100",
+    "lastPage": "110"
   },
   "creators": [
     {
@@ -17,6 +24,12 @@
     {
       "date": "2024-03-15",
       "dateType": "Issued"
+    }
+  ],
+  "descriptions": [
+    {
+      "description": "An abstract about things.",
+      "descriptionType": ""
     }
   ],
   "doi": "10.5555/12345678",

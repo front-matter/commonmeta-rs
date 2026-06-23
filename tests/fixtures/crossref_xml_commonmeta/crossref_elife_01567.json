@@ -1,0 +1,370 @@
+{
+  "id": "https://doi.org/10.7554/elife.01567",
+  "type": "JournalArticle",
+  "additional_descriptions": [
+    {
+      "description": "Our understanding of the living world has been advanced greatly by studies of ‘model organisms’, such as mice, zebrafish, and fruit flies. Studying these creatures has been crucial to uncovering the genes that control how our bodies develop and grow, and also to discover the genetic basis of diseases such as cancer. Thale cress—or Arabidopsis thaliana to give its formal name—is the model organism of choice for many plant biologists. This tiny weed has been widely studied because it can complete its lifecycle, from seed to seed, in about 6 weeks, and because its relatively small genome simplifies the search for genes that control specific traits. However, as with other much-studied model systems, understanding the changes that underpin the development of some of the more complex tissues in Arabidopsis has been severely hampered by the shear number of cells involved. After it has emerged from the seed, the plant’s first stem will develop from a few dozen cells in width to several thousand cells with highly specialized tissues arranged in a complex pattern of concentric circles. Although this stem thickening process represents a major developmental change in many plants—from Arabidopsis to oak trees—it has been under-researched. This is partly because it involves so many different cells, and also because it can only be observed in thin sections cut out of the plant’s stem. Now Sankar, Nieminen, Ragni et al. have developed a novel approach, termed ‘automated quantitative histology’, to overcome these problems. This strategy involves ‘teaching’ a computer to automatically recognize different plant cells and to measure their important features in high-resolution images of tissue sections. The resulting ‘map’ of the developing stem—which required over 800 hr of computing time to complete—reveals the changes to cells and tissues as they develop that allow the transport of water, sugars and nutrients between the above- and below-ground organs. Sankar, Nieminen, Ragni et al. suggest that their novel approach could, in the future, also be applied to study the development of other tissues and organisms, including animals.",
+      "type": "Summary"
+    }
+  ],
+  "archive_locations": [
+    "CLOCKSS"
+  ],
+  "container": {
+    "identifier": "2050-084X",
+    "identifier_type": "ISSN",
+    "type": "Journal",
+    "title": "eLife",
+    "volume": "3"
+  },
+  "contributors": [
+    {
+      "type": "Person",
+      "person": {
+        "given_name": "Martial",
+        "family_name": "Sankar",
+        "affiliations": [
+          {
+            "name": "Department of Plant Molecular Biology, University of Lausanne, Lausanne, Switzerland"
+          }
+        ]
+      },
+      "roles": [
+        "Author"
+      ]
+    },
+    {
+      "type": "Person",
+      "person": {
+        "given_name": "Kaisa",
+        "family_name": "Nieminen",
+        "affiliations": [
+          {
+            "name": "Department of Plant Molecular Biology, University of Lausanne, Lausanne, Switzerland"
+          }
+        ]
+      },
+      "roles": [
+        "Author"
+      ]
+    },
+    {
+      "type": "Person",
+      "person": {
+        "given_name": "Laura",
+        "family_name": "Ragni",
+        "affiliations": [
+          {
+            "name": "Department of Plant Molecular Biology, University of Lausanne, Lausanne, Switzerland"
+          }
+        ]
+      },
+      "roles": [
+        "Author"
+      ]
+    },
+    {
+      "type": "Person",
+      "person": {
+        "given_name": "Ioannis",
+        "family_name": "Xenarios",
+        "affiliations": [
+          {
+            "name": "Vital-IT, Swiss Institute of Bioinformatics, Lausanne, Switzerland"
+          }
+        ]
+      },
+      "roles": [
+        "Author"
+      ]
+    },
+    {
+      "type": "Person",
+      "person": {
+        "given_name": "Christian S",
+        "family_name": "Hardtke",
+        "affiliations": [
+          {
+            "name": "Department of Plant Molecular Biology, University of Lausanne, Lausanne, Switzerland"
+          }
+        ]
+      },
+      "roles": [
+        "Author"
+      ]
+    }
+  ],
+  "date_published": "2014-02-11",
+  "date_updated": "2018-08-23T13:41:49Z",
+  "dates": {
+    "submitted": "2013-09-20",
+    "accepted": "2013-12-24"
+  },
+  "description": "Among various advantages, their small size makes model organisms preferred subjects of investigation. Yet, even in model systems detailed analysis of numerous developmental processes at cellular level is severely hampered by their scale. For instance, secondary growth of Arabidopsis hypocotyls creates a radial pattern of highly specialized tissues that comprises several thousand cells starting from a few dozen. This dynamic process is difficult to follow because of its scale and because it can only be investigated invasively, precluding comprehensive understanding of the cell proliferation, differentiation, and patterning events involved. To overcome such limitation, we established an automated quantitative histology approach. We acquired hypocotyl cross-sections from tiled high-resolution images and extracted their information content using custom high-throughput image processing and segmentation. Coupled with automated cell type recognition through machine learning, we could establish a cellular resolution atlas that reveals vascular morphodynamics during secondary growth, for example equidistant phloem pole formation.",
+  "files": [
+    {
+      "url": "https://cdn.elifesciences.org/articles/01567/elife-01567-v1.pdf",
+      "mime_type": "application/pdf"
+    },
+    {
+      "url": "https://cdn.elifesciences.org/articles/01567/elife-01567-v1.xml",
+      "mime_type": "application/xml"
+    }
+  ],
+  "funding_references": [
+    {
+      "funder_name": "SystemsX"
+    },
+    {
+      "funder_name": "EMBO longterm post-doctoral fellowships"
+    },
+    {
+      "funder_name": "Marie Heim-Voegtlin"
+    },
+    {
+      "funder_identifier_type": "Crossref Funder ID",
+      "funder_name": "University of Lausanne"
+    }
+  ],
+  "identifiers": [
+    {
+      "identifier": "https://doi.org/10.7554/elife.01567",
+      "identifier_type": "DOI"
+    },
+    {
+      "identifier": "e01567",
+      "identifier_type": "Other"
+    }
+  ],
+  "language": "en",
+  "license": {
+    "id": "CC-BY-3.0",
+    "title": "Creative Commons Attribution 3.0 Unported",
+    "url": "https://creativecommons.org/licenses/by/3.0/legalcode"
+  },
+  "provider": "Crossref",
+  "publisher": {
+    "name": "eLife Sciences Publications, Ltd"
+  },
+  "references": [
+    {
+      "key": "bib1",
+      "id": "https://doi.org/10.1038/nature02100",
+      "reference": "APL regulates vascular tissue identity in Arabidopsis",
+      "publication_year": "2003",
+      "volume": "426",
+      "first_page": "181"
+    },
+    {
+      "key": "bib2",
+      "id": "https://doi.org/10.1534/genetics.109.104976",
+      "reference": "In the beginning was the worm",
+      "publication_year": "2009",
+      "volume": "182",
+      "first_page": "413"
+    },
+    {
+      "key": "bib3",
+      "id": "https://doi.org/10.1034/j.1399-3054.2002.1140413.x",
+      "reference": "Secondary xylem development in Arabidopsis: a model for wood formation",
+      "publication_year": "2002",
+      "volume": "114",
+      "first_page": "594"
+    },
+    {
+      "key": "bib4",
+      "id": "https://doi.org/10.1162/089976601750399335",
+      "reference": "Training nu-support vector classifiers: theory and algorithms",
+      "publication_year": "2001",
+      "volume": "13",
+      "first_page": "2119"
+    },
+    {
+      "key": "bib5",
+      "id": "https://doi.org/10.1007/bf00994018",
+      "reference": "Support-vector Networks",
+      "publication_year": "1995",
+      "volume": "20",
+      "first_page": "273"
+    },
+    {
+      "key": "bib7",
+      "id": "https://doi.org/10.1016/j.semcdb.2009.09.009",
+      "reference": "Stem cell function during plant vascular development",
+      "publication_year": "2009",
+      "volume": "20",
+      "first_page": "1097"
+    },
+    {
+      "key": "bib8",
+      "id": "https://doi.org/10.1242/dev.091314",
+      "reference": "WOX4 and WOX14 act downstream of the PXY receptor kinase to regulate plant vascular proliferation independently of any role in vascular organisation",
+      "publication_year": "2013",
+      "volume": "140",
+      "first_page": "2224"
+    },
+    {
+      "key": "bib9",
+      "id": "https://doi.org/10.1371/journal.pgen.1002997",
+      "reference": "Plant vascular cell division is maintained by an interaction between PXY and ethylene signalling",
+      "publication_year": "2012",
+      "volume": "8",
+      "first_page": "e1002997"
+    },
+    {
+      "key": "bib10",
+      "id": "https://doi.org/10.1038/msb.2010.25",
+      "reference": "Clustering phenotype populations by genome-wide RNAi and multiparametric imaging",
+      "publication_year": "2010",
+      "volume": "6",
+      "first_page": "370"
+    },
+    {
+      "key": "bib11",
+      "id": "https://doi.org/10.1016/j.biosystems.2012.07.004",
+      "reference": "BaSAR-A tool in R for frequency detection",
+      "publication_year": "2012",
+      "volume": "110",
+      "first_page": "60"
+    },
+    {
+      "key": "bib12",
+      "id": "https://doi.org/10.1016/j.pbi.2005.11.013",
+      "reference": "Developmental mechanisms regulating secondary growth in woody plants",
+      "publication_year": "2006",
+      "volume": "9",
+      "first_page": "55"
+    },
+    {
+      "key": "bib13",
+      "id": "https://doi.org/10.1105/tpc.110.076083",
+      "reference": "TDIF peptide signaling regulates vascular stem cell proliferation via the WOX4 homeobox gene in Arabidopsis",
+      "publication_year": "2010",
+      "volume": "22",
+      "first_page": "2618"
+    },
+    {
+      "key": "bib14",
+      "id": "https://doi.org/10.1073/pnas.0808444105",
+      "reference": "Non-cell-autonomous control of vascular stem cell fate by a CLE peptide/receptor system",
+      "publication_year": "2008",
+      "volume": "105",
+      "first_page": "15208"
+    },
+    {
+      "key": "bib15",
+      "id": "https://doi.org/10.1016/0092-8674(89)90900-8",
+      "reference": "Arabidopsis, a useful weed",
+      "publication_year": "1989",
+      "volume": "56",
+      "first_page": "263"
+    },
+    {
+      "key": "bib16",
+      "id": "https://doi.org/10.1126/science.1066609",
+      "reference": "Plants compared to animals: the broadest comparative study of development",
+      "publication_year": "2002",
+      "volume": "295",
+      "first_page": "1482"
+    },
+    {
+      "key": "bib17",
+      "id": "https://doi.org/10.1104/pp.104.040212",
+      "reference": "A weed for wood? Arabidopsis as a genetic model for xylem development",
+      "publication_year": "2004",
+      "volume": "135",
+      "first_page": "653"
+    },
+    {
+      "key": "bib18",
+      "id": "https://doi.org/10.1038/nbt1206-1565",
+      "reference": "What is a support vector machine?",
+      "publication_year": "2006",
+      "volume": "24",
+      "first_page": "1565"
+    },
+    {
+      "key": "bib19",
+      "id": "https://doi.org/10.1073/pnas.77.3.1516",
+      "reference": "Classification of cultured mammalian cells by shape analysis and pattern recognition",
+      "publication_year": "1980",
+      "volume": "77",
+      "first_page": "1516"
+    },
+    {
+      "key": "bib20",
+      "id": "https://doi.org/10.1093/bioinformatics/btq046",
+      "reference": "EBImage–an R package for image processing with applications to cellular phenotypes",
+      "publication_year": "2010",
+      "volume": "26",
+      "first_page": "979"
+    },
+    {
+      "key": "bib21",
+      "id": "https://doi.org/10.1105/tpc.111.084020",
+      "reference": "Mobile gibberellin directly stimulates Arabidopsis hypocotyl xylem expansion",
+      "publication_year": "2011",
+      "volume": "23",
+      "first_page": "1322"
+    },
+    {
+      "key": "bib22",
+      "id": "https://doi.org/10.5061/dryad.b835k",
+      "reference": "Data from: Automated quantitative histology reveals vascular morphodynamics during Arabidopsis hypocotyl secondary growth",
+      "publication_year": "2014"
+    },
+    {
+      "key": "bib23",
+      "id": "https://doi.org/10.1016/j.cub.2008.02.070",
+      "reference": "Flowering as a condition for xylem expansion in Arabidopsis hypocotyl and root",
+      "publication_year": "2008",
+      "volume": "18",
+      "first_page": "458"
+    },
+    {
+      "key": "bib24",
+      "id": "https://doi.org/10.1111/j.1469-8137.2010.03236.x",
+      "reference": "Evolution of development of vascular cambia and secondary growth",
+      "publication_year": "2010",
+      "volume": "186",
+      "first_page": "577"
+    },
+    {
+      "key": "bib25",
+      "id": "https://doi.org/10.1007/s00138-011-0345-9",
+      "reference": "Cell morphology classification and clutter mitigation in phase-contrast microscopy images using machine learning",
+      "publication_year": "2012",
+      "volume": "23",
+      "first_page": "659"
+    },
+    {
+      "key": "bib26",
+      "id": "https://doi.org/10.1016/j.cell.2012.02.048",
+      "reference": "Mechanical stress acts via katanin to amplify differences in growth rate between adjacent cells in Arabidopsis",
+      "publication_year": "2012",
+      "volume": "149",
+      "first_page": "439"
+    },
+    {
+      "key": "bib27",
+      "id": "https://doi.org/10.1038/ncb2764",
+      "reference": "A screen for morphological complexity identifies regulators of switch-like transitions between discrete cell shapes",
+      "publication_year": "2013",
+      "volume": "15",
+      "first_page": "860"
+    }
+  ],
+  "relations": [
+    {
+      "id": "https://portal.issn.org/resource/ISSN/2050-084X",
+      "type": "IsPartOf"
+    },
+    {
+      "id": "https://doi.org/10.5061/dryad.b835k",
+      "type": "IsSupplementedBy"
+    }
+  ],
+  "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+  "title": "Automated quantitative histology reveals vascular morphodynamics during Arabidopsis hypocotyl secondary growth",
+  "url": "https://elifesciences.org/articles/01567"
+}

@@ -1,13 +1,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::author_utils::normalize_contributor_roles;
+use crate::constants as C;
 use crate::data::{
-    Container, Contributor, Data, Description, Identifier, License, Publisher, Relation, Subject,
+    Container, Contributor, Data, Identifier, Organization, Person, Publisher, Relation, Subject,
     Title,
 };
 use crate::doi_utils::normalize_doi;
 use crate::error::{Error, Result};
-use crate::utils::{get_language, issn_as_url, normalize_url, sanitize, url_to_spdx, validate_id};
+use crate::utils::{get_language, issn_as_url, normalize_url, sanitize, validate_id};
 
 // ─── Reader input structs ─────────────────────────────────────────────────────
 
@@ -98,6 +100,8 @@ struct CslContent {
     submitted: CslDateField,
     #[serde(default)]
     title: String,
+    #[serde(default)]
+    subtitle: String,
     #[serde(rename = "URL", default)]
     url: String,
     #[serde(default)]
@@ -109,54 +113,7 @@ struct CslContent {
 // ─── CSL → CM type mapping ────────────────────────────────────────────────────
 
 fn csl_to_cm_type(csl: &str) -> &'static str {
-    match csl {
-        "article"                => "Article",
-        "article-journal"        => "JournalArticle",
-        "article-magazine"       => "Article",
-        "article-newspaper"      => "Article",
-        "bill"                   => "LegalDocument",
-        "book"                   => "Book",
-        "broadcast"              => "Audiovisual",
-        "chapter"                => "BookChapter",
-        "classic"                => "Book",
-        "collection"             => "Collection",
-        "dataset"                => "Dataset",
-        "document"               => "Document",
-        "entry"                  => "Entry",
-        "entry-dictionary"       => "Entry",
-        "entry-encyclopedia"     => "Entry",
-        "event"                  => "Event",
-        "figure"                 => "Figure",
-        "graphic"                => "Image",
-        "hearing"                => "LegalDocument",
-        "interview"              => "Document",
-        "legal_case"             => "LegalDocument",
-        "legislation"            => "LegalDocument",
-        "manuscript"             => "Manuscript",
-        "map"                    => "Map",
-        "motion_picture"         => "Audiovisual",
-        "musical_score"          => "Document",
-        "pamphlet"               => "Document",
-        "paper-conference"       => "ProceedingsArticle",
-        "patent"                 => "Patent",
-        "performance"            => "Performance",
-        "periodical"             => "Journal",
-        "personal_communication" => "PersonalCommunication",
-        "post"                   => "Post",
-        "post-weblog"            => "BlogPost",
-        "regulation"             => "LegalDocument",
-        "report"                 => "Report",
-        "review"                 => "Review",
-        "review-book"            => "Review",
-        "software"               => "Software",
-        "song"                   => "Audiovisual",
-        "speech"                 => "Presentation",
-        "standard"               => "Standard",
-        "thesis"                 => "Dissertation",
-        "treaty"                 => "LegalDocument",
-        "webpage"                => "WebPage",
-        _                        => "",
-    }
+    C::csl_to_cm(csl)
 }
 
 // ─── Core reader ──────────────────────────────────────────────────────────────
@@ -176,7 +133,11 @@ fn from_csl(content: CslContent) -> Data {
 
     // Type
     let cm_type = csl_to_cm_type(&content.type_);
-    data.type_ = if cm_type.is_empty() { "Other".to_string() } else { cm_type.to_string() };
+    data.type_ = if cm_type.is_empty() {
+        "Other".to_string()
+    } else {
+        cm_type.to_string()
+    };
 
     // ISSN → relation + container identifier
     let (identifier, identifier_type) = if content.issn.len() >= 9 {
@@ -206,8 +167,16 @@ fn from_csl(content: CslContent) -> Data {
     };
 
     // Container
+    let container_type = match data.type_.as_str() {
+        "JournalArticle" | "JournalIssue" | "JournalVolume" | "Journal" => "Periodical",
+        "ProceedingsArticle" | "Proceedings" => "Proceedings",
+        "BookChapter" | "Book" => "Book",
+        "Dataset" => "DataRepository",
+        _ => "",
+    };
+
     data.container = Container {
-        type_: "Periodical".to_string(),
+        type_: container_type.to_string(),
         title: content.container_title.clone(),
         identifier,
         identifier_type,
@@ -220,65 +189,73 @@ fn from_csl(content: CslContent) -> Data {
 
     // Contributors: authors
     for a in &content.author {
-        let (type_, name, given, family) = if !a.literal.is_empty() {
-            ("Organization", a.literal.clone(), String::new(), String::new())
+        let roles = normalize_contributor_roles(&["Author".to_string()], "Author");
+        let c = if !a.literal.is_empty() {
+            Contributor::organization(
+                Organization { name: a.literal.clone(), ..Default::default() },
+                roles,
+            )
         } else {
-            ("Person", String::new(), a.given.clone(), a.family.clone())
+            Contributor::person(
+                Person {
+                    given_name: a.given.clone(),
+                    family_name: a.family.clone(),
+                    ..Default::default()
+                },
+                roles,
+            )
         };
-        data.contributors.push(Contributor {
-            type_: type_.to_string(),
-            name,
-            given_name: given,
-            family_name: family,
-            contributor_roles: vec!["Author".to_string()],
-            ..Default::default()
-        });
+        data.contributors.push(c);
     }
 
     // Contributors: editors
     for e in &content.editor {
-        let (type_, name, given, family) = if !e.literal.is_empty() {
-            ("Organization", e.literal.clone(), String::new(), String::new())
+        let roles = normalize_contributor_roles(&["Editor".to_string()], "Editor");
+        let c = if !e.literal.is_empty() {
+            Contributor::organization(
+                Organization { name: e.literal.clone(), ..Default::default() },
+                roles,
+            )
         } else {
-            ("Person", String::new(), e.given.clone(), e.family.clone())
+            Contributor::person(
+                Person {
+                    given_name: e.given.clone(),
+                    family_name: e.family.clone(),
+                    ..Default::default()
+                },
+                roles,
+            )
         };
-        data.contributors.push(Contributor {
-            type_: type_.to_string(),
-            name,
-            given_name: given,
-            family_name: family,
-            contributor_roles: vec!["Editor".to_string()],
-            ..Default::default()
-        });
+        data.contributors.push(c);
     }
 
     // Dates
     let published = content.issued.to_iso();
     if !published.is_empty() {
-        data.date.published = published;
+        data.date_published = published;
     }
     let submitted = content.submitted.to_iso();
     if !submitted.is_empty() {
-        data.date.submitted = submitted;
+        data.dates.submitted = submitted;
     }
     let accessed = content.accessed.to_iso();
     if !accessed.is_empty() {
-        data.date.accessed = accessed;
+        data.dates.accessed = accessed;
     }
 
     // Description
     if !content.abstract_.is_empty() {
-        data.descriptions.push(Description {
-            description: sanitize(&content.abstract_),
-            type_: "Abstract".to_string(),
-            language: String::new(),
-        });
+        data.description = sanitize(&content.abstract_);
     }
 
     // Identifiers: CSL `id` field (if not DOI)
     if !content.id.is_empty() {
         let (id_val, id_type) = validate_id(&content.id);
-        let id_val = if id_val.is_empty() { content.id.clone() } else { id_val };
+        let id_val = if id_val.is_empty() {
+            content.id.clone()
+        } else {
+            id_val
+        };
         let id_type = if id_type.is_empty() { "Other" } else { id_type };
         if id_type != "DOI" {
             data.identifiers.push(Identifier {
@@ -303,10 +280,10 @@ fn from_csl(content: CslContent) -> Data {
 
     // License
     if !content.license.is_empty()
-        && let Some(url) = normalize_url(&content.license, true, true) {
-            let id = url_to_spdx(&url);
-            data.license = License { id, url };
-        }
+        && let Some(url) = normalize_url(&content.license, true, true)
+    {
+        data.license = crate::spdx::from_url(&url);
+    }
 
     // Publisher — string or {name: string}
     if let Some(pub_val) = &content.publisher {
@@ -321,7 +298,10 @@ fn from_csl(content: CslContent) -> Data {
             String::new()
         };
         if !name.is_empty() {
-            data.publisher = Publisher { name, ..Default::default() };
+            data.publisher = Publisher {
+                name,
+                ..Default::default()
+            };
         }
     }
 
@@ -330,13 +310,13 @@ fn from_csl(content: CslContent) -> Data {
         for kw in content.keyword.split(',') {
             let kw = kw.trim().to_string();
             if !kw.is_empty() {
-                data.subjects.push(Subject { subject: kw });
+                data.subjects.push(Subject { subject: kw, ..Default::default() });
             }
         }
     } else {
         for cat in &content.categories {
             if !cat.is_empty() {
-                data.subjects.push(Subject { subject: cat.clone() });
+                data.subjects.push(Subject { subject: cat.clone(), ..Default::default() });
             }
         }
     }
@@ -344,7 +324,15 @@ fn from_csl(content: CslContent) -> Data {
     // Title
     let title = sanitize(&content.title);
     if !title.is_empty() {
-        data.titles.push(Title { title, ..Default::default() });
+        data.title = title;
+    }
+    let subtitle = sanitize(&content.subtitle);
+    if !subtitle.is_empty() {
+        data.additional_titles.push(Title {
+            title: subtitle,
+            type_: "Subtitle".to_string(),
+            ..Default::default()
+        });
     }
 
     // URL
@@ -457,14 +445,23 @@ fn parse_iso_date(s: &str) -> Option<CslDate> {
         (Some(m), None) => vec![year, m.parse().ok()?],
         _ => vec![year],
     };
-    Some(CslDate { date_parts: vec![date_parts] })
+    Some(CslDate {
+        date_parts: vec![date_parts],
+    })
 }
 
 fn to_csl_name(c: &crate::data::Contributor) -> CslName {
-    if c.type_ == "Organization" || (c.family_name.is_empty() && !c.name.is_empty()) {
-        CslName { literal: c.name.clone(), ..Default::default() }
+    if c.type_ == "Organization" || (c.family_name().is_empty() && !c.name().is_empty()) {
+        CslName {
+            literal: c.name(),
+            ..Default::default()
+        }
     } else {
-        CslName { family: c.family_name.clone(), given: c.given_name.clone(), ..Default::default() }
+        CslName {
+            family: c.family_name().to_string(),
+            given: c.given_name().to_string(),
+            ..Default::default()
+        }
     }
 }
 
@@ -476,27 +473,50 @@ fn bare_doi(id: &str) -> String {
         .to_string()
 }
 
-fn convert(data: &Data) -> CslRecord {
-    let doi = if data.id.contains("doi.org") { bare_doi(&data.id) } else { String::new() };
-    let csl_id = if doi.is_empty() { data.id.clone() } else { doi.clone() };
+fn doi_from_identifiers(data: &Data) -> Option<String> {
+    data.identifiers
+        .iter()
+        .find(|i| i.identifier_type == "DOI" && !i.identifier.is_empty())
+        .map(|i| i.identifier.clone())
+}
 
-    let title = data.titles.first().map(|t| t.title.clone()).unwrap_or_default();
+fn convert(data: &Data) -> CslRecord {
+    let doi_source = doi_from_identifiers(data).unwrap_or_else(|| data.id.clone());
+    let doi = if doi_source.contains("doi.org") {
+        bare_doi(&doi_source)
+    } else {
+        String::new()
+    };
+    let csl_id = if doi.is_empty() {
+        data.id.clone()
+    } else {
+        doi.clone()
+    };
+
+    let title = data.title.clone();
+    let subtitle = data
+        .additional_titles
+        .iter()
+        .find(|t| !t.title.is_empty() && t.type_ == "Subtitle")
+        .map(|t| t.title.clone())
+        .unwrap_or_default();
 
     let author: Vec<CslName> = data
         .contributors
         .iter()
-        .filter(|c| c.contributor_roles.iter().any(|r| r == "Author"))
+        .filter(|c| c.roles.iter().any(|r| r == "Author"))
         .map(to_csl_name)
         .collect();
 
     let editor: Vec<CslName> = data
         .contributors
         .iter()
-        .filter(|c| c.contributor_roles.iter().any(|r| r == "Editor"))
+        .filter(|c| c.roles.iter().any(|r| r == "Editor"))
         .map(to_csl_name)
         .collect();
 
-    let issued = parse_iso_date(&data.date.published).or_else(|| parse_iso_date(&data.date.created));
+    let issued =
+        parse_iso_date(&data.date_published).or_else(|| parse_iso_date(&data.dates.created));
 
     let container = &data.container;
     let page = match (container.first_page.as_str(), container.last_page.as_str()) {
@@ -510,17 +530,16 @@ fn convert(data: &Data) -> CslRecord {
         String::new()
     };
 
-    let abstract_text = data
-        .descriptions
-        .iter()
-        .find(|d| d.type_ == "Abstract" || d.type_.is_empty())
-        .map(|d| d.description.clone())
-        .unwrap_or_default();
+    let abstract_text = data.description.clone();
 
     CslRecord {
         id: csl_id,
         type_: to_csl_type(&data.type_).to_string(),
-        title,
+        title: if subtitle.is_empty() {
+            title
+        } else {
+            format!("{}: {}", title, subtitle)
+        },
         author,
         editor,
         issued,
@@ -561,7 +580,7 @@ mod tests {
             .join("tests/fixtures/commonmeta")
             .join(name);
         let json = std::fs::read_to_string(path).expect("fixture");
-        serde_json::from_str(&json).expect("parse")
+        crate::formats::commonmeta::read(&json).expect("parse")
     }
 
     #[test]
@@ -610,5 +629,53 @@ mod tests {
         assert_eq!(d.date_parts[0], vec![2024]);
 
         assert!(parse_iso_date("").is_none());
+    }
+
+    #[test]
+    fn read_json_maps_subtitle_to_title_variant() {
+        let json = r#"{
+            "id": "10.1/test",
+            "type": "article-journal",
+            "title": "Main Title",
+            "subtitle": "Sub Title"
+        }"#;
+
+        let data = read_json(json).unwrap();
+        assert_eq!(data.title, "Main Title");
+        assert_eq!(data.additional_titles.len(), 1);
+        assert_eq!(data.additional_titles[0].title, "Sub Title");
+        assert_eq!(data.additional_titles[0].type_, "Subtitle");
+    }
+
+    #[test]
+    fn write_prefers_doi_identifier_over_id_for_doi_field() {
+        let mut data = Data {
+            id: "https://example.org/not-a-doi".to_string(),
+            type_: "JournalArticle".to_string(),
+            ..Default::default()
+        };
+        data.identifiers.push(Identifier {
+            identifier: "https://doi.org/10.1234/identifier".to_string(),
+            identifier_type: "DOI".to_string(),
+        });
+
+        let out = write(&data).unwrap();
+        let csl: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(csl["DOI"], "10.1234/identifier");
+        assert_eq!(csl["id"], "10.1234/identifier");
+    }
+
+    #[test]
+    fn read_json_sets_container_type_by_resource_kind() {
+        let json = r#"{
+            "id": "10.1/test",
+            "type": "paper-conference",
+            "title": "Conference Paper",
+            "container-title": "Proceedings Title"
+        }"#;
+
+        let data = read_json(json).unwrap();
+        assert_eq!(data.type_, "ProceedingsArticle");
+        assert_eq!(data.container.type_, "Proceedings");
     }
 }

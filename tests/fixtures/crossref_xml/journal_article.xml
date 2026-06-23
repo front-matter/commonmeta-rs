@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<doi_batch xmlns="http://www.crossref.org/schema/5.4.0" xmlns:ai="http://www.crossref.org/AccessIndicators.xsd" xmlns:rel="http://www.crossref.org/relations.xsd" xmlns:fr="http://www.crossref.org/fundref.xsd" version="5.4.0">
+  <head>
+    <doi_batch_id>74fa99d2-7bae-4667-80ef-85c70c175aa6</doi_batch_id>
+    <timestamp>20260623125600</timestamp>
+    <depositor>
+      <depositor_name/>
+      <email_address/>
+    </depositor>
+    <registrant/>
+  </head>
+  <body>
+    <journal>
+      <journal_metadata language="en">
+        <full_title>Journal of Examples</full_title>
+        <issn media_type="electronic">1234-5678</issn>
+      </journal_metadata>
+      <journal_issue>
+        <publication_date>
+          <month>03</month>
+          <day>15</day>
+          <year>2024</year>
+        </publication_date>
+        <journal_volume>
+          <volume>12</volume>
+        </journal_volume>
+        <issue>3</issue>
+      </journal_issue>
+      <journal_article publication_type="full_text" language="en">
+        <titles>
+          <title>A Study of Things</title>
+        </titles>
+        <contributors>
+          <person_name contributor_role="author" sequence="first">
+            <given_name>Ada</given_name>
+            <surname>Lovelace</surname>
+            <affiliations>
+              <institution>
+                <institution_name>Example University</institution_name>
+                <institution_id type="ror">https://ror.org/05dxps055</institution_id>
+              </institution>
+            </affiliations>
+          </person_name>
+        </contributors>
+        <jats:abstract xmlns:jats="http://www.ncbi.nlm.nih.gov/JATS1">
+          <jats:p>An abstract about things.</jats:p>
+        </jats:abstract>
+        <publication_date media_type="online">
+          <month>03</month>
+          <day>15</day>
+          <year>2024</year>
+        </publication_date>
+        <ai:program name="AccessIndicators">
+          <ai:license_ref applies_to="vor">https://creativecommons.org/licenses/by/4.0/legalcode</ai:license_ref>
+          <ai:license_ref applies_to="tdm">https://creativecommons.org/licenses/by/4.0/legalcode</ai:license_ref>
+        </ai:program>
+        <doi_data>
+          <doi>10.5555/12345678</doi>
+          <resource>https://example.org/article/1</resource>
+          <collection property="text-mining">
+            <item>
+              <resource mime_type="text/html">https://example.org/article/1</resource>
+            </item>
+          </collection>
+        </doi_data>
+        <citation_list>
+          <citation key="ref1">
+            <doi>10.1000/xyz</doi>
+            <article_title>Prior Work</article_title>
+          </citation>
+        </citation_list>
+      </journal_article>
+    </journal>
+  </body>
+</doi_batch>

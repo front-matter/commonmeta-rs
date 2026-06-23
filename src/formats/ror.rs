@@ -3,7 +3,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{HashMap, HashSet};
 
-use crate::data::{Data, Date, Identifier, Relation, Title};
+use crate::data::{Data, Identifier, Relation};
 use crate::error::{Error, Result};
 use crate::utils::{normalize_ror, validate_id, validate_ror};
 
@@ -157,25 +157,13 @@ fn from_ror(ror: Ror) -> Data {
     let type_ = "Organization".to_string();
 
     // Title: display name (ror_display type in names list)
-    let display_name = get_display_name(&ror);
-    let titles = if !display_name.is_empty() {
-        vec![Title { title: display_name, ..Default::default() }]
-    } else {
-        vec![]
-    };
-
-    // Additional titles: label, alias, acronym names
-    // (These are just stored in titles for now with the main display name)
+    let title = get_display_name(&ror);
 
     // URL: website link
     let url = get_website_url(&ror);
 
     // Date: established year
-    let date = if let Some(year) = ror.established {
-        Date { published: year.to_string(), ..Default::default() }
-    } else {
-        Date::default()
-    };
+    let date_published = ror.established.map(|y| y.to_string()).unwrap_or_default();
 
     // Identifiers: from external_ids
     let identifiers: Vec<Identifier> = ror
@@ -225,8 +213,8 @@ fn from_ror(ror: Ror) -> Data {
         id,
         type_,
         url,
-        titles,
-        date,
+        title,
+        date_published,
         identifiers,
         relations,
         provider: "ROR".to_string(),
@@ -280,23 +268,17 @@ fn cm_to_ror_ext_type(cm_type: &str) -> &'static str {
 
 /// Write Data as InvenioRDM organization vocabulary YAML.
 pub fn write(data: &Data) -> Result<Vec<u8>> {
-    let bare_id = validate_ror(&data.id).ok_or_else(|| {
-        Error::InvalidId(format!("not a valid ROR ID: {}", data.id))
-    })?;
+    let bare_id = validate_ror(&data.id)
+        .ok_or_else(|| Error::InvalidId(format!("not a valid ROR ID: {}", data.id)))?;
 
-    // Build multilingual title map from titles list
+    // Build multilingual title map from primary title
     let mut title: HashMap<String, String> = HashMap::new();
-    for t in &data.titles {
-        let lang = if t.language.is_empty() { "en".to_string() } else { t.language.clone() };
-        title.insert(lang, t.title.clone());
+    if !data.title.is_empty() {
+        let lang = if data.language.is_empty() { "en".to_string() } else { data.language.clone() };
+        title.insert(lang, data.title.clone());
     }
-    // Ensure at least an English entry using the first title
-    if title.is_empty()
-        && let Some(t) = data.titles.first() {
-            title.insert("en".to_string(), t.title.clone());
-        }
 
-    let name = data.titles.first().map(|t| t.title.clone()).unwrap_or_default();
+    let name = data.title.clone();
 
     // Identifiers: ROR first, then external IDs
     let mut identifiers = vec![OutIdentifier {
@@ -329,16 +311,14 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
 
 /// Write Data as minimal ROR JSON.
 fn convert_json(data: &Data) -> serde_json::Value {
-    use serde_json::{json, Map, Value};
+    use serde_json::{Map, Value, json};
 
     let ror_id = normalize_ror(&data.id);
-    let name = data.titles.first().map(|t| t.title.as_str()).unwrap_or("");
+    let name = data.title.as_str();
 
     let mut names: Vec<Value> = Vec::new();
     if !name.is_empty() {
-        let lang = data.titles.first()
-            .and_then(|t| if t.language.is_empty() { None } else { Some(t.language.as_str()) })
-            .unwrap_or("en");
+        let lang = if data.language.is_empty() { "en" } else { &data.language };
         names.push(json!({
             "value": name,
             "types": ["ror_display"],
@@ -389,7 +369,7 @@ fn convert_json(data: &Data) -> serde_json::Value {
     obj.insert("relationships".to_string(), Value::Array(relationships));
     obj.insert("status".to_string(), Value::String("active".to_string()));
     obj.insert("types".to_string(), Value::Array(vec![]));
-    if let Ok(year) = data.date.published.parse::<i64>() {
+    if let Ok(year) = data.date_published.parse::<i64>() {
         obj.insert("established".to_string(), Value::Number(year.into()));
     }
 
@@ -397,14 +377,12 @@ fn convert_json(data: &Data) -> serde_json::Value {
 }
 
 pub fn write_json(data: &Data) -> Result<Vec<u8>> {
-    serde_json::to_vec_pretty(&convert_json(data))
-        .map_err(|e| Error::Serialize(e.to_string()))
+    serde_json::to_vec_pretty(&convert_json(data)).map_err(|e| Error::Serialize(e.to_string()))
 }
 
 pub fn write_json_all(list: &[Data]) -> Result<Vec<u8>> {
     let values: Vec<serde_json::Value> = list.iter().map(convert_json).collect();
-    serde_json::to_vec_pretty(&values)
-        .map_err(|e| Error::Serialize(e.to_string()))
+    serde_json::to_vec_pretty(&values).map_err(|e| Error::Serialize(e.to_string()))
 }
 
 // ── Bulk writers (catalog dumps) ──────────────────────────────────────────────
@@ -450,7 +428,11 @@ pub struct RorCsv {
 /// Convert a raw ROR record into its flattened CSV/Parquet representation.
 /// Mirrors Go's `ConvertRORCSV`.
 pub fn convert_ror_csv(ror: &Ror) -> RorCsv {
-    let mut out = RorCsv { id: ror.id.clone(), status: ror.status.clone(), ..Default::default() };
+    let mut out = RorCsv {
+        id: ror.id.clone(),
+        status: ror.status.clone(),
+        ..Default::default()
+    };
 
     let mut acronyms = Vec::new();
     let mut aliases = Vec::new();
@@ -475,7 +457,11 @@ pub fn convert_ror_csv(ror: &Ror) -> RorCsv {
     // Compact: drop consecutive duplicate types, matching Go's slices.Compact
     let mut compacted_types: Vec<&str> = Vec::new();
     for t in &ror.types {
-        if compacted_types.last().map(|last| *last != t.as_str()).unwrap_or(true) {
+        if compacted_types
+            .last()
+            .map(|last| *last != t.as_str())
+            .unwrap_or(true)
+        {
             compacted_types.push(t.as_str());
         }
     }
@@ -494,9 +480,10 @@ pub fn convert_ror_csv(ror: &Ror) -> RorCsv {
     out.acronyms = acronyms.join("; ");
 
     if let Some(year) = ror.established
-        && year != 0 {
-            out.established = year.to_string();
-        }
+        && year != 0
+    {
+        out.established = year.to_string();
+    }
 
     if let Some(loc) = ror.locations.first() {
         out.latitude = format!("{:.6}", loc.geonames_details.lat);
@@ -579,20 +566,29 @@ pub fn write_parquet(list: &[Ror]) -> Result<Vec<u8>> {
     use parquet::record::RecordWriter;
 
     let rows: Vec<RorCsv> = list.iter().map(convert_ror_csv).collect();
-    let schema = rows.as_slice().schema().map_err(|e| Error::Serialize(e.to_string()))?;
+    let schema = rows
+        .as_slice()
+        .schema()
+        .map_err(|e| Error::Serialize(e.to_string()))?;
     let props = std::sync::Arc::new(WriterProperties::builder().build());
 
     let buffer: Vec<u8> = Vec::new();
     let mut writer = SerializedFileWriter::new(buffer, schema, props)
         .map_err(|e| Error::Serialize(e.to_string()))?;
 
-    let mut row_group = writer.next_row_group().map_err(|e| Error::Serialize(e.to_string()))?;
+    let mut row_group = writer
+        .next_row_group()
+        .map_err(|e| Error::Serialize(e.to_string()))?;
     rows.as_slice()
         .write_to_row_group(&mut row_group)
         .map_err(|e| Error::Serialize(e.to_string()))?;
-    row_group.close().map_err(|e| Error::Serialize(e.to_string()))?;
+    row_group
+        .close()
+        .map_err(|e| Error::Serialize(e.to_string()))?;
 
-    writer.into_inner().map_err(|e| Error::Serialize(e.to_string()))
+    writer
+        .into_inner()
+        .map_err(|e| Error::Serialize(e.to_string()))
 }
 
 /// Write a list of ROR records, dispatching by file extension
@@ -627,9 +623,32 @@ pub fn clean_search_string(s: &str) -> String {
     // Replace special characters with spaces
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
-        if matches!(ch, '+' | '-' | '=' | '|' | '>' | '<' | '!' | '(' | ')' |
-                        '\\' | '{' | '}' | '[' | ']' | '^' | '"' | '~' | '*' |
-                        '?' | ':' | '/' | '.' | ',' | ';') {
+        if matches!(
+            ch,
+            '+' | '-'
+                | '='
+                | '|'
+                | '>'
+                | '<'
+                | '!'
+                | '('
+                | ')'
+                | '\\'
+                | '{'
+                | '}'
+                | '['
+                | ']'
+                | '^'
+                | '"'
+                | '~'
+                | '*'
+                | '?'
+                | ':'
+                | '/'
+                | '.'
+                | ','
+                | ';'
+        ) {
             out.push(' ');
         } else {
             out.push(ch);
@@ -699,7 +718,12 @@ pub fn get_country_codes(s: &str) -> Vec<String> {
     // Original tokens for 2-letter code matching
     let orig_tokens: Vec<String> = s
         .split_whitespace()
-        .map(|t| t.chars().filter(|c| c.is_ascii_alphabetic()).collect::<String>().to_uppercase())
+        .map(|t| {
+            t.chars()
+                .filter(|c| c.is_ascii_alphabetic())
+                .collect::<String>()
+                .to_uppercase()
+        })
         .filter(|t| !t.is_empty())
         .collect();
 
@@ -804,7 +828,10 @@ pub fn match_affiliation(affiliation: &str) -> Result<Vec<AffiliationMatch>> {
         .map_err(|e| Error::Http(e.to_string()))?;
 
     let encoded: String = url::form_urlencoded::byte_serialize(cleaned.as_bytes()).collect();
-    let api_url = format!("https://api.ror.org/v2/organizations?affiliation={}", encoded);
+    let api_url = format!(
+        "https://api.ror.org/v2/organizations?affiliation={}",
+        encoded
+    );
 
     let text = client
         .get(&api_url)
@@ -886,9 +913,10 @@ pub fn fetch(input: &str) -> Result<Data> {
                 list.number_of_results
             )));
         }
-        list.items.into_iter().next().ok_or_else(|| {
-            Error::Parse("No items in ROR query response".to_string())
-        })?
+        list.items
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::Parse("No items in ROR query response".to_string()))?
     };
 
     Ok(from_ror(ror))
@@ -955,13 +983,13 @@ mod tests {
     #[test]
     fn test_ror_display_name() {
         let data = read_json(ROR_ORG).unwrap();
-        assert_eq!(data.titles[0].title, "Impactstory");
+        assert_eq!(data.title, "Impactstory");
     }
 
     #[test]
     fn test_ror_date() {
         let data = read_json(ROR_ORG).unwrap();
-        assert_eq!(data.date.published, "2013");
+        assert_eq!(data.date_published, "2013");
     }
 
     #[test]
@@ -969,15 +997,27 @@ mod tests {
         let data = read_json(ROR_ORG).unwrap();
 
         // Wikidata: preferred is empty → uses first in all
-        let wikidata = data.identifiers.iter().find(|i| i.identifier_type == "Wikidata").unwrap();
+        let wikidata = data
+            .identifiers
+            .iter()
+            .find(|i| i.identifier_type == "Wikidata")
+            .unwrap();
         assert_eq!(wikidata.identifier, "Q19341888");
 
         // GRID: preferred set
-        let grid = data.identifiers.iter().find(|i| i.identifier_type == "GRID").unwrap();
+        let grid = data
+            .identifiers
+            .iter()
+            .find(|i| i.identifier_type == "GRID")
+            .unwrap();
         assert_eq!(grid.identifier, "grid.465570.2");
 
         // FundRef → Crossref Funder ID
-        let fundref = data.identifiers.iter().find(|i| i.identifier_type == "Crossref Funder ID").unwrap();
+        let fundref = data
+            .identifiers
+            .iter()
+            .find(|i| i.identifier_type == "Crossref Funder ID")
+            .unwrap();
         assert_eq!(fundref.identifier, "100012611");
     }
 
@@ -1001,7 +1041,7 @@ mod tests {
           "types": ["education"]
         }"#;
         let data = read_json(json).unwrap();
-        assert!(data.date.published.is_empty());
+        assert!(data.date_published.is_empty());
     }
 
     #[test]
@@ -1022,7 +1062,7 @@ mod tests {
           "types": []
         }"#;
         let data = read_json(json).unwrap();
-        assert!(data.titles.is_empty());
+        assert!(data.title.is_empty());
     }
 
     #[test]
@@ -1032,7 +1072,10 @@ mod tests {
         let yaml = String::from_utf8(bytes).unwrap();
 
         // Bare ROR ID (not full URL)
-        assert!(yaml.contains("id: 02nr0ka47"), "expected bare ROR id, got:\n{yaml}");
+        assert!(
+            yaml.contains("id: 02nr0ka47"),
+            "expected bare ROR id, got:\n{yaml}"
+        );
         assert!(yaml.contains("name: Impactstory"));
         assert!(yaml.contains("scheme: ror"));
         assert!(yaml.contains("scheme: wikidata"));
@@ -1051,7 +1094,10 @@ mod tests {
         assert_eq!(v["id"].as_str().unwrap(), "https://ror.org/02nr0ka47");
         assert_eq!(v["names"][0]["value"].as_str().unwrap(), "Impactstory");
         assert_eq!(v["links"][0]["type"].as_str().unwrap(), "website");
-        assert_eq!(v["links"][0]["value"].as_str().unwrap(), "https://impactstory.org");
+        assert_eq!(
+            v["links"][0]["value"].as_str().unwrap(),
+            "https://impactstory.org"
+        );
         assert_eq!(v["established"].as_i64().unwrap(), 2013);
         assert_eq!(v["status"].as_str().unwrap(), "active");
 
@@ -1070,7 +1116,10 @@ mod tests {
     #[test]
     fn test_write_invalid_ror_id() {
         use crate::data::Data;
-        let data = Data { id: "https://doi.org/10.1234/not-a-ror".to_string(), ..Data::default() };
+        let data = Data {
+            id: "https://doi.org/10.1234/not-a-ror".to_string(),
+            ..Data::default()
+        };
         assert!(write(&data).is_err());
     }
 
@@ -1092,10 +1141,7 @@ mod tests {
             "Stanford University CA"
         );
         // 4-digit numbers should be kept
-        assert_eq!(
-            clean_search_string("Lab 2024 report"),
-            "Lab 2024 report"
-        );
+        assert_eq!(clean_search_string("Lab 2024 report"), "Lab 2024 report");
     }
 
     #[test]
@@ -1115,19 +1161,31 @@ mod tests {
     #[test]
     fn test_get_country_codes_full_name() {
         let codes = get_country_codes("University of California, United States");
-        assert!(codes.contains(&"US".to_string()), "expected US in {:?}", codes);
+        assert!(
+            codes.contains(&"US".to_string()),
+            "expected US in {:?}",
+            codes
+        );
     }
 
     #[test]
     fn test_get_country_codes_abbreviation() {
         let codes = get_country_codes("Max Planck Institute, Germany");
-        assert!(codes.contains(&"DE".to_string()), "expected DE in {:?}", codes);
+        assert!(
+            codes.contains(&"DE".to_string()),
+            "expected DE in {:?}",
+            codes
+        );
     }
 
     #[test]
     fn test_get_country_codes_uk() {
         let codes = get_country_codes("University of Oxford, United Kingdom");
-        assert!(codes.contains(&"UK".to_string()), "expected UK in {:?}", codes);
+        assert!(
+            codes.contains(&"UK".to_string()),
+            "expected UK in {:?}",
+            codes
+        );
     }
 
     #[test]
@@ -1142,13 +1200,21 @@ mod tests {
     fn test_get_countries_region_mapping() {
         // "US" should map to "US-PR" region
         let regions = get_countries("Harvard University, USA");
-        assert!(regions.contains(&"US-PR".to_string()), "expected US-PR in {:?}", regions);
+        assert!(
+            regions.contains(&"US-PR".to_string()),
+            "expected US-PR in {:?}",
+            regions
+        );
     }
 
     #[test]
     fn test_get_countries_uk_region() {
         let regions = get_countries("Imperial College London, UK");
-        assert!(regions.contains(&"GB-UK".to_string()), "expected GB-UK in {:?}", regions);
+        assert!(
+            regions.contains(&"GB-UK".to_string()),
+            "expected GB-UK in {:?}",
+            regions
+        );
     }
 
     #[test]
@@ -1172,13 +1238,21 @@ mod tests {
     #[test]
     fn test_get_country_codes_france() {
         let codes = get_country_codes("CNRS, France");
-        assert!(codes.contains(&"FR".to_string()), "expected FR in {:?}", codes);
+        assert!(
+            codes.contains(&"FR".to_string()),
+            "expected FR in {:?}",
+            codes
+        );
     }
 
     #[test]
     fn test_get_country_codes_japan() {
         let codes = get_country_codes("University of Tokyo, Japan");
-        assert!(codes.contains(&"JP".to_string()), "expected JP in {:?}", codes);
+        assert!(
+            codes.contains(&"JP".to_string()),
+            "expected JP in {:?}",
+            codes
+        );
     }
 
     // ── Bulk writer tests ────────────────────────────────────────────────────
@@ -1280,7 +1354,11 @@ mod tests {
         assert_eq!(jsonl_text.lines().count(), 1);
 
         let csv_bytes = write_all(&list, ".csv").unwrap();
-        assert!(String::from_utf8(csv_bytes).unwrap().contains("Impactstory"));
+        assert!(
+            String::from_utf8(csv_bytes)
+                .unwrap()
+                .contains("Impactstory")
+        );
 
         let parquet_bytes = write_all(&list, ".parquet").unwrap();
         assert_eq!(&parquet_bytes[0..4], b"PAR1");

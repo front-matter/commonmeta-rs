@@ -1,0 +1,72 @@
+{
+    "id": "https://doi.org/10.7554/elife.01567",
+    "type": "JournalArticle",
+    "container": {
+        "type": "Journal",
+        "title": "eLife",
+        "volume": "3"
+    },
+    "contributors": [
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Martial",
+                "family_name": "Sankar"
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Kaisa",
+                "family_name": "Nieminen"
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Laura",
+                "family_name": "Ragni"
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Ioannis",
+                "family_name": "Xenarios"
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Christian S",
+                "family_name": "Hardtke"
+            },
+            "roles": [
+                "Author"
+            ]
+        }
+    ],
+    "date_published": "2014",
+    "description": "Among various advantages, their small size makes model organisms preferred subjects of investigation. Yet, even in model systems detailed analysis of numerous developmental processes at cellular level is severely hampered by their scale.",
+    "identifiers": [
+        {
+            "identifier": "https://doi.org/10.7554/elife.01567",
+            "identifier_type": "DOI"
+        }
+    ],
+    "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+    "title": "Automated quantitative histology reveals vascular morphodynamics during Arabidopsis hypocotyl secondary growth",
+    "url": "http://elifesciences.org/lookup/doi/10.7554/eLife.01567"
+}

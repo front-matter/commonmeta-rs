@@ -1,13 +1,15 @@
 //! BibTeX reader and writer for Commonmeta, backed by the `biblatex` crate.
 
 use biblatex::{
-    Bibliography, Chunk, ChunksExt, DateValue, Entry, EntryType, PermissiveType, Person, Spanned,
+    Bibliography, Chunk, ChunksExt, DateValue, Entry, EntryType, PermissiveType,
+    Person as BibPerson, Spanned,
 };
 
-use crate::data::{Container, Contributor, Data, Description, Title};
+use crate::author_utils::normalize_contributor_roles;
+use crate::data::{Container, Contributor, Data, Description, Organization, Person, Title};
 use crate::doi_utils::normalize_doi;
 use crate::error::{Error, Result};
-use crate::utils::{get_language, url_to_spdx};
+use crate::utils::get_language;
 
 fn cm_to_bib_type(cm: &str) -> EntryType {
     match cm {
@@ -30,6 +32,13 @@ fn bare_doi(id: &str) -> String {
         .to_string()
 }
 
+fn doi_from_identifiers(data: &Data) -> Option<String> {
+    data.identifiers
+        .iter()
+        .find(|i| i.identifier_type == "DOI" && !i.identifier.is_empty())
+        .map(|i| i.identifier.clone())
+}
+
 fn chunks(s: &str) -> Vec<Spanned<Chunk>> {
     vec![Spanned::detached(Chunk::Normal(s.to_string()))]
 }
@@ -39,9 +48,7 @@ fn chunks(s: &str) -> Vec<Spanned<Chunk>> {
 fn bib_to_cm_type(entry_type: &EntryType) -> &'static str {
     match entry_type {
         EntryType::Article | EntryType::SuppPeriodical => "JournalArticle",
-        EntryType::Book | EntryType::MvBook | EntryType::BookInBook | EntryType::SuppBook => {
-            "Book"
-        }
+        EntryType::Book | EntryType::MvBook | EntryType::BookInBook | EntryType::SuppBook => "Book",
         EntryType::InBook | EntryType::InCollection => "BookChapter",
         EntryType::PhdThesis | EntryType::MastersThesis => "Dissertation",
         EntryType::Unpublished => "Manuscript",
@@ -59,44 +66,36 @@ fn bib_to_cm_type(entry_type: &EntryType) -> &'static str {
 /// Infer the container type for a given entry type.
 fn container_type_for(entry_type: &EntryType) -> &'static str {
     match entry_type {
-        EntryType::Article
-        | EntryType::SuppPeriodical
-        | EntryType::Periodical => "Journal",
-        EntryType::InBook
-        | EntryType::InCollection
-        | EntryType::InProceedings => "Book",
+        EntryType::Article | EntryType::SuppPeriodical | EntryType::Periodical => "Journal",
+        EntryType::InBook | EntryType::InCollection | EntryType::InProceedings => "Book",
         _ => "Periodical",
     }
 }
 
 // ─── Reader helpers ───────────────────────────────────────────────────────────
 
-fn person_to_contributor(person: Person, role: &str) -> Contributor {
+fn person_to_contributor(person: BibPerson, role: &str) -> Contributor {
     // Organizations are wrapped in extra braces by the writer, e.g. `{ACME Corp}`.
-    let (type_, name, given_name, family_name) = if person.given_name.is_empty()
-        && person.name.starts_with('{')
-        && person.name.ends_with('}')
+    let roles = normalize_contributor_roles(&[role.to_string()], role);
+    if person.given_name.is_empty()
+        && (person.name.starts_with('{') && person.name.ends_with('}')
+            || person.name.contains(' '))
     {
-        let org = person.name[1..person.name.len() - 1].to_string();
-        ("Organization".to_string(), org, String::new(), String::new())
-    } else if person.given_name.is_empty() && person.name.contains(' ') {
-        // Single string with spaces but no given_name — treat as organization.
-        ("Organization".to_string(), person.name, String::new(), String::new())
+        let org_name = if person.name.starts_with('{') {
+            person.name[1..person.name.len() - 1].to_string()
+        } else {
+            person.name
+        };
+        Contributor::organization(Organization { name: org_name, ..Default::default() }, roles)
     } else {
-        (
-            "Person".to_string(),
-            String::new(),
-            person.given_name,
-            person.name,
+        Contributor::person(
+            Person {
+                given_name: person.given_name,
+                family_name: person.name,
+                ..Default::default()
+            },
+            roles,
         )
-    };
-    Contributor {
-        type_,
-        name,
-        given_name,
-        family_name,
-        contributor_roles: vec![role.to_string()],
-        ..Default::default()
     }
 }
 
@@ -104,9 +103,7 @@ fn person_to_contributor(person: Person, role: &str) -> Contributor {
 /// or YYYY-MM-DD). Months and days in `biblatex` are 0-indexed.
 fn date_to_iso(date: biblatex::Date) -> String {
     let dt = match date.value {
-        DateValue::At(dt)
-        | DateValue::After(dt)
-        | DateValue::Before(dt) => dt,
+        DateValue::At(dt) | DateValue::After(dt) | DateValue::Before(dt) => dt,
         DateValue::Between(start, _) => start,
     };
     match (dt.month, dt.day) {
@@ -120,8 +117,7 @@ fn date_to_iso(date: biblatex::Date) -> String {
 
 /// Parse BibTeX text and return the first entry as a [`Data`] record.
 pub fn read(input: &str) -> Result<Data> {
-    let bib = Bibliography::parse(input)
-        .map_err(|e| Error::Parse(e.to_string()))?;
+    let bib = Bibliography::parse(input).map_err(|e| Error::Parse(e.to_string()))?;
     let entry = bib
         .iter()
         .next()
@@ -138,7 +134,12 @@ fn from_entry(entry: &Entry) -> Result<Data> {
     // ID: prefer DOI, then URL, then cite key
     let doi_str = entry.doi().unwrap_or_default();
     if !doi_str.is_empty() {
-        data.id = normalize_doi(&doi_str);
+        let normalized = normalize_doi(&doi_str);
+        data.id = normalized.clone();
+        data.identifiers.push(crate::data::Identifier {
+            identifier: normalized,
+            identifier_type: "DOI".to_string(),
+        });
     } else {
         let url_str = entry.url().unwrap_or_default();
         data.id = if url_str.is_empty() {
@@ -158,17 +159,15 @@ fn from_entry(entry: &Entry) -> Result<Data> {
     if let Ok(title_chunks) = entry.title() {
         let text = title_chunks.format_verbatim();
         if !text.is_empty() {
-            data.titles.push(Title {
-                title: text,
-                ..Default::default()
-            });
+            data.title = text;
         }
     }
     if let Ok(sub_chunks) = entry.subtitle() {
         let text = sub_chunks.format_verbatim();
         if !text.is_empty() {
-            data.titles.push(Title {
+            data.additional_titles.push(Title {
                 title: text,
+                type_: "Subtitle".to_string(),
                 ..Default::default()
             });
         }
@@ -177,14 +176,16 @@ fn from_entry(entry: &Entry) -> Result<Data> {
     // Contributors: authors
     if let Ok(authors) = entry.author() {
         for person in authors {
-            data.contributors.push(person_to_contributor(person, "Author"));
+            data.contributors
+                .push(person_to_contributor(person, "Author"));
         }
     }
     // Contributors: editors
     if let Ok(editor_groups) = entry.editors() {
         for (persons, _) in editor_groups {
             for person in persons {
-                data.contributors.push(person_to_contributor(person, "Editor"));
+                data.contributors
+                    .push(person_to_contributor(person, "Editor"));
             }
         }
     }
@@ -193,7 +194,7 @@ fn from_entry(entry: &Entry) -> Result<Data> {
     if let Ok(PermissiveType::Typed(date)) = entry.date() {
         let iso = date_to_iso(date);
         if !iso.is_empty() {
-            data.date.published = iso;
+            data.date_published = iso;
         }
     }
 
@@ -201,19 +202,15 @@ fn from_entry(entry: &Entry) -> Result<Data> {
     if let Ok(abs_chunks) = entry.abstract_() {
         let text = abs_chunks.format_verbatim();
         if !text.is_empty() {
-            data.descriptions.push(Description {
-                description: text,
-                type_: "Abstract".to_string(),
-                ..Default::default()
-            });
+            data.description = text;
         }
     }
 
-    // Note → Other description
+    // Note → additional description
     if let Ok(note_chunks) = entry.note() {
         let text = note_chunks.format_verbatim();
         if !text.is_empty() {
-            data.descriptions.push(Description {
+            data.additional_descriptions.push(Description {
                 description: text,
                 type_: "Other".to_string(),
                 ..Default::default()
@@ -225,11 +222,7 @@ fn from_entry(entry: &Entry) -> Result<Data> {
     if let Some(chunks) = entry.get("copyright") {
         let url = chunks.format_verbatim();
         if !url.is_empty() {
-            let id = url_to_spdx(&url);
-            if !id.is_empty() {
-                data.license.id = id;
-            }
-            data.license.url = url;
+            data.license = crate::spdx::from_url(&url);
         }
     }
 
@@ -352,17 +345,12 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
 
     // Flags computed before `entry_type` is moved into `Entry::new`.
     let is_article = matches!(entry_type, EntryType::Article);
-    let is_phdthesis = matches!(
-        entry_type,
-        EntryType::PhdThesis | EntryType::MastersThesis
-    );
-    let is_inbook_or_inproc = matches!(
-        entry_type,
-        EntryType::InBook | EntryType::InProceedings
-    );
+    let is_phdthesis = matches!(entry_type, EntryType::PhdThesis | EntryType::MastersThesis);
+    let is_inbook_or_inproc = matches!(entry_type, EntryType::InBook | EntryType::InProceedings);
 
-    // Citation key: bare DOI if available, else full `id`.
-    let doi_bare = bare_doi(&data.id);
+    // Citation key / DOI: prefer explicit DOI identifier (v1.0 shape), then `id`.
+    let doi_uri = doi_from_identifiers(data).unwrap_or_else(|| data.id.clone());
+    let doi_bare = bare_doi(&doi_uri);
     let cite_key = if doi_bare.is_empty() {
         data.id.clone()
     } else {
@@ -371,29 +359,30 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
 
     let mut entry = Entry::new(cite_key, entry_type);
 
-    // Title (join first two title segments with ": ").
-    let title: String = if data.titles.len() > 1 {
-        format!("{}: {}", data.titles[0].title, data.titles[1].title)
-    } else {
-        data.titles
-            .first()
-            .map(|t| t.title.clone())
-            .unwrap_or_default()
-    };
+    let title = data.title.clone();
+    let subtitle = data
+        .additional_titles
+        .iter()
+        .find(|t| t.type_ == "Subtitle" && !t.title.is_empty())
+        .map(|t| t.title.clone())
+        .unwrap_or_default();
     if !title.is_empty() {
         entry.set_title(chunks(&title));
     }
+    if !subtitle.is_empty() {
+        entry.set_subtitle(chunks(&subtitle));
+    }
 
     // Authors (contributors with role "Author").
-    let authors: Vec<Person> = data
+    let authors: Vec<BibPerson> = data
         .contributors
         .iter()
-        .filter(|c| c.contributor_roles.iter().any(|r| r == "Author"))
+        .filter(|c| c.roles.iter().any(|r| r == "Author"))
         .filter_map(|c| {
-            if !c.family_name.is_empty() {
-                Some(Person {
-                    name: c.family_name.clone(),
-                    given_name: c.given_name.clone(),
+            if !c.family_name().is_empty() {
+                Some(BibPerson {
+                    name: c.family_name().to_string(),
+                    given_name: c.given_name().to_string(),
                     prefix: String::new(),
                     suffix: String::new(),
                     id: None,
@@ -401,10 +390,10 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
                     given_initials: None,
                     use_prefix: None,
                 })
-            } else if !c.name.is_empty() {
+            } else if !c.name().is_empty() {
                 // Organization: wrap in extra braces to prevent BibTeX name parsing.
-                Some(Person {
-                    name: format!("{{{}}}", c.name),
+                Some(BibPerson {
+                    name: format!("{{{}}}", c.name()),
                     given_name: String::new(),
                     prefix: String::new(),
                     suffix: String::new(),
@@ -423,10 +412,9 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
     }
 
     // Abstract – first description.
-    if let Some(desc) = data.descriptions.first()
-        && !desc.description.is_empty() {
-            entry.set_abstract_(chunks(&desc.description));
-        }
+    if !data.description.is_empty() {
+        entry.set_abstract_(chunks(&data.description));
+    }
 
     // Copyright / license URL.
     if !data.license.url.is_empty() {
@@ -453,10 +441,9 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
         if !data.publisher.name.is_empty() {
             entry.set_institution(chunks(&data.publisher.name));
         }
-    } else if !is_article
-        && !data.publisher.name.is_empty() {
-            entry.set_publisher(vec![chunks(&data.publisher.name)]);
-        }
+    } else if !is_article && !data.publisher.name.is_empty() {
+        entry.set_publisher(vec![chunks(&data.publisher.name)]);
+    }
 
     // Issue number (BibTeX `issue` field to match hand-rolled output).
     if !container.issue.is_empty() {
@@ -464,8 +451,7 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
     }
 
     // Journal title or booktitle.
-    let is_journal_container =
-        matches!(container.type_.as_str(), "Journal" | "Periodical");
+    let is_journal_container = matches!(container.type_.as_str(), "Journal" | "Periodical");
     if is_inbook_or_inproc && !container.title.is_empty() {
         entry.set_book_title(chunks(&container.title));
     } else if is_journal_container && !container.title.is_empty() {
@@ -480,17 +466,17 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
         }
     }
 
-    // Month from `date.published`.
+    // Month from `date_published`.
     const MONTH_ABBREVS: [&str; 12] = [
-        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
-        "nov", "dec",
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
     ];
-    let date_pub = &data.date.published;
+    let date_pub = &data.date_published;
     if date_pub.len() >= 7
         && let Ok(m) = date_pub[5..7].parse::<usize>()
-            && (1..=12).contains(&m) {
-                entry.set("month", chunks(MONTH_ABBREVS[m - 1]));
-            }
+        && (1..=12).contains(&m)
+    {
+        entry.set("month", chunks(MONTH_ABBREVS[m - 1]));
+    }
 
     // Pages: `first--last` or just `first`.
     let pages = match (container.first_page.as_str(), container.last_page.as_str()) {
@@ -511,7 +497,7 @@ pub fn write(data: &Data) -> Result<Vec<u8>> {
         entry.set("volume", chunks(&container.volume));
     }
 
-    // Year from `date.published`.
+    // Year from `date_published`.
     if date_pub.len() >= 4 {
         entry.set("year", chunks(&date_pub[..4]));
     }
@@ -544,9 +530,15 @@ mod tests {
 
     #[test]
     fn test_cm_to_bib_type() {
-        assert!(matches!(cm_to_bib_type("JournalArticle"), EntryType::Article));
+        assert!(matches!(
+            cm_to_bib_type("JournalArticle"),
+            EntryType::Article
+        ));
         assert!(matches!(cm_to_bib_type("BookChapter"), EntryType::InBook));
-        assert!(matches!(cm_to_bib_type("Dissertation"), EntryType::PhdThesis));
+        assert!(matches!(
+            cm_to_bib_type("Dissertation"),
+            EntryType::PhdThesis
+        ));
         assert!(matches!(
             cm_to_bib_type("ProceedingsArticle"),
             EntryType::InProceedings

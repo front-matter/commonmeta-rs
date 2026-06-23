@@ -1,6 +1,12 @@
 use serde_yaml::Value;
 
-use crate::data::{Affiliation, Contributor, Data, Date, Description, License, Publisher, Reference, Subject, Title};
+use crate::author_utils::{
+    cleanup_author, infer_contributor_type, normalize_contributor_roles, parse_affiliation_value,
+    split_person_name,
+};
+use crate::data::{
+    Affiliation, Contributor, Data, License, Organization, Person, Publisher, Reference, Subject,
+};
 use crate::doi_utils::normalize_doi;
 use crate::error::{Error, Result};
 use crate::utils::{normalize_id, normalize_orcid, sanitize};
@@ -37,9 +43,7 @@ fn null_val() -> &'static Value {
 
 fn get<'a>(v: &'a Value, key: &str) -> &'a Value {
     match v {
-        Value::Mapping(m) => m
-            .get(Value::String(key.to_string()))
-            .unwrap_or(null_val()),
+        Value::Mapping(m) => m.get(Value::String(key.to_string())).unwrap_or(null_val()),
         _ => null_val(),
     }
 }
@@ -59,12 +63,12 @@ fn github_from_url(url: &str) -> Option<GithubParts> {
     if !host.ends_with("github.com") && !host.ends_with("githubusercontent.com") {
         return None;
     }
-    let words: Vec<&str> = parsed
-        .path()
-        .trim_start_matches('/')
-        .split('/')
-        .collect();
-    let owner = words.first().copied().filter(|s| !s.is_empty())?.to_string();
+    let words: Vec<&str> = parsed.path().trim_start_matches('/').split('/').collect();
+    let owner = words
+        .first()
+        .copied()
+        .filter(|s| !s.is_empty())?
+        .to_string();
     let repo = words.get(1).copied().filter(|s| !s.is_empty())?.to_string();
     // GitHub web URLs: owner/repo/tree/<branch>/<path...>
     //                  words: [0]=owner [1]=repo [2]="tree"|"blob" [3]=branch [4+]=path
@@ -79,7 +83,12 @@ fn github_from_url(url: &str) -> Option<GithubParts> {
     } else {
         String::new()
     };
-    Some(GithubParts { owner, repo, release, path })
+    Some(GithubParts {
+        owner,
+        repo,
+        release,
+        path,
+    })
 }
 
 /// Convert any GitHub URL to the raw CITATION.cff download URL.
@@ -110,8 +119,8 @@ fn parse_cff_contributors(authors: &[Value]) -> Vec<Contributor> {
     authors
         .iter()
         .map(|author| {
-            let family_name = val_str(get(author, "family-names")).to_string();
-            let given_name = val_str(get(author, "given-names")).to_string();
+            let mut family_name = val_str(get(author, "family-names")).to_string();
+            let mut given_name = val_str(get(author, "given-names")).to_string();
             let orcid_raw = val_str(get(author, "orcid")).to_string();
             let orcid = if !orcid_raw.is_empty() {
                 let n = normalize_orcid(&orcid_raw);
@@ -119,10 +128,42 @@ fn parse_cff_contributors(authors: &[Value]) -> Vec<Contributor> {
             } else {
                 None
             };
+            let cleaned_name = cleanup_author(Some(val_str(get(author, "name")))).unwrap_or_default();
+            let has_person_fields = !family_name.is_empty() || !given_name.is_empty() || orcid.is_some();
 
-            if !family_name.is_empty() || !given_name.is_empty() || orcid.is_some() {
-                // Person
-                let affiliations: Vec<Affiliation> = match get(author, "affiliation") {
+            if has_person_fields
+                && (family_name.is_empty() || given_name.is_empty())
+                && !cleaned_name.is_empty()
+            {
+                let (g, f, _) = split_person_name(&cleaned_name);
+                if given_name.is_empty() {
+                    given_name = g;
+                }
+                if family_name.is_empty() {
+                    family_name = f;
+                }
+            }
+
+            let mut type_ = if has_person_fields {
+                infer_contributor_type(
+                    "",
+                    orcid.as_deref().unwrap_or(""),
+                    &given_name,
+                    &family_name,
+                    &cleaned_name,
+                    None,
+                )
+            } else {
+                "Organization".to_string()
+            };
+            if type_.is_empty() {
+                type_ = "Organization".to_string();
+            }
+
+            let roles = normalize_contributor_roles(&["Author".to_string()], "Author");
+
+            if type_ == "Person" {
+                let affiliations = match get(author, "affiliation") {
                     Value::String(s) if !s.is_empty() => vec![Affiliation {
                         name: s.clone(),
                         ..Default::default()
@@ -130,32 +171,30 @@ fn parse_cff_contributors(authors: &[Value]) -> Vec<Contributor> {
                     Value::Sequence(seq) => seq
                         .iter()
                         .filter_map(|a| {
-                            let name = val_str(a).to_string();
-                            if name.is_empty() { None } else {
-                                Some(Affiliation { name, ..Default::default() })
-                            }
+                            let json_val = serde_json::Value::String(val_str(a).to_string());
+                            parse_affiliation_value(&json_val)
                         })
                         .collect(),
                     _ => vec![],
                 };
-                Contributor {
-                    id: orcid.unwrap_or_default(),
-                    type_: "Person".to_string(),
-                    given_name,
-                    family_name,
-                    affiliations,
-                    contributor_roles: vec!["Author".to_string()],
-                    ..Default::default()
-                }
+                Contributor::person(
+                    Person {
+                        id: orcid.unwrap_or_default(),
+                        given_name,
+                        family_name,
+                        affiliations,
+                    },
+                    roles,
+                )
             } else {
                 // Organization
-                let name = val_str(get(author, "name")).to_string();
-                Contributor {
-                    type_: "Organization".to_string(),
-                    name,
-                    contributor_roles: vec!["Author".to_string()],
-                    ..Default::default()
-                }
+                Contributor::organization(
+                    Organization {
+                        name: cleaned_name,
+                        ..Default::default()
+                    },
+                    roles,
+                )
             }
         })
         .collect()
@@ -169,9 +208,9 @@ fn parse_cff_references(references: &[Value]) -> Vec<Reference> {
         .filter_map(|r| {
             // CFF spec field is "identifiers"; look for a DOI entry
             let identifiers = val_seq(get(r, "identifiers"));
-            let doi_entry = identifiers.iter().find(|id| {
-                val_str(get(id, "type")) == "doi"
-            })?;
+            let doi_entry = identifiers
+                .iter()
+                .find(|id| val_str(get(id, "type")) == "doi")?;
             let value = val_str(get(doi_entry, "value"));
             if value.is_empty() {
                 return None;
@@ -219,36 +258,19 @@ fn from_value(doc: &Value) -> Data {
 
     // Title
     let title = val_str(get(doc, "title")).to_string();
-    let titles = if !title.is_empty() {
-        vec![Title { title, ..Default::default() }]
-    } else {
-        vec![]
-    };
 
     // Contributors from `authors`
     let contributors = parse_cff_contributors(val_seq(get(doc, "authors")));
 
     // Date from `date-released`
-    let date_released = val_str_owned(get(doc, "date-released"));
-    let date = if !date_released.is_empty() {
-        Date {
-            published: date_released,
-            ..Default::default()
-        }
-    } else {
-        Date::default()
-    };
+    let date_published = val_str_owned(get(doc, "date-released"));
 
     // Abstract
     let abstract_text = val_str(get(doc, "abstract"));
-    let descriptions = if !abstract_text.is_empty() {
-        vec![Description {
-            description: sanitize(abstract_text),
-            type_: "Abstract".to_string(),
-            ..Default::default()
-        }]
+    let description = if !abstract_text.is_empty() {
+        sanitize(abstract_text)
     } else {
-        vec![]
+        String::new()
     };
 
     // License: can be a single SPDX ID string or a list — take first
@@ -257,12 +279,18 @@ fn from_value(doc: &Value) -> Data {
         Value::String(s) => s.clone(),
         Value::Sequence(seq) => seq
             .first()
-            .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+            .and_then(|v| {
+                if let Value::String(s) = v {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
             .unwrap_or_default(),
         _ => String::new(),
     };
     let license = if !license_id.is_empty() {
-        License { id: license_id, ..Default::default() }
+        crate::spdx::from_id(&license_id)
     } else {
         License::default()
     };
@@ -273,7 +301,10 @@ fn from_value(doc: &Value) -> Data {
     // Keywords → subjects
     let subjects: Vec<Subject> = val_seq(get(doc, "keywords"))
         .iter()
-        .map(|k| Subject { subject: val_str(k).to_string() })
+        .map(|k| Subject {
+            subject: val_str(k).to_string(),
+            ..Default::default()
+        })
         .filter(|s| !s.subject.is_empty())
         .collect();
 
@@ -284,10 +315,10 @@ fn from_value(doc: &Value) -> Data {
         id,
         type_: "Software".to_string(),
         url,
-        titles,
+        title,
         contributors,
-        date,
-        descriptions,
+        date_published,
+        description,
         license,
         version,
         subjects,
@@ -326,18 +357,18 @@ pub fn fetch(url: &str) -> Result<Data> {
         .text()
         .map_err(|e| Error::Http(e.to_string()))?;
 
-    let mut doc: Value =
-        serde_yaml::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?;
+    let mut doc: Value = serde_yaml::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?;
 
     // If repository-code is absent, fill it from the canonical repo URL
     if get(&doc, "repository-code") == null_val()
         && let Some(repo_url) = github_as_repo_url(&cff_url)
-            && let Value::Mapping(ref mut m) = doc {
-                m.insert(
-                    Value::String("repository-code".to_string()),
-                    Value::String(repo_url),
-                );
-            }
+        && let Value::Mapping(ref mut m) = doc
+    {
+        m.insert(
+            Value::String("repository-code".to_string()),
+            Value::String(repo_url),
+        );
+    }
 
     Ok(from_value(&doc))
 }
@@ -373,9 +404,9 @@ repository-code: https://github.com/example/my-software
         assert_eq!(data.type_, "Software");
         assert_eq!(data.id, "https://doi.org/10.5281/zenodo.1234567");
         assert_eq!(data.url, "https://github.com/example/my-software");
-        assert_eq!(data.titles[0].title, "My Research Software");
+        assert_eq!(data.title, "My Research Software");
         assert_eq!(data.version, "2.1.0");
-        assert_eq!(data.date.published, "2024-03-15");
+        assert_eq!(data.date_published, "2024-03-15");
         assert_eq!(data.license.id, "MIT");
         assert_eq!(data.publisher.name, "GitHub");
     }
@@ -388,14 +419,14 @@ repository-code: https://github.com/example/my-software
 
         let person = &data.contributors[0];
         assert_eq!(person.type_, "Person");
-        assert_eq!(person.family_name, "Smith");
-        assert_eq!(person.given_name, "John");
-        assert_eq!(person.id, "https://orcid.org/0000-0002-1825-0097");
-        assert_eq!(person.affiliations[0].name, "University of Example");
+        assert_eq!(person.family_name(), "Smith");
+        assert_eq!(person.given_name(), "John");
+        assert_eq!(person.id(), "https://orcid.org/0000-0002-1825-0097");
+        assert_eq!(person.affiliations()[0].name, "University of Example");
 
         let org = &data.contributors[1];
         assert_eq!(org.type_, "Organization");
-        assert_eq!(org.name, "ACME Research Group");
+        assert_eq!(org.name(), "ACME Research Group");
     }
 
     #[test]
@@ -409,9 +440,7 @@ repository-code: https://github.com/example/my-software
     #[test]
     fn test_cff_description() {
         let data = read_yaml(CFF_SOFTWARE).unwrap();
-        assert_eq!(data.descriptions.len(), 1);
-        assert_eq!(data.descriptions[0].description, "A software tool for research.");
-        assert_eq!(data.descriptions[0].type_, "Abstract");
+        assert_eq!(data.description, "A software tool for research.");
     }
 
     #[test]

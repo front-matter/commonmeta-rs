@@ -7,12 +7,7 @@ use common::fixtures_dir;
 #[test]
 fn commonmeta_schema_validation_fixture_matrix() {
     let dir = fixtures_dir().join("commonmeta");
-    let cases = [
-        ("journal_article.json", true),
-        // This fixture intentionally exercises a looser contributor shape
-        // and is expected to fail strict JSON Schema validation.
-        ("blog_post_1.json", false),
-    ];
+    let cases = [("journal_article.json", true), ("blog_post_1.json", true)];
 
     for (name, should_validate) in cases {
         let path = dir.join(name);

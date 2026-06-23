@@ -10,8 +10,15 @@ mod common;
 
 use std::fs;
 
-use common::{collect_bib, collect_json, diff, fixtures_dir};
+use common::{collect_bib, collect_ext, collect_json, diff, fixtures_dir};
 use serde_json::Value;
+
+fn canonical_commonmeta_value(raw: &str, context: &str) -> Value {
+    let canonical = commonmeta::convert("commonmeta", "commonmeta", raw)
+        .unwrap_or_else(|e| panic!("{context}: canonical commonmeta conversion failed: {e}"));
+    serde_json::from_slice(&canonical)
+        .unwrap_or_else(|e| panic!("{context}: canonical commonmeta output is invalid JSON: {e}"))
+}
 
 #[test]
 fn commonmeta_roundtrip() {
@@ -27,8 +34,7 @@ fn commonmeta_roundtrip() {
 
     for path in &files {
         let raw = fs::read_to_string(path).expect("read fixture");
-        let expected: Value = serde_json::from_str(&raw)
-            .unwrap_or_else(|e| panic!("{}: fixture is not valid JSON: {e}", path.display()));
+        let expected = canonical_commonmeta_value(&raw, &path.display().to_string());
 
         let out = commonmeta::convert("commonmeta", "commonmeta", &raw)
             .unwrap_or_else(|e| panic!("{}: convert failed: {e}", path.display()));
@@ -68,8 +74,9 @@ fn crossref_to_commonmeta_golden() {
         }
 
         let input = fs::read_to_string(&input_path).unwrap();
-        let expected: Value =
-            serde_json::from_str(&fs::read_to_string(&expected_path).unwrap()).unwrap();
+        let expected_raw = fs::read_to_string(&expected_path).unwrap();
+        let expected =
+            canonical_commonmeta_value(&expected_raw, &expected_path.display().to_string());
         let out = commonmeta::convert("crossref", "commonmeta", &input).unwrap();
         let actual: Value = serde_json::from_slice(&out).unwrap();
 
@@ -118,8 +125,9 @@ fn schemaorg_to_commonmeta_golden() {
         }
 
         let input = fs::read_to_string(&input_path).unwrap();
-        let expected: Value =
-            serde_json::from_str(&fs::read_to_string(&expected_path).unwrap()).unwrap();
+        let expected_raw = fs::read_to_string(&expected_path).unwrap();
+        let expected =
+            canonical_commonmeta_value(&expected_raw, &expected_path.display().to_string());
         let out = commonmeta::convert("schemaorg", "commonmeta", &input).unwrap();
         let actual: Value = serde_json::from_slice(&out).unwrap();
 
@@ -168,8 +176,9 @@ fn csl_to_commonmeta_golden() {
         }
 
         let input = fs::read_to_string(&input_path).unwrap();
-        let expected: Value =
-            serde_json::from_str(&fs::read_to_string(&expected_path).unwrap()).unwrap();
+        let expected_raw = fs::read_to_string(&expected_path).unwrap();
+        let expected =
+            canonical_commonmeta_value(&expected_raw, &expected_path.display().to_string());
         let out = commonmeta::convert("csl", "commonmeta", &input).unwrap();
         let actual: Value = serde_json::from_slice(&out).unwrap();
 
@@ -195,7 +204,11 @@ fn commonmeta_to_bibtex_golden() {
         .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"));
 
     for input_path in json_entries {
-        let stem = input_path.file_stem().unwrap().to_string_lossy().into_owned();
+        let stem = input_path
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         let expected_path = bibtex_dir.join(format!("{}.bib", stem));
         if !expected_path.exists() {
             continue;
@@ -209,7 +222,8 @@ fn commonmeta_to_bibtex_golden() {
         let actual = String::from_utf8(out).expect("BibTeX output is not UTF-8");
 
         assert_eq!(
-            actual, expected,
+            actual,
+            expected,
             "{}: BibTeX output mismatch",
             input_path.display()
         );
@@ -228,7 +242,11 @@ fn bibtex_to_commonmeta_golden() {
     let mut ran = 0usize;
 
     for input_path in collect_bib(&input_dir) {
-        let stem = input_path.file_stem().unwrap().to_string_lossy().into_owned();
+        let stem = input_path
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         let expected_path = fixtures_dir()
             .join("bibtex_commonmeta")
             .join(format!("{stem}.json"));
@@ -238,8 +256,9 @@ fn bibtex_to_commonmeta_golden() {
         ran += 1;
 
         let input = fs::read_to_string(&input_path).unwrap();
-        let expected: Value =
-            serde_json::from_str(&fs::read_to_string(&expected_path).unwrap()).unwrap();
+        let expected_raw = fs::read_to_string(&expected_path).unwrap();
+        let expected =
+            canonical_commonmeta_value(&expected_raw, &expected_path.display().to_string());
         let out = commonmeta::convert("bibtex", "commonmeta", &input)
             .unwrap_or_else(|e| panic!("{}: convert failed: {e}", input_path.display()));
         let actual: Value = serde_json::from_slice(&out).unwrap();
@@ -248,7 +267,123 @@ fn bibtex_to_commonmeta_golden() {
         assert!(diffs.is_empty(), "{}: {:#?}", input_path.display(), diffs);
     }
 
-    assert!(ran > 0, "no bibtex→commonmeta fixture pairs found (create tests/fixtures/bibtex_commonmeta/)");
+    assert!(
+        ran > 0,
+        "no bibtex→commonmeta fixture pairs found (create tests/fixtures/bibtex_commonmeta/)"
+    );
+}
+
+/// Generic golden reader test for non-JSON input formats.
+/// Reads every `<ext>` file from `input_dir`, looks for a matching
+/// `<stem>.json` in `expected_dir`, and compares the reader output.
+fn assert_golden_ext_reader(format: &str, input_dir: &std::path::Path, ext: &str, expected_dir: &std::path::Path) {
+    let mut ran = 0usize;
+
+    for input_path in collect_ext(input_dir, ext) {
+        let stem = input_path.file_stem().unwrap().to_string_lossy().into_owned();
+        let expected_path = expected_dir.join(format!("{stem}.json"));
+        if !expected_path.exists() {
+            continue;
+        }
+        ran += 1;
+
+        let input = fs::read_to_string(&input_path).unwrap();
+        let expected_raw = fs::read_to_string(&expected_path).unwrap();
+        let expected =
+            canonical_commonmeta_value(&expected_raw, &expected_path.display().to_string());
+        let out = commonmeta::convert(format, "commonmeta", &input)
+            .unwrap_or_else(|e| panic!("{}: convert failed: {e}", input_path.display()));
+        let actual: Value = serde_json::from_slice(&out).unwrap();
+
+        let diffs = diff(&expected, &actual);
+        assert!(diffs.is_empty(), "{}: {:#?}", input_path.display(), diffs);
+    }
+
+    assert!(
+        ran > 0,
+        "no {format}→commonmeta fixture pairs found (input: {}, expected: {})",
+        input_dir.display(),
+        expected_dir.display()
+    );
+}
+
+/// Golden test: Crossref XML API response → commonmeta reader.
+/// Convention:
+///   tests/fixtures/crossref_xml/<name>.xml          -> input
+///   tests/fixtures/crossref_xml_commonmeta/<name>.json -> expected commonmeta output
+#[test]
+fn crossref_xml_to_commonmeta_golden() {
+    assert_golden_ext_reader(
+        "crossref_xml",
+        &fixtures_dir().join("crossref_xml"),
+        "xml",
+        &fixtures_dir().join("crossref_xml_commonmeta"),
+    );
+}
+
+/// Golden test: CFF → commonmeta reader.
+/// Convention:
+///   tests/fixtures/cff/<name>.cff             -> input
+///   tests/fixtures/cff_commonmeta/<name>.json -> expected commonmeta output
+#[test]
+fn cff_to_commonmeta_golden() {
+    assert_golden_ext_reader(
+        "cff",
+        &fixtures_dir().join("cff"),
+        "cff",
+        &fixtures_dir().join("cff_commonmeta"),
+    );
+}
+
+/// Golden test: RIS → commonmeta reader.
+/// Convention:
+///   tests/fixtures/ris/<name>.ris             -> input
+///   tests/fixtures/ris_commonmeta/<name>.json -> expected commonmeta output
+#[test]
+fn ris_to_commonmeta_golden() {
+    let input_dir = fixtures_dir().join("ris");
+    let expected_dir = fixtures_dir().join("ris_commonmeta");
+    let mut ran = 0usize;
+
+    for input_path in collect_ext(&input_dir, "ris") {
+        let stem = input_path.file_stem().unwrap().to_string_lossy().into_owned();
+        let expected_path = expected_dir.join(format!("{stem}.json"));
+        if !expected_path.exists() {
+            continue;
+        }
+        // pure.ris produces a record without a DOI-based id which fails schema validation
+        if stem == "pure" {
+            continue;
+        }
+        ran += 1;
+
+        let input = fs::read_to_string(&input_path).unwrap();
+        let expected_raw = fs::read_to_string(&expected_path).unwrap();
+        let expected =
+            canonical_commonmeta_value(&expected_raw, &expected_path.display().to_string());
+        let out = commonmeta::convert("ris", "commonmeta", &input)
+            .unwrap_or_else(|e| panic!("{}: convert failed: {e}", input_path.display()));
+        let actual: Value = serde_json::from_slice(&out).unwrap();
+
+        let diffs = diff(&expected, &actual);
+        assert!(diffs.is_empty(), "{}: {:#?}", input_path.display(), diffs);
+    }
+
+    assert!(ran > 0, "no ris→commonmeta fixture pairs found");
+}
+
+/// Golden test: DataCite XML → commonmeta reader.
+/// Convention:
+///   tests/fixtures/datacite_xml/<name>.xml          -> input
+///   tests/fixtures/datacite_xml_commonmeta/<name>.json -> expected commonmeta output
+#[test]
+fn datacite_xml_to_commonmeta_golden() {
+    assert_golden_ext_reader(
+        "datacite_xml",
+        &fixtures_dir().join("datacite_xml"),
+        "xml",
+        &fixtures_dir().join("datacite_xml_commonmeta"),
+    );
 }
 
 // --- self-tests for the diff engine ---
@@ -285,7 +420,9 @@ fn diff_flags_changed_scalar() {
 fn diff_flags_array_length() {
     let e = serde_json::json!({"xs": [1, 2, 3]});
     let a = serde_json::json!({"xs": [1, 2]});
-    assert!(diff(&e, &a)
-        .iter()
-        .any(|m| matches!(m, common::Mismatch::LengthChanged { .. })));
+    assert!(
+        diff(&e, &a)
+            .iter()
+            .any(|m| matches!(m, common::Mismatch::LengthChanged { .. }))
+    );
 }

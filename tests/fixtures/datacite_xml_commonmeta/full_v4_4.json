@@ -1,0 +1,110 @@
+{
+    "id": "https://doi.org/10.5072/example-full",
+    "type": "Software",
+    "additional_titles": [
+        {
+            "title": "Demonstration of DataCite Properties.",
+            "type": "Subtitle",
+            "language": "en-US"
+        }
+    ],
+    "additional_type": "XML",
+    "container": {
+        "identifier": "10.1016/j.physletb.2017.11.044",
+        "identifier_type": "DOI",
+        "type": "Journal",
+        "title": "Physics letters / B",
+        "first_page": "249",
+        "last_page": "264",
+        "volume": "776"
+    },
+    "contributors": [
+        {
+            "type": "Person",
+            "person": {
+                "id": "https://orcid.org/0000-0001-5000-0007",
+                "given_name": "Elizabeth",
+                "family_name": "Miller",
+                "affiliations": [
+                    {
+                        "name": "DataCite"
+                    }
+                ]
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "id": "https://orcid.org/0000-0002-7285-027X",
+                "given_name": "Joan",
+                "family_name": "Starr",
+                "affiliations": [
+                    {
+                        "name": "California Digital Library"
+                    }
+                ]
+            },
+            "roles": [
+                "ProjectLeader"
+            ]
+        }
+    ],
+    "date_published": "2014",
+    "date_updated": "2021-01-26",
+    "description": "XML example of all DataCite Metadata Schema v4.4 properties.",
+    "funding_references": [
+        {
+            "funder_name": "National Science Foundation",
+            "award_title": "Full DataCite XML Example",
+            "award_number": "CBET-106"
+        }
+    ],
+    "geo_locations": [
+        {
+            "geo_location_place": "Atlantic Ocean",
+            "geo_location_point_longitude": -67.302,
+            "geo_location_point_latitude": 31.233,
+            "geo_location_box_west_longitude": -71.032,
+            "geo_location_box_east_longitude": -68.211,
+            "geo_location_box_south_latitude": 41.09,
+            "geo_location_box_north_latitude": 42.893
+        }
+    ],
+    "identifiers": [
+        {
+            "identifier": "https://schema.datacite.org/meta/kernel-4.4/example/datacite-example-full-v4.4.xml",
+            "identifier_type": "URL"
+        },
+        {
+            "identifier": "https://doi.org/10.5072/example-full",
+            "identifier_type": "DOI"
+        }
+    ],
+    "language": "en-US",
+    "license": {
+        "id": "CC0-1.0",
+        "title": "Creative Commons Zero v1.0 Universal",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/legalcode"
+    },
+    "provider": "DataCite",
+    "publisher": {
+        "name": "DataCite"
+    },
+    "relations": [
+        {
+            "id": "arxiv:0706.0001",
+            "type": "HasReview"
+        }
+    ],
+    "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+    "subjects": [
+        {
+            "subject": "computer science"
+        }
+    ],
+    "title": "Full DataCite XML Example",
+    "version": "4.2"
+}

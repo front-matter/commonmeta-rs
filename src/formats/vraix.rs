@@ -10,7 +10,7 @@ use arrow::datatypes::{DataType, Field, Int8Type, Int32Type, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -70,7 +70,10 @@ fn find_transport_table(connection: &Connection) -> rusqlite::Result<Option<Stri
     Ok(None)
 }
 
-fn table_has_transport_columns(connection: &Connection, table_name: &str) -> rusqlite::Result<bool> {
+fn table_has_transport_columns(
+    connection: &Connection,
+    table_name: &str,
+) -> rusqlite::Result<bool> {
     let pragma_query = format!("PRAGMA table_info({})", quote_identifier(table_name));
     let mut statement = connection.prepare(&pragma_query)?;
     let column_names = statement.query_map([], |row| row.get::<_, String>(1))?;
@@ -142,7 +145,8 @@ fn route_raw_metadata(source_id: i64, raw_metadata: &str) -> Result<Data> {
 }
 
 fn read_crossref_row(raw_metadata: &str) -> Result<Data> {
-    let value: Value = serde_json::from_str(raw_metadata).map_err(|e| Error::Parse(e.to_string()))?;
+    let value: Value =
+        serde_json::from_str(raw_metadata).map_err(|e| Error::Parse(e.to_string()))?;
     let json_text = if value.get("message").is_some() {
         raw_metadata.to_string()
     } else {
@@ -152,7 +156,8 @@ fn read_crossref_row(raw_metadata: &str) -> Result<Data> {
 }
 
 fn read_datacite_row(raw_metadata: &str) -> Result<Data> {
-    let value: Value = serde_json::from_str(raw_metadata).map_err(|e| Error::Parse(e.to_string()))?;
+    let value: Value =
+        serde_json::from_str(raw_metadata).map_err(|e| Error::Parse(e.to_string()))?;
     let json_text = if value.get("data").is_some() {
         raw_metadata.to_string()
     } else {
@@ -182,7 +187,9 @@ pub fn read_dump<P: AsRef<Path>>(
     let Some(table_name) =
         find_transport_table(&connection).map_err(|e| Error::Parse(e.to_string()))?
     else {
-        return Err(Error::Parse("no VRAIX table with pid/source_id/raw_metadata found".to_string()));
+        return Err(Error::Parse(
+            "no VRAIX table with pid/source_id/raw_metadata found".to_string(),
+        ));
     };
 
     let convert_row: fn(&str) -> Result<Data> = match from {
@@ -216,7 +223,9 @@ pub fn read_dump<P: AsRef<Path>>(
         ),
         None => format!("SELECT raw_metadata FROM {}", quote_identifier(&table_name)),
     };
-    let mut statement = connection.prepare(&query).map_err(|e| Error::Parse(e.to_string()))?;
+    let mut statement = connection
+        .prepare(&query)
+        .map_err(|e| Error::Parse(e.to_string()))?;
 
     let mut out = Vec::new();
     match limit {
@@ -272,8 +281,16 @@ pub fn vraix_table_schema() -> Schema {
             true,
         ),
         Field::new("resource_url", DataType::Utf8, true),
-        Field::new("last_modified", DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())), true),
-        Field::new("last_fetched", DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())), true),
+        Field::new(
+            "last_modified",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        ),
+        Field::new(
+            "last_fetched",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        ),
         Field::new("raw_metadata", DataType::LargeUtf8, true),
         Field::new(
             "raw_metadata_type",
@@ -288,11 +305,16 @@ pub fn vraix_table_schema() -> Schema {
 /// doesn't have (e.g. the minimal `pid`/`source_id`/`raw_metadata`-only
 /// fixtures used in this module's tests) come back as all-null rather than
 /// erroring, so this works against any table `find_transport_table` finds.
-pub fn read_table_arrow<P: AsRef<Path>>(sqlite_path: P, batch_size: usize) -> Result<Vec<RecordBatch>> {
+pub fn read_table_arrow<P: AsRef<Path>>(
+    sqlite_path: P,
+    batch_size: usize,
+) -> Result<Vec<RecordBatch>> {
     let connection = Connection::open(sqlite_path).map_err(|e| Error::Parse(e.to_string()))?;
     let table = find_transport_table(&connection)
         .map_err(|e| Error::Parse(e.to_string()))?
-        .ok_or_else(|| Error::Parse("no VRAIX table with pid/source_id/raw_metadata found".to_string()))?;
+        .ok_or_else(|| {
+            Error::Parse("no VRAIX table with pid/source_id/raw_metadata found".to_string())
+        })?;
 
     let existing = table_columns(&connection, &table).map_err(|e| Error::Parse(e.to_string()))?;
     let has = |name: &str| existing.iter().any(|c| c.eq_ignore_ascii_case(name));
@@ -317,12 +339,20 @@ pub fn read_table_arrow<P: AsRef<Path>>(sqlite_path: P, batch_size: usize) -> Re
     ];
     let select = format!(
         "SELECT {} FROM {}",
-        COLUMNS.iter().map(|c| select_expr(c)).collect::<Vec<_>>().join(", "),
+        COLUMNS
+            .iter()
+            .map(|c| select_expr(c))
+            .collect::<Vec<_>>()
+            .join(", "),
         quote_identifier(&table)
     );
 
-    let mut statement = connection.prepare(&select).map_err(|e| Error::Parse(e.to_string()))?;
-    let mut rows = statement.query([]).map_err(|e| Error::Parse(e.to_string()))?;
+    let mut statement = connection
+        .prepare(&select)
+        .map_err(|e| Error::Parse(e.to_string()))?;
+    let mut rows = statement
+        .query([])
+        .map_err(|e| Error::Parse(e.to_string()))?;
     let batch_size = batch_size.max(1);
 
     let mut batches = Vec::new();
@@ -339,18 +369,33 @@ pub fn read_table_arrow<P: AsRef<Path>>(sqlite_path: P, batch_size: usize) -> Re
 
         let mut n = 0;
         while n < batch_size {
-            let Some(row) = rows.next().map_err(|e| Error::Parse(e.to_string()))? else { break };
-            ids.push(row.get::<_, Option<i64>>(0).map_err(|e| Error::Parse(e.to_string()))?.unwrap_or_default());
-            pids.push(
-                row.get::<_, Option<String>>(1).map_err(|e| Error::Parse(e.to_string()))?.unwrap_or_default(),
+            let Some(row) = rows.next().map_err(|e| Error::Parse(e.to_string()))? else {
+                break;
+            };
+            ids.push(
+                row.get::<_, Option<i64>>(0)
+                    .map_err(|e| Error::Parse(e.to_string()))?
+                    .unwrap_or_default(),
             );
-            pid_types.push(row.get::<_, Option<i64>>(2).map_err(|e| Error::Parse(e.to_string()))?.map(|v| v as i32));
+            pids.push(
+                row.get::<_, Option<String>>(1)
+                    .map_err(|e| Error::Parse(e.to_string()))?
+                    .unwrap_or_default(),
+            );
+            pid_types.push(
+                row.get::<_, Option<i64>>(2)
+                    .map_err(|e| Error::Parse(e.to_string()))?
+                    .map(|v| v as i32),
+            );
             source_ids.push(
                 row.get::<_, Option<i64>>(3)
                     .map_err(|e| Error::Parse(e.to_string()))?
                     .and_then(|v| source_name_from_id(v).map(str::to_string)),
             );
-            resource_urls.push(row.get::<_, Option<String>>(4).map_err(|e| Error::Parse(e.to_string()))?);
+            resource_urls.push(
+                row.get::<_, Option<String>>(4)
+                    .map_err(|e| Error::Parse(e.to_string()))?,
+            );
             last_modifieds.push(
                 row.get::<_, Option<String>>(5)
                     .map_err(|e| Error::Parse(e.to_string()))?
@@ -361,8 +406,14 @@ pub fn read_table_arrow<P: AsRef<Path>>(sqlite_path: P, batch_size: usize) -> Re
                     .map_err(|e| Error::Parse(e.to_string()))?
                     .and_then(|s| parse_timestamp_micros(&s)),
             );
-            raw_metadatas.push(row.get::<_, Option<String>>(7).map_err(|e| Error::Parse(e.to_string()))?);
-            raw_metadata_types.push(row.get::<_, Option<String>>(8).map_err(|e| Error::Parse(e.to_string()))?);
+            raw_metadatas.push(
+                row.get::<_, Option<String>>(7)
+                    .map_err(|e| Error::Parse(e.to_string()))?,
+            );
+            raw_metadata_types.push(
+                row.get::<_, Option<String>>(8)
+                    .map_err(|e| Error::Parse(e.to_string()))?,
+            );
             n += 1;
         }
         if n == 0 {
@@ -399,15 +450,21 @@ pub fn write_table_parquet<P: AsRef<Path>>(sqlite_path: P, batch_size: usize) ->
     let mut writer =
         ArrowWriter::try_new(buffer, schema, None).map_err(|e| Error::Serialize(e.to_string()))?;
     for batch in &batches {
-        writer.write(batch).map_err(|e| Error::Serialize(e.to_string()))?;
+        writer
+            .write(batch)
+            .map_err(|e| Error::Serialize(e.to_string()))?;
     }
-    writer.into_inner().map_err(|e| Error::Serialize(e.to_string()))
+    writer
+        .into_inner()
+        .map_err(|e| Error::Serialize(e.to_string()))
 }
 
 /// Parse an ISO 8601/RFC 3339 timestamp (e.g.
 /// `"2026-06-15T10:27:15.404000+00:00"`) into microseconds since the epoch.
 fn parse_timestamp_micros(s: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp_micros())
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.timestamp_micros())
 }
 
 fn table_columns(connection: &Connection, table_name: &str) -> rusqlite::Result<Vec<String>> {
@@ -543,7 +600,10 @@ mod tests {
         let dir = std::env::temp_dir().join("commonmeta_vraix_read_dump_datacite");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("datacite.sqlite3");
-        write_dump_sqlite(&path, &[r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#]);
+        write_dump_sqlite(
+            &path,
+            &[r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#],
+        );
 
         let data = read_dump(&path, "datacite", None, 0).unwrap();
         assert_eq!(data.len(), 1);
@@ -587,7 +647,10 @@ mod tests {
     }
 
     #[allow(clippy::type_complexity)]
-    fn write_full_table_sqlite(path: &Path, rows: &[(&str, i64, i64, &str, &str, &str, &str, &str)]) {
+    fn write_full_table_sqlite(
+        path: &Path,
+        rows: &[(&str, i64, i64, &str, &str, &str, &str, &str)],
+    ) {
         std::fs::remove_file(path).ok();
         let connection = rusqlite::Connection::open(path).unwrap();
         connection
@@ -605,8 +668,16 @@ mod tests {
                 );",
             )
             .unwrap();
-        for (pid, pid_type, source_id, resource_url, last_modified, last_fetched, raw_metadata, raw_metadata_type) in
-            rows
+        for (
+            pid,
+            pid_type,
+            source_id,
+            resource_url,
+            last_modified,
+            last_fetched,
+            raw_metadata,
+            raw_metadata_type,
+        ) in rows
         {
             connection
                 .execute(
@@ -642,7 +713,12 @@ mod tests {
         assert_eq!(batch.schema().as_ref(), &vraix_table_schema());
 
         // pid/raw_metadata exist in the minimal fixture...
-        let pid_col = batch.column_by_name("pid").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
+        let pid_col = batch
+            .column_by_name("pid")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(pid_col.value(0), "pid-0");
         // ...but pid_type/resource_url don't, so they come back null rather
         // than erroring.
@@ -692,7 +768,14 @@ mod tests {
         let dir = std::env::temp_dir().join("commonmeta_vraix_arrow_batches");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("crossref.sqlite3");
-        write_dump_sqlite(&path, &[r#"{"DOI":"10.1/a"}"#, r#"{"DOI":"10.1/b"}"#, r#"{"DOI":"10.1/c"}"#]);
+        write_dump_sqlite(
+            &path,
+            &[
+                r#"{"DOI":"10.1/a"}"#,
+                r#"{"DOI":"10.1/b"}"#,
+                r#"{"DOI":"10.1/c"}"#,
+            ],
+        );
 
         let batches = read_table_arrow(&path, 2).unwrap();
         assert_eq!(batches.len(), 2);
@@ -717,7 +800,9 @@ mod tests {
         let reader = SerializedFileReader::new(::bytes::Bytes::from(bytes)).unwrap();
         assert_eq!(reader.metadata().file_metadata().num_rows(), 2);
         let schema = reader.metadata().file_metadata().schema_descr();
-        let column_names: Vec<String> = (0..schema.num_columns()).map(|i| schema.column(i).name().to_string()).collect();
+        let column_names: Vec<String> = (0..schema.num_columns())
+            .map(|i| schema.column(i).name().to_string())
+            .collect();
         assert_eq!(
             column_names,
             vec![

@@ -1,0 +1,92 @@
+{
+    "id": "https://doi.org/10.4230/lipics.tqc.2013.93",
+    "type": "ProceedingsArticle",
+    "additional_descriptions": [
+        {
+            "description": "LIPIcs, Vol. 22, 8th Conference on the Theory of Quantum Computation, Communication and Cryptography (TQC 2013), pages 93-105",
+            "type": "Other",
+            "language": "en"
+        }
+    ],
+    "container": {
+        "identifier": "10.4230/LIPIcs.TQC.2013",
+        "identifier_type": "DOI",
+        "type": "Series",
+        "title": "LIPIcs, Volume 22, TQC 2013",
+        "first_page": "93",
+        "last_page": "105",
+        "volume": "22"
+    },
+    "contributors": [
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Nathaniel",
+                "family_name": "Johnston"
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Simone",
+                "family_name": "Severini"
+            },
+            "roles": [
+                "Editor"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Fernando",
+                "family_name": "Brandao"
+            },
+            "roles": [
+                "Editor"
+            ]
+        }
+    ],
+    "date_published": "2013",
+    "dates": {
+        "created": "2013-11-13",
+        "available": "2013-11-13"
+    },
+    "description": "We investigate the problem of constructing unextendible product bases in the qubit case - that is, when each local dimension equals 2. The cardinality of the smallest unextendible product basis is known in all qubit cases except when the number of parties is a multiple of 4 greater than 4 itself. We construct small unextendible product bases in all of the remaining open cases, and we use graph theory techniques to produce a computer-assisted proof that our constructions are indeed the smallest possible.",
+    "identifiers": [
+        {
+            "identifier": "urn:nbn:de:0030-drops-43173",
+            "identifier_type": "URN"
+        },
+        {
+            "identifier": "https://doi.org/10.4230/lipics.tqc.2013.93",
+            "identifier_type": "DOI"
+        }
+    ],
+    "language": "en",
+    "license": {
+        "id": "CC-BY-3.0",
+        "title": "Creative Commons Attribution 3.0 Unported",
+        "url": "https://creativecommons.org/licenses/by/3.0/legalcode"
+    },
+    "provider": "DataCite",
+    "publisher": {
+        "name": "Schloss Dagstuhl \u2013 Leibniz-Zentrum f\u00fcr Informatik"
+    },
+    "relations": [
+        {
+            "id": "https://doi.org/10.4230/lipics.tqc.2013",
+            "type": "IsPartOf"
+        }
+    ],
+    "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+    "subjects": [
+        {
+            "subject": "unextendible product basis; quantum entanglement; graph factorization"
+        }
+    ],
+    "title": "The Minimum Size of Qubit Unextendible Product Bases",
+    "url": "https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.TQC.2013.93"
+}

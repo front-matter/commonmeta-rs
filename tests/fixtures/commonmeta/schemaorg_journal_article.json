@@ -1,41 +1,44 @@
 {
-  "container": {},
+  "id": "https://doi.org/10.5555/12345678",
+  "type": "JournalArticle",
   "contributors": [
     {
-      "affiliations": [
-        {
-          "id": "https://ror.org/05dxps055",
-          "name": "Example University"
-        }
-      ],
-      "contributorRoles": [
+      "type": "Person",
+      "person": {
+        "id": "https://orcid.org/0000-0001-5000-0007",
+        "given_name": "Ada",
+        "family_name": "Lovelace",
+        "affiliations": [
+          {
+            "id": "https://ror.org/05dxps055",
+            "name": "Example University"
+          }
+        ]
+      },
+      "roles": [
         "Author"
-      ],
-      "familyName": "Lovelace",
-      "givenName": "Ada",
-      "id": "https://orcid.org/0000-0001-5000-0007",
-      "type": "Person"
+      ]
     }
   ],
-  "date": {
-    "published": "2024-03-15"
-  },
-  "descriptions": [
+  "date_published": "2024-03-15",
+  "description": "An abstract about things.",
+  "identifiers": [
     {
-      "description": "An abstract about things.",
-      "type": "Abstract"
+      "identifier": "https://doi.org/10.5555/12345678",
+      "identifier_type": "DOI"
     }
   ],
-  "id": "https://doi.org/10.5555/12345678",
   "language": "en",
   "license": {
     "id": "CC-BY-4.0",
+    "title": "Creative Commons Attribution 4.0 International",
     "url": "https://creativecommons.org/licenses/by/4.0/legalcode"
   },
   "provider": "Crossref",
   "publisher": {
     "name": "Example Publisher"
   },
+  "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
   "subjects": [
     {
       "subject": "science"
@@ -44,12 +47,7 @@
       "subject": "research"
     }
   ],
-  "titles": [
-    {
-      "title": "A Study of Things"
-    }
-  ],
-  "type": "JournalArticle",
+  "title": "A Study of Things",
   "url": "https://example.org/article/1",
   "version": "1.0"
 }

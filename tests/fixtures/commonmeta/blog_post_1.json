@@ -1,31 +1,36 @@
 {
   "id": "https://doi.org/10.59350/abcde-fghij",
   "type": "Article",
-  "url": "https://blog.example.org/post",
-  "language": "en",
-  "provider": "Crossref",
-  "titles": [
-    { "title": "Hello World" },
+  "additional_titles": [
     { "title": "An Introduction", "type": "Subtitle" }
   ],
+  "content": "<p>Hello <strong>world</strong>.</p>",
   "contributors": [
     {
       "type": "Person",
-      "givenName": "Jane",
-      "familyName": "Doe",
-      "contributorRoles": ["Author"]
+      "person": {
+        "given_name": "Jane",
+        "family_name": "Doe"
+      },
+      "roles": [
+        "Author"
+      ]
     }
   ],
-  "publisher": { "name": "Example Blog" },
-  "date": { "published": "2025-02-10" },
-  "descriptions": [
-    { "description": "A short summary of the post.", "type": "Abstract" }
-  ],
-  "contentHTML": "<p>Hello <strong>world</strong>.</p>",
+  "date_published": "2025-02-10",
+  "description": "A short summary of the post.",
+  "language": "en",
+  "provider": "Crossref",
+  "publisher": {
+    "name": "Example Blog"
+  },
   "relations": [
     { "id": "https://doi.org/10.5555/journal", "type": "IsPartOf" }
   ],
+  "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
   "subjects": [
     { "subject": "Technology" }
-  ]
+  ],
+  "title": "Hello World",
+  "url": "https://blog.example.org/post"
 }

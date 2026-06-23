@@ -1,0 +1,65 @@
+{
+  "id": "https://doi.org/10.5063/f1m61h5x",
+  "type": "Software",
+  "contributors": [
+    {
+      "type": "Person",
+      "person": {
+        "id": "https://orcid.org/0000-0003-0077-4738",
+        "given_name": "Matt",
+        "family_name": "Jones",
+        "affiliations": [
+          {
+            "name": "NCEAS"
+          }
+        ]
+      },
+      "roles": [
+        "Author"
+      ]
+    },
+    {
+      "type": "Person",
+      "person": {
+        "id": "https://orcid.org/0000-0002-2192-403X",
+        "given_name": "Peter",
+        "family_name": "Slaughter",
+        "affiliations": [
+          {
+            "name": "NCEAS"
+          }
+        ]
+      },
+      "roles": [
+        "Author"
+      ]
+    },
+    {
+      "type": "Organization",
+      "organization": {
+        "name": "University of California, Santa Barbara"
+      },
+      "roles": [
+        "Author"
+      ]
+    }
+  ],
+  "date_published": "2016-05-27",
+  "date_updated": "2016-05-27",
+  "dates": {
+    "created": "2016-05-27"
+  },
+  "description": "Provides read and write access to data and metadata from the DataONE network of data repositories.Each DataONE repository implements a consistent repository application programming interface. Users call methods in R to access these remote repository functions, such as methods to query the metadata catalog, get access to metadata for particular data packages, and read the data objects from the data repository.Users can also insert and update data objects on repositories that support these methods.",
+  "license": {
+    "id": "Apache-2.0",
+    "title": "Apache License 2.0",
+    "url": "https://www.apache.org/licenses/LICENSE-2.0"
+  },
+  "publisher": {
+    "name": "https://cran.r-project.org"
+  },
+  "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+  "title": "R Interface to the DataONE REST API",
+  "url": "https://github.com/DataONEorg/rdataone",
+  "version": "2.0.0"
+}

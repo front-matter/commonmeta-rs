@@ -128,9 +128,11 @@ pub fn validate_id(id: &str) -> (String, &'static str) {
         return (issn, "ISSN");
     }
 
-    let url = validate_url(id);
-    if !url.is_empty() {
-        return (id.to_string(), "URL");
+    match validate_url(id).as_str() {
+        "DOI" => return (id.to_string(), "DOI"),
+        "JSONFEEDID" => return (id.to_string(), "JSONFEEDID"),
+        "URL" => return (id.to_string(), "URL"),
+        _ => {}
     }
 
     (String::new(), "")
@@ -513,11 +515,7 @@ pub fn normalize_url(s: &str, secure: bool, lower: bool) -> Option<String> {
         let _ = u.set_scheme("https");
     }
     let result = u.to_string();
-    Some(if lower {
-        result.to_lowercase()
-    } else {
-        result
-    })
+    Some(if lower { result.to_lowercase() } else { result })
 }
 
 /// Normalizes a Creative Commons license URL to the canonical `/legalcode` form.
@@ -526,45 +524,162 @@ pub fn normalize_cc_url(url_: &str) -> (String, bool) {
     lazy_static! {
         static ref CC_MAP: std::collections::HashMap<&'static str, &'static str> = {
             let mut m = std::collections::HashMap::new();
-            m.insert("https://creativecommons.org/licenses/by/1.0",          "https://creativecommons.org/licenses/by/1.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by/2.0",          "https://creativecommons.org/licenses/by/2.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by/2.5",          "https://creativecommons.org/licenses/by/2.5/legalcode");
-            m.insert("https://creativecommons.org/licenses/by/3.0",          "https://creativecommons.org/licenses/by/3.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by/3.0/us",       "https://creativecommons.org/licenses/by/3.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by/4.0",          "https://creativecommons.org/licenses/by/4.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc/1.0",       "https://creativecommons.org/licenses/by-nc/1.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc/2.0",       "https://creativecommons.org/licenses/by-nc/2.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc/2.5",       "https://creativecommons.org/licenses/by-nc/2.5/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc/3.0",       "https://creativecommons.org/licenses/by-nc/3.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc/4.0",       "https://creativecommons.org/licenses/by-nc/4.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nd-nc/1.0",    "https://creativecommons.org/licenses/by-nd-nc/1.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nd-nc/2.0",    "https://creativecommons.org/licenses/by-nd-nc/2.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nd-nc/2.5",    "https://creativecommons.org/licenses/by-nd-nc/2.5/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nd-nc/3.0",    "https://creativecommons.org/licenses/by-nd-nc/3.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nd-nc/4.0",    "https://creativecommons.org/licenses/by-nd-nc/4.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc-sa/1.0",    "https://creativecommons.org/licenses/by-nc-sa/1.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc-sa/2.0",    "https://creativecommons.org/licenses/by-nc-sa/2.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc-sa/2.5",    "https://creativecommons.org/licenses/by-nc-sa/2.5/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc-sa/3.0",    "https://creativecommons.org/licenses/by-nc-sa/3.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc-sa/3.0/us", "https://creativecommons.org/licenses/by-nc-sa/3.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc-sa/4.0",    "https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nd/1.0",       "https://creativecommons.org/licenses/by-nd/1.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nd/2.0",       "https://creativecommons.org/licenses/by-nd/2.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nd/2.5",       "https://creativecommons.org/licenses/by-nd/2.5/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nd/3.0",       "https://creativecommons.org/licenses/by-nd/3.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nd/4.0",       "https://creativecommons.org/licenses/by-nd/2.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-sa/1.0",       "https://creativecommons.org/licenses/by-sa/1.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-sa/2.0",       "https://creativecommons.org/licenses/by-sa/2.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-sa/2.5",       "https://creativecommons.org/licenses/by-sa/2.5/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-sa/3.0",       "https://creativecommons.org/licenses/by-sa/3.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-sa/4.0",       "https://creativecommons.org/licenses/by-sa/4.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc-nd/1.0",    "https://creativecommons.org/licenses/by-nc-nd/1.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc-nd/2.0",    "https://creativecommons.org/licenses/by-nc-nd/2.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc-nd/2.5",    "https://creativecommons.org/licenses/by-nc-nd/2.5/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc-nd/3.0",    "https://creativecommons.org/licenses/by-nc-nd/3.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/by-nc-nd/4.0",    "https://creativecommons.org/licenses/by-nc-nd/4.0/legalcode");
-            m.insert("https://creativecommons.org/licenses/publicdomain",    "https://creativecommons.org/licenses/publicdomain/");
-            m.insert("https://creativecommons.org/publicdomain/zero/1.0",    "https://creativecommons.org/publicdomain/zero/1.0/legalcode");
+            m.insert(
+                "https://creativecommons.org/licenses/by/1.0",
+                "https://creativecommons.org/licenses/by/1.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by/2.0",
+                "https://creativecommons.org/licenses/by/2.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by/2.5",
+                "https://creativecommons.org/licenses/by/2.5/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by/3.0",
+                "https://creativecommons.org/licenses/by/3.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by/3.0/us",
+                "https://creativecommons.org/licenses/by/3.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by/4.0",
+                "https://creativecommons.org/licenses/by/4.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc/1.0",
+                "https://creativecommons.org/licenses/by-nc/1.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc/2.0",
+                "https://creativecommons.org/licenses/by-nc/2.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc/2.5",
+                "https://creativecommons.org/licenses/by-nc/2.5/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc/3.0",
+                "https://creativecommons.org/licenses/by-nc/3.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc/4.0",
+                "https://creativecommons.org/licenses/by-nc/4.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nd-nc/1.0",
+                "https://creativecommons.org/licenses/by-nd-nc/1.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nd-nc/2.0",
+                "https://creativecommons.org/licenses/by-nd-nc/2.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nd-nc/2.5",
+                "https://creativecommons.org/licenses/by-nd-nc/2.5/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nd-nc/3.0",
+                "https://creativecommons.org/licenses/by-nd-nc/3.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nd-nc/4.0",
+                "https://creativecommons.org/licenses/by-nd-nc/4.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc-sa/1.0",
+                "https://creativecommons.org/licenses/by-nc-sa/1.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc-sa/2.0",
+                "https://creativecommons.org/licenses/by-nc-sa/2.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc-sa/2.5",
+                "https://creativecommons.org/licenses/by-nc-sa/2.5/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc-sa/3.0",
+                "https://creativecommons.org/licenses/by-nc-sa/3.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc-sa/3.0/us",
+                "https://creativecommons.org/licenses/by-nc-sa/3.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc-sa/4.0",
+                "https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nd/1.0",
+                "https://creativecommons.org/licenses/by-nd/1.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nd/2.0",
+                "https://creativecommons.org/licenses/by-nd/2.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nd/2.5",
+                "https://creativecommons.org/licenses/by-nd/2.5/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nd/3.0",
+                "https://creativecommons.org/licenses/by-nd/3.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nd/4.0",
+                "https://creativecommons.org/licenses/by-nd/2.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-sa/1.0",
+                "https://creativecommons.org/licenses/by-sa/1.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-sa/2.0",
+                "https://creativecommons.org/licenses/by-sa/2.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-sa/2.5",
+                "https://creativecommons.org/licenses/by-sa/2.5/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-sa/3.0",
+                "https://creativecommons.org/licenses/by-sa/3.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-sa/4.0",
+                "https://creativecommons.org/licenses/by-sa/4.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc-nd/1.0",
+                "https://creativecommons.org/licenses/by-nc-nd/1.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc-nd/2.0",
+                "https://creativecommons.org/licenses/by-nc-nd/2.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc-nd/2.5",
+                "https://creativecommons.org/licenses/by-nc-nd/2.5/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc-nd/3.0",
+                "https://creativecommons.org/licenses/by-nc-nd/3.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/by-nc-nd/4.0",
+                "https://creativecommons.org/licenses/by-nc-nd/4.0/legalcode",
+            );
+            m.insert(
+                "https://creativecommons.org/licenses/publicdomain",
+                "https://creativecommons.org/licenses/publicdomain/",
+            );
+            m.insert(
+                "https://creativecommons.org/publicdomain/zero/1.0",
+                "https://creativecommons.org/publicdomain/zero/1.0/legalcode",
+            );
             m
         };
     }
@@ -593,57 +708,13 @@ pub fn normalize_cc_url(url_: &str) -> (String, bool) {
     }
     // Some providers (e.g. DataCite) return URLs that already end with /legalcode.
     // Strip that suffix and try again.
-    let stripped = key
-        .strip_suffix("/legalcode")
-        .unwrap_or(key.as_str());
+    let stripped = key.strip_suffix("/legalcode").unwrap_or(key.as_str());
     match CC_MAP.get(stripped) {
         Some(v) => (v.to_string(), true),
         None => (String::new(), false),
     }
 }
 
-/// Maps a Creative Commons license URL (any form) to its SPDX identifier.
-pub fn url_to_spdx(url: &str) -> String {
-    let (canonical, _) = normalize_cc_url(url);
-    if canonical.is_empty() {
-        return String::new();
-    }
-    match canonical.as_str() {
-        "https://creativecommons.org/licenses/by/1.0/legalcode"       => "CC-BY-1.0",
-        "https://creativecommons.org/licenses/by/2.0/legalcode"       => "CC-BY-2.0",
-        "https://creativecommons.org/licenses/by/2.5/legalcode"       => "CC-BY-2.5",
-        "https://creativecommons.org/licenses/by/3.0/legalcode"       => "CC-BY-3.0",
-        "https://creativecommons.org/licenses/by/4.0/legalcode"       => "CC-BY-4.0",
-        "https://creativecommons.org/licenses/by-nc/1.0/legalcode"    => "CC-BY-NC-1.0",
-        "https://creativecommons.org/licenses/by-nc/2.0/legalcode"    => "CC-BY-NC-2.0",
-        "https://creativecommons.org/licenses/by-nc/2.5/legalcode"    => "CC-BY-NC-2.5",
-        "https://creativecommons.org/licenses/by-nc/3.0/legalcode"    => "CC-BY-NC-3.0",
-        "https://creativecommons.org/licenses/by-nc/4.0/legalcode"    => "CC-BY-NC-4.0",
-        "https://creativecommons.org/licenses/by-nc-nd/1.0/legalcode" => "CC-BY-NC-ND-1.0",
-        "https://creativecommons.org/licenses/by-nc-nd/2.0/legalcode" => "CC-BY-NC-ND-2.0",
-        "https://creativecommons.org/licenses/by-nc-nd/2.5/legalcode" => "CC-BY-NC-ND-2.5",
-        "https://creativecommons.org/licenses/by-nc-nd/3.0/legalcode" => "CC-BY-NC-ND-3.0",
-        "https://creativecommons.org/licenses/by-nc-nd/4.0/legalcode" => "CC-BY-NC-ND-4.0",
-        "https://creativecommons.org/licenses/by-nc-sa/1.0/legalcode" => "CC-BY-NC-SA-1.0",
-        "https://creativecommons.org/licenses/by-nc-sa/2.0/legalcode" => "CC-BY-NC-SA-2.0",
-        "https://creativecommons.org/licenses/by-nc-sa/2.5/legalcode" => "CC-BY-NC-SA-2.5",
-        "https://creativecommons.org/licenses/by-nc-sa/3.0/legalcode" => "CC-BY-NC-SA-3.0",
-        "https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode" => "CC-BY-NC-SA-4.0",
-        "https://creativecommons.org/licenses/by-nd/1.0/legalcode"    => "CC-BY-ND-1.0",
-        "https://creativecommons.org/licenses/by-nd/2.0/legalcode"    => "CC-BY-ND-2.0",
-        "https://creativecommons.org/licenses/by-nd/2.5/legalcode"    => "CC-BY-ND-2.5",
-        "https://creativecommons.org/licenses/by-nd/3.0/legalcode"    => "CC-BY-ND-3.0",
-        "https://creativecommons.org/licenses/by-nd/4.0/legalcode"    => "CC-BY-ND-4.0",
-        "https://creativecommons.org/licenses/by-sa/1.0/legalcode"    => "CC-BY-SA-1.0",
-        "https://creativecommons.org/licenses/by-sa/2.0/legalcode"    => "CC-BY-SA-2.0",
-        "https://creativecommons.org/licenses/by-sa/2.5/legalcode"    => "CC-BY-SA-2.5",
-        "https://creativecommons.org/licenses/by-sa/3.0/legalcode"    => "CC-BY-SA-3.0",
-        "https://creativecommons.org/licenses/by-sa/4.0/legalcode"    => "CC-BY-SA-4.0",
-        "https://creativecommons.org/publicdomain/zero/1.0/legalcode" => "CC0-1.0",
-        _ => "",
-    }
-    .to_string()
-}
 
 // ── ISSN / slug / community helpers ──────────────────────────────────────────
 
@@ -660,7 +731,11 @@ pub fn community_slug_as_url(slug: &str, host: &str) -> String {
     if slug.is_empty() {
         return String::new();
     }
-    let h = if host.is_empty() { "rogue-scholar.org" } else { host };
+    let h = if host.is_empty() {
+        "rogue-scholar.org"
+    } else {
+        host
+    };
     format!("https://{}/api/communities/{}", h, slug)
 }
 
@@ -714,10 +789,7 @@ pub fn words_to_camel_case(s: &str) -> String {
     }
     let words = RE1.replace_all(s, "${1} ${2}");
     let words = RE2.replace_all(&words, "${1} ${2}");
-    let pascal: String = words
-        .split_whitespace()
-        .map(title_case)
-        .collect::<String>();
+    let pascal: String = words.split_whitespace().map(title_case).collect::<String>();
     let pascal = pascal.replace([' ', '-'], "");
     if pascal.is_empty() {
         return pascal;
@@ -788,64 +860,23 @@ pub fn split_string(s: &str, n: usize, sep: &str) -> String {
 }
 
 /// Returns a language code in the requested format.
-/// `format`: "iso639-3" for 3-letter code, "name" for English name, otherwise ISO 639-1.
+/// `format`: "iso639-3" for 3-letter code, "name" for English name, otherwise ISO 639-1 alpha-2.
+/// Accepts alpha-2, alpha-3, or English name as input.
 pub fn get_language(lang: &str, format: &str) -> String {
-    // (iso639-1, iso639-3, name)
-    const LANGS: &[(&str, &str, &str)] = &[
-        ("af", "afr", "Afrikaans"),
-        ("ar", "ara", "Arabic"),
-        ("bg", "bul", "Bulgarian"),
-        ("cs", "ces", "Czech"),
-        ("cy", "cym", "Welsh"),
-        ("da", "dan", "Danish"),
-        ("de", "deu", "German"),
-        ("el", "ell", "Greek"),
-        ("en", "eng", "English"),
-        ("es", "spa", "Spanish"),
-        ("et", "est", "Estonian"),
-        ("fi", "fin", "Finnish"),
-        ("fr", "fra", "French"),
-        ("ga", "gle", "Irish"),
-        ("gl", "glg", "Galician"),
-        ("hr", "hrv", "Croatian"),
-        ("hu", "hun", "Hungarian"),
-        ("id", "ind", "Indonesian"),
-        ("it", "ita", "Italian"),
-        ("ja", "jpn", "Japanese"),
-        ("ko", "kor", "Korean"),
-        ("lt", "lit", "Lithuanian"),
-        ("lv", "lav", "Latvian"),
-        ("mk", "mkd", "Macedonian"),
-        ("ms", "msa", "Malay"),
-        ("mt", "mlt", "Maltese"),
-        ("nl", "nld", "Dutch"),
-        ("no", "nor", "Norwegian"),
-        ("pl", "pol", "Polish"),
-        ("pt", "por", "Portuguese"),
-        ("ro", "ron", "Romanian"),
-        ("ru", "rus", "Russian"),
-        ("sk", "slk", "Slovak"),
-        ("sl", "slv", "Slovenian"),
-        ("sq", "sqi", "Albanian"),
-        ("sr", "srp", "Serbian"),
-        ("sv", "swe", "Swedish"),
-        ("tr", "tur", "Turkish"),
-        ("uk", "ukr", "Ukrainian"),
-        ("vi", "vie", "Vietnamese"),
-        ("zh", "zho", "Chinese"),
-    ];
-
-    let lc = lang.to_lowercase();
-    for &(part1, part3, name) in LANGS {
-        if lc == part1 || lc == part3 || lc.eq_ignore_ascii_case(name) {
-            return match format {
-                "iso639-3" => part3.to_string(),
-                "name" => name.to_string(),
-                _ => part1.to_string(),
-            };
-        }
+    if lang.is_empty() {
+        return String::new();
     }
-    String::new()
+    let found = isolang::Language::from_639_1(lang)
+        .or_else(|| isolang::Language::from_639_3(lang))
+        .or_else(|| isolang::Language::from_name(lang));
+    match found {
+        None => String::new(),
+        Some(l) => match format {
+            "iso639-3" => l.to_639_3().to_string(),
+            "name" => l.to_name().to_string(),
+            _ => l.to_639_1().unwrap_or_default().to_string(),
+        },
+    }
 }
 
 // ── Format detection ──────────────────────────────────────────────────────────
@@ -858,21 +889,26 @@ pub fn find_from_format(
     filename: Option<&str>,
 ) -> &'static str {
     if let Some(p) = pid
-        && !p.is_empty() {
-            return find_from_format_by_id(p);
-        }
+        && !p.is_empty()
+    {
+        return find_from_format_by_id(p);
+    }
     if let (Some(s), Some(e)) = (str_, ext)
-        && !s.is_empty() && !e.is_empty() {
-            return find_from_format_by_ext(e);
-        }
+        && !s.is_empty()
+        && !e.is_empty()
+    {
+        return find_from_format_by_ext(e);
+    }
     if let Some(s) = str_
-        && !s.is_empty() {
-            return find_from_format_by_string(s);
-        }
+        && !s.is_empty()
+    {
+        return find_from_format_by_string(s);
+    }
     if let Some(f) = filename
-        && !f.is_empty() {
-            return find_from_format_by_filename(f);
-        }
+        && !f.is_empty()
+    {
+        return find_from_format_by_filename(f);
+    }
     "datacite"
 }
 
@@ -894,8 +930,7 @@ pub fn find_from_format_by_id(id: &str) -> &'static str {
     lazy_static! {
         static ref RE_ROGUE: Regex =
             Regex::new(r"^https:/(/)?api\.rogue-scholar\.org/posts/(.+)$").unwrap();
-        static ref RE_INVENIO: Regex =
-            Regex::new(r"^https:/(/)(.+)/(api/)?records/(.+)$").unwrap();
+        static ref RE_INVENIO: Regex = Regex::new(r"^https:/(/)(.+)/(api/)?records/(.+)$").unwrap();
     }
     if RE_ROGUE.is_match(id) {
         return "jsonfeed";
@@ -922,9 +957,10 @@ pub fn find_from_format_by_string(s: &str) -> &'static str {
         Err(_) => return "",
     };
     if let Some(v) = data.get("schema_version").and_then(|v| v.as_str())
-        && v.starts_with("https://commonmeta.org") {
-            return "commonmeta";
-        }
+        && v.starts_with("https://commonmeta.org")
+    {
+        return "commonmeta";
+    }
     if let Some(v) = data.get("@context").and_then(|v| v.as_str()) {
         if v == "http://schema.org" {
             return "schemaorg";
@@ -937,9 +973,10 @@ pub fn find_from_format_by_string(s: &str) -> &'static str {
         return "jsonfeed";
     }
     if let Some(v) = data.get("schemaVersion").and_then(|v| v.as_str())
-        && v.starts_with("http://datacite.org/schema/kernel") {
-            return "datacite";
-        }
+        && v.starts_with("http://datacite.org/schema/kernel")
+    {
+        return "datacite";
+    }
     if data.get("source").and_then(|v| v.as_str()) == Some("Crossref") {
         return "crossref";
     }
@@ -967,14 +1004,20 @@ mod tests {
     #[test]
     fn test_validate_openalex() {
         assert_eq!(validate_openalex("W1234567890"), Some("W1234567890".into()));
-        assert_eq!(validate_openalex("https://openalex.org/W1234567890"), Some("W1234567890".into()));
+        assert_eq!(
+            validate_openalex("https://openalex.org/W1234567890"),
+            Some("W1234567890".into())
+        );
         assert_eq!(validate_openalex("X123"), None);
     }
 
     #[test]
     fn test_validate_pmid() {
         assert_eq!(validate_pmid("12345678"), Some("12345678".into()));
-        assert_eq!(validate_pmid("https://pubmed.ncbi.nlm.nih.gov/12345678"), Some("12345678".into()));
+        assert_eq!(
+            validate_pmid("https://pubmed.ncbi.nlm.nih.gov/12345678"),
+            Some("12345678".into())
+        );
         assert_eq!(validate_pmid("123"), None); // too short
     }
 
@@ -1068,10 +1111,7 @@ mod tests {
     #[test]
     fn test_dedupe_slice() {
         assert_eq!(dedupe_slice(vec![1, 2, 2, 3, 1]), vec![1, 2, 3]);
-        assert_eq!(
-            dedupe_slice(vec!["a", "b", "a"]),
-            vec!["a", "b"]
-        );
+        assert_eq!(dedupe_slice(vec!["a", "b", "a"]), vec!["a", "b"]);
     }
 
     #[test]
@@ -1098,7 +1138,10 @@ mod tests {
     #[test]
     fn test_validate_orcid_parity_cases() {
         let cases = [
-            ("http://orcid.org/0000-0002-2590-225X", Some("0000-0002-2590-225X")),
+            (
+                "http://orcid.org/0000-0002-2590-225X",
+                Some("0000-0002-2590-225X"),
+            ),
             (
                 "https://orcid.org/0000-0002-1825-0097",
                 Some("0000-0002-1825-0097"),
@@ -1146,7 +1189,11 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            assert_eq!(validate_wikidata(input).as_deref(), expected, "input: {input}");
+            assert_eq!(
+                validate_wikidata(input).as_deref(),
+                expected,
+                "input: {input}"
+            );
         }
     }
 
@@ -1166,7 +1213,10 @@ mod tests {
     #[test]
     fn test_validate_crossref_funder_id_parity_cases() {
         let cases = [
-            ("https://doi.org/10.13039/501100000155", Some("501100000155")),
+            (
+                "https://doi.org/10.13039/501100000155",
+                Some("501100000155"),
+            ),
             ("10.13039/501100000155", Some("501100000155")),
             ("100010540", Some("100010540")),
             ("not-a-funder-id", None),
@@ -1183,7 +1233,10 @@ mod tests {
 
     #[test]
     fn test_validate_url_and_id_parity_cases() {
-        assert_eq!(validate_url("https://elifesciences.org/articles/91729"), "URL");
+        assert_eq!(
+            validate_url("https://elifesciences.org/articles/91729"),
+            "URL"
+        );
         assert_eq!(validate_url("https://doi.org/10.7554/eLife.91729.3"), "DOI");
         assert_eq!(validate_url("10.7554/eLife.91729.3"), "DOI");
         assert_eq!(validate_url("https://doi.org/10.1101"), "URL");
@@ -1195,7 +1248,8 @@ mod tests {
         let (_, id_type) = validate_id("https://orcid.org/0000-0002-1825-0097");
         assert_eq!(id_type, "ORCID");
 
-        let (_, id_type) = validate_id("https://datadryad.org/stash/dataset/doi:10.5061/dryad.8515");
+        let (_, id_type) =
+            validate_id("https://datadryad.org/stash/dataset/doi:10.5061/dryad.8515");
         assert_eq!(id_type, "URL");
     }
 

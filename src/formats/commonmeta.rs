@@ -1,36 +1,84 @@
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::data::Data;
 use crate::error::{Error, Result};
+use crate::schema_utils::json_schema_errors;
+use crate::utils::normalize_ror;
 
-fn sanitize(data: &Data) -> Data {
-    let mut sanitized = data.clone();
-    for contributor in &mut sanitized.contributors {
-        if contributor.type_ == "Person" {
-            contributor.name.clear();
-        }
+const COMMONMETA_V1_SCHEMA_URL: &str = "https://commonmeta.org/commonmeta_v1.0.json";
+
+/// Parse v1.0-shaped commonmeta JSON directly into `Data`, since `Data`'s
+/// fields already match the schema 1:1.
+pub fn read(json: &str) -> Result<Data> {
+    let value: Value = serde_json::from_str(json).map_err(|e| Error::Parse(e.to_string()))?;
+
+    if !looks_like_v1(&value) {
+        return Err(Error::Parse(
+            "commonmeta input is not schema v1.0 shaped".to_string(),
+        ));
     }
-    sanitized
+
+    serde_json::from_value(value).map_err(|e| Error::Parse(e.to_string()))
 }
 
-pub fn read(json: &str) -> Result<Data> {
-    serde_json::from_str(json).map_err(|e| Error::Parse(e.to_string()))
+/// Stamp `schema_version` and clear non-ROR `funder_id` values that would
+/// fail schema validation (the v1.0 schema constrains `funder_id` to ROR URLs).
+fn prepare(data: &Data) -> Data {
+    let mut out = data.clone();
+    out.schema_version = COMMONMETA_V1_SCHEMA_URL.to_string();
+    for fr in &mut out.funding_references {
+        if !fr.funder_id.is_empty() && normalize_ror(&fr.funder_id).is_empty() {
+            fr.funder_id.clear();
+        }
+    }
+    out
 }
 
 pub fn write(data: &Data) -> Result<Vec<u8>> {
-    let sanitized = sanitize(data);
-    serde_json::to_vec(&sanitized).map_err(|e| Error::Serialize(e.to_string()))
+    let out = prepare(data);
+    let bytes = serde_json::to_vec(&out).map_err(|e| Error::Serialize(e.to_string()))?;
+    json_schema_errors(&bytes, Some("commonmeta"))?;
+    Ok(bytes)
 }
 
 pub fn write_all(list: &[Data]) -> Result<Vec<u8>> {
-    let sanitized: Vec<Data> = list.iter().map(sanitize).collect();
-    serde_json::to_vec_pretty(&sanitized).map_err(|e| Error::Serialize(e.to_string()))
+    let prepared: Vec<Data> = list.iter().map(prepare).collect();
+    let bytes =
+        serde_json::to_vec_pretty(&prepared).map_err(|e| Error::Serialize(e.to_string()))?;
+    json_schema_errors(&bytes, Some("commonmeta"))?;
+    Ok(bytes)
+}
+
+fn looks_like_v1(value: &Value) -> bool {
+    let Some(obj) = value.as_object() else {
+        return false;
+    };
+
+    obj.get("schema_version").and_then(Value::as_str) == Some(COMMONMETA_V1_SCHEMA_URL)
+        || obj.contains_key("date_published")
+        || obj.contains_key("additional_titles")
+        || obj.contains_key("additional_descriptions")
+        || obj
+            .get("identifiers")
+            .and_then(Value::as_array)
+            .and_then(|ids| ids.first())
+            .and_then(Value::as_object)
+            .is_some_and(|id_obj| id_obj.contains_key("identifier_type"))
+        || obj
+            .get("contributors")
+            .and_then(Value::as_array)
+            .and_then(|contributors| contributors.first())
+            .and_then(Value::as_object)
+            .is_some_and(|contributor| {
+                contributor.contains_key("person") || contributor.contains_key("organization")
+            })
 }
 
 // ── Bulk Parquet writer (catalog dumps) ───────────────────────────────────────
 //
-// Parquet needs a flat, scalar schema, but `Data` is deeply nested (titles,
-// contributors, identifiers, etc. are all lists). `CommonmetaRow` flattens
+// Parquet needs a flat, scalar schema, but `Data` is deeply nested
+// (contributors, identifiers, etc. are all lists). `CommonmetaRow` flattens
 // the fields most useful for analysis/filtering (e.g. in DuckDB) without
 // needing to parse JSON, in the same spirit as the `RorCsv` flattening in
 // ror.rs — but unlike that one, it also carries a `json` column with the
@@ -41,7 +89,12 @@ pub fn write_all(list: &[Data]) -> Result<Vec<u8>> {
 
 /// A flattened, Parquet-friendly view of a single commonmeta `Data` record.
 #[derive(
-    Debug, Default, Clone, Serialize, parquet_derive::ParquetRecordWriter, parquet_derive::ParquetRecordReader,
+    Debug,
+    Default,
+    Clone,
+    Serialize,
+    parquet_derive::ParquetRecordWriter,
+    parquet_derive::ParquetRecordReader,
 )]
 pub struct CommonmetaRow {
     pub id: String,
@@ -75,32 +128,25 @@ pub struct CommonmetaRow {
     pub json: String,
 }
 
-fn contributor_name(contributor: &crate::data::Contributor) -> String {
-    if !contributor.name.is_empty() {
-        return contributor.name.clone();
-    }
-    format!("{} {}", contributor.given_name, contributor.family_name)
-        .trim()
-        .to_string()
-}
-
 /// Flatten a `Data` record into its tabular `CommonmetaRow` representation.
 fn flatten_row(data: &Data) -> CommonmetaRow {
-    let title = data.titles.first().map(|t| t.title.clone()).unwrap_or_default();
-
     let doi = data
         .identifiers
         .iter()
         .find(|i| i.identifier_type == "DOI")
         .map(|i| i.identifier.clone())
         .unwrap_or_else(|| {
-            if data.id.contains("doi.org") { data.id.clone() } else { String::new() }
+            if data.id.contains("doi.org") {
+                data.id.clone()
+            } else {
+                String::new()
+            }
         });
 
     let (first_author_name, first_author_orcid) = data
         .contributors
         .first()
-        .map(|c| (contributor_name(c), c.id.clone()))
+        .map(|c| (c.name(), c.id().to_string()))
         .unwrap_or_default();
 
     let subjects = data
@@ -110,14 +156,12 @@ fn flatten_row(data: &Data) -> CommonmetaRow {
         .collect::<Vec<_>>()
         .join("; ");
 
-    let description = data.descriptions.first().map(|d| d.description.clone()).unwrap_or_default();
-
     let json = serde_json::to_string(data).unwrap_or_default();
 
     CommonmetaRow {
         id: data.id.clone(),
         record_type: data.type_.clone(),
-        title,
+        title: data.title.clone(),
         url: data.url.clone(),
         doi,
         publisher: data.publisher.name.clone(),
@@ -130,14 +174,14 @@ fn flatten_row(data: &Data) -> CommonmetaRow {
         issue: data.container.issue.clone(),
         first_page: data.container.first_page.clone(),
         last_page: data.container.last_page.clone(),
-        date_published: data.date.published.clone(),
-        date_created: data.date.created.clone(),
-        date_updated: data.date.updated.clone(),
+        date_published: data.date_published.clone(),
+        date_created: data.dates.created.clone(),
+        date_updated: data.date_updated.clone(),
         contributor_count: data.contributors.len() as i32,
         first_author_name,
         first_author_orcid,
         subjects,
-        description,
+        description: data.description.clone(),
         provider: data.provider.clone(),
         additional_type: data.additional_type.clone(),
         json,
@@ -167,8 +211,11 @@ fn write_parquet_chunked(list: &[Data], row_group_size: usize) -> Result<Vec<u8>
     use parquet::file::writer::SerializedFileWriter;
     use parquet::record::RecordWriter;
 
-    let chunks: Vec<&[Data]> =
-        if list.is_empty() { vec![&[][..]] } else { list.chunks(row_group_size).collect() };
+    let chunks: Vec<&[Data]> = if list.is_empty() {
+        vec![&[][..]]
+    } else {
+        list.chunks(row_group_size).collect()
+    };
 
     let row_chunks: Vec<Vec<CommonmetaRow>> = std::thread::scope(|scope| {
         let handles: Vec<_> = chunks
@@ -177,11 +224,17 @@ fn write_parquet_chunked(list: &[Data], row_group_size: usize) -> Result<Vec<u8>
             .collect();
         handles
             .into_iter()
-            .map(|h| h.join().map_err(|_| Error::Serialize("parquet flatten thread panicked".to_string())))
+            .map(|h| {
+                h.join()
+                    .map_err(|_| Error::Serialize("parquet flatten thread panicked".to_string()))
+            })
             .collect::<Result<Vec<_>>>()
     })?;
 
-    let schema = row_chunks[0].as_slice().schema().map_err(|e| Error::Serialize(e.to_string()))?;
+    let schema = row_chunks[0]
+        .as_slice()
+        .schema()
+        .map_err(|e| Error::Serialize(e.to_string()))?;
     let props = std::sync::Arc::new(WriterProperties::builder().build());
 
     let buffer: Vec<u8> = Vec::new();
@@ -189,14 +242,20 @@ fn write_parquet_chunked(list: &[Data], row_group_size: usize) -> Result<Vec<u8>
         .map_err(|e| Error::Serialize(e.to_string()))?;
 
     for rows in &row_chunks {
-        let mut row_group = writer.next_row_group().map_err(|e| Error::Serialize(e.to_string()))?;
+        let mut row_group = writer
+            .next_row_group()
+            .map_err(|e| Error::Serialize(e.to_string()))?;
         rows.as_slice()
             .write_to_row_group(&mut row_group)
             .map_err(|e| Error::Serialize(e.to_string()))?;
-        row_group.close().map_err(|e| Error::Serialize(e.to_string()))?;
+        row_group
+            .close()
+            .map_err(|e| Error::Serialize(e.to_string()))?;
     }
 
-    writer.into_inner().map_err(|e| Error::Serialize(e.to_string()))
+    writer
+        .into_inner()
+        .map_err(|e| Error::Serialize(e.to_string()))
 }
 
 /// Reconstruct a `Data` record from a `CommonmetaRow`.
@@ -204,9 +263,9 @@ fn write_parquet_chunked(list: &[Data], row_group_size: usize) -> Result<Vec<u8>
 /// Prefers the `json` column, which holds the complete original record, so
 /// the round trip through Parquet is lossless. Falls back to rebuilding from
 /// the flattened columns (the inverse of `flatten_row`, lossy in the same
-/// direction: only the fields captured there, e.g. the first author, first
-/// title, are restored) for Parquet files written before the `json` column
-/// existed, or if it's somehow empty/invalid.
+/// direction: only the fields captured there, e.g. the first author, are
+/// restored) for Parquet files written before the `json` column existed, or
+/// if it's somehow empty/invalid.
 fn unflatten_row(row: &CommonmetaRow) -> Data {
     if !row.json.is_empty()
         && let Ok(data) = serde_json::from_str::<Data>(&row.json)
@@ -221,11 +280,7 @@ fn unflatten_row_lossy(row: &CommonmetaRow) -> Data {
         id: row.id.clone(),
         type_: row.record_type.clone(),
         additional_type: row.additional_type.clone(),
-        titles: if row.title.is_empty() {
-            Vec::new()
-        } else {
-            vec![crate::data::Title { title: row.title.clone(), ..Default::default() }]
-        },
+        title: row.title.clone(),
         url: row.url.clone(),
         identifiers: if row.doi.is_empty() {
             Vec::new()
@@ -235,10 +290,16 @@ fn unflatten_row_lossy(row: &CommonmetaRow) -> Data {
                 identifier_type: "DOI".to_string(),
             }]
         },
-        publisher: crate::data::Publisher { name: row.publisher.clone(), ..Default::default() },
+        publisher: crate::data::Publisher {
+            name: row.publisher.clone(),
+            ..Default::default()
+        },
         language: row.language.clone(),
         version: row.version.clone(),
-        license: crate::data::License { id: row.license.clone(), ..Default::default() },
+        license: crate::data::License {
+            id: row.license.clone(),
+            ..Default::default()
+        },
         container: crate::data::Container {
             title: row.container_title.clone(),
             type_: row.container_type.clone(),
@@ -248,32 +309,33 @@ fn unflatten_row_lossy(row: &CommonmetaRow) -> Data {
             last_page: row.last_page.clone(),
             ..Default::default()
         },
-        date: crate::data::Date {
-            published: row.date_published.clone(),
+        date_published: row.date_published.clone(),
+        date_updated: row.date_updated.clone(),
+        dates: crate::data::Dates {
             created: row.date_created.clone(),
-            updated: row.date_updated.clone(),
             ..Default::default()
         },
         contributors: if row.first_author_name.is_empty() && row.first_author_orcid.is_empty() {
             Vec::new()
         } else {
-            vec![crate::data::Contributor {
-                id: row.first_author_orcid.clone(),
-                name: row.first_author_name.clone(),
-                ..Default::default()
-            }]
+            vec![crate::data::Contributor::person(
+                crate::data::Person {
+                    id: row.first_author_orcid.clone(),
+                    ..Default::default()
+                },
+                Vec::new(),
+            )]
         },
         subjects: row
             .subjects
             .split("; ")
             .filter(|s| !s.is_empty())
-            .map(|s| crate::data::Subject { subject: s.to_string() })
+            .map(|s| crate::data::Subject {
+                subject: s.to_string(),
+                ..Default::default()
+            })
             .collect(),
-        descriptions: if row.description.is_empty() {
-            Vec::new()
-        } else {
-            vec![crate::data::Description { description: row.description.clone(), ..Default::default() }]
-        },
+        description: row.description.clone(),
         provider: row.provider.clone(),
         ..Default::default()
     }
@@ -291,8 +353,9 @@ pub fn read_parquet_all(bytes: &[u8]) -> Result<Vec<Data>> {
 
     let mut rows: Vec<CommonmetaRow> = Vec::new();
     for i in 0..reader.num_row_groups() {
-        let mut row_group_reader =
-            reader.get_row_group(i).map_err(|e| Error::Parse(e.to_string()))?;
+        let mut row_group_reader = reader
+            .get_row_group(i)
+            .map_err(|e| Error::Parse(e.to_string()))?;
         let num_rows = row_group_reader.metadata().num_rows() as usize;
         rows.read_from_row_group(&mut *row_group_reader, num_rows)
             .map_err(|e| Error::Parse(e.to_string()))?;
@@ -304,23 +367,26 @@ pub fn read_parquet_all(bytes: &[u8]) -> Result<Vec<Data>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::{Contributor, Identifier, Title};
+    use crate::data::{Contributor, Identifier, Person};
 
     fn sample_data() -> Data {
         Data {
             id: "https://doi.org/10.1234/abc".to_string(),
             type_: "JournalArticle".to_string(),
-            titles: vec![Title { title: "A Sample Title".to_string(), ..Default::default() }],
+            title: "A Sample Title".to_string(),
             identifiers: vec![Identifier {
                 identifier: "10.1234/abc".to_string(),
                 identifier_type: "DOI".to_string(),
             }],
-            contributors: vec![Contributor {
-                given_name: "Jane".to_string(),
-                family_name: "Doe".to_string(),
-                id: "https://orcid.org/0000-0002-1825-0097".to_string(),
-                ..Default::default()
-            }],
+            contributors: vec![Contributor::person(
+                Person {
+                    given_name: "Jane".to_string(),
+                    family_name: "Doe".to_string(),
+                    id: "https://orcid.org/0000-0002-1825-0097".to_string(),
+                    ..Default::default()
+                },
+                Vec::new(),
+            )],
             ..Data::default()
         }
     }
@@ -333,7 +399,10 @@ mod tests {
         assert_eq!(row.title, "A Sample Title");
         assert_eq!(row.doi, "10.1234/abc");
         assert_eq!(row.first_author_name, "Jane Doe");
-        assert_eq!(row.first_author_orcid, "https://orcid.org/0000-0002-1825-0097");
+        assert_eq!(
+            row.first_author_orcid,
+            "https://orcid.org/0000-0002-1825-0097"
+        );
         assert_eq!(row.contributor_count, 1);
     }
 
@@ -421,44 +490,57 @@ mod tests {
         // Fields the old flattened-only reconstruction dropped: a second
         // title, a second contributor with affiliations, a second
         // identifier, and a second description.
-        data.titles.push(Title {
+        data.additional_titles.push(Title {
             title: "An Alternative Title".to_string(),
             type_: "TranslatedTitle".to_string(),
             ..Default::default()
         });
-        data.contributors.push(Contributor {
-            given_name: "John".to_string(),
-            family_name: "Smith".to_string(),
-            affiliations: vec![Affiliation {
-                id: "https://ror.org/02catss52".to_string(),
-                name: "Example University".to_string(),
+        data.contributors.push(Contributor::person(
+            Person {
+                given_name: "John".to_string(),
+                family_name: "Smith".to_string(),
+                affiliations: vec![Affiliation {
+                    id: "https://ror.org/02catss52".to_string(),
+                    name: "Example University".to_string(),
+                    ..Default::default()
+                }],
                 ..Default::default()
-            }],
-            ..Default::default()
-        });
+            },
+            Vec::new(),
+        ));
         data.identifiers.push(Identifier {
             identifier: "1234-5678".to_string(),
             identifier_type: "ISSN".to_string(),
         });
-        data.descriptions.push(Description {
+        data.additional_descriptions.push(Description {
             description: "A second description".to_string(),
             type_: "TechnicalInfo".to_string(),
             ..Default::default()
         });
-        data.subjects = vec![Subject { subject: "Biology".to_string() }, Subject {
-            subject: "Chemistry".to_string(),
-        }];
+        data.subjects = vec![
+            Subject {
+                subject: "Biology".to_string(),
+                ..Default::default()
+            },
+            Subject {
+                subject: "Chemistry".to_string(),
+                ..Default::default()
+            },
+        ];
 
         let bytes = write_parquet_all(&[data.clone()]).unwrap();
         let roundtripped = read_parquet_all(&bytes).unwrap();
 
         assert_eq!(roundtripped.len(), 1);
         assert_eq!(roundtripped[0], data);
-        assert_eq!(roundtripped[0].titles.len(), 2);
+        assert_eq!(roundtripped[0].additional_titles.len(), 1);
         assert_eq!(roundtripped[0].contributors.len(), 2);
-        assert_eq!(roundtripped[0].contributors[1].affiliations[0].name, "Example University");
+        assert_eq!(
+            roundtripped[0].contributors[1].affiliations()[0].name,
+            "Example University"
+        );
         assert_eq!(roundtripped[0].identifiers.len(), 2);
-        assert_eq!(roundtripped[0].descriptions.len(), 1);
+        assert_eq!(roundtripped[0].additional_descriptions.len(), 1);
         assert_eq!(roundtripped[0].subjects.len(), 2);
     }
 

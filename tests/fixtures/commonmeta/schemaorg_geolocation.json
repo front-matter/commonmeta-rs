@@ -1,0 +1,117 @@
+{
+    "id": "https://doi.org/10.6071/z7wc73",
+    "type": "Dataset",
+    "additional_type": "dataset",
+    "contributors": [
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Roger",
+                "family_name": "Bales"
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Matt",
+                "family_name": "Meadows"
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "id": "https://orcid.org/0000-0002-8862-1404",
+                "given_name": "Erin",
+                "family_name": "Stacy"
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "id": "https://orcid.org/0000-0002-9627-2427",
+                "given_name": "Martha",
+                "family_name": "Conklin"
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "Xiande",
+                "family_name": "Meng"
+            },
+            "roles": [
+                "Author"
+            ]
+        },
+        {
+            "type": "Person",
+            "person": {
+                "given_name": "SSCZO",
+                "family_name": "Southern Sierra Critical Zone Observatory"
+            },
+            "roles": [
+                "Author"
+            ]
+        }
+    ],
+    "date_published": "2013",
+    "date_updated": "2014-10-17",
+    "description": "Snow depth, soil moisture and soil temperature are measured at lower Providence South facing (LowMetS) and North facing (LowMetN), Upper Providence South facing (UpMetS), North facing (UpMetN) and Flat aspect (UpMetF), and Subcatchment basin P301 (P301) with a wireless sensor network, using a Campbell Scientific logger to control peripheral devices. Snow depth is measured in the open, at the drip edge and under canopies. Soil moisture and temperature are measured at 10, 30, 60 and 90 cm depths coincident with the snow depth nodes. 10 watt solar panels provides power for monitoring at 10 minute intervals. Raw data have been processed to level 1 (QA/QC) and level 2 (gap-filled, derived) data. Time period: water year 2008 through water year 2012 (version 1), 2013 to 2016 (version 2).",
+    "identifiers": [
+        {
+            "identifier": "https://doi.org/10.6071/z7wc73",
+            "identifier_type": "DOI"
+        }
+    ],
+    "language": "en",
+    "license": {
+        "id": "CC-BY-4.0",
+        "title": "Creative Commons Attribution 4.0 International",
+        "url": "https://creativecommons.org/licenses/by/4.0/legalcode"
+    },
+    "provider": "DataCite",
+    "publisher": {
+        "name": "UC Merced"
+    },
+    "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+    "subjects": [
+        {
+            "subject": "Earth sciences"
+        },
+        {
+            "subject": "soil moisture"
+        },
+        {
+            "subject": "soil temperature"
+        },
+        {
+            "subject": "snow depth"
+        },
+        {
+            "subject": "air temperature"
+        },
+        {
+            "subject": "water balance"
+        },
+        {
+            "subject": "Nevada"
+        },
+        {
+            "subject": "Sierra (mountain range)"
+        }
+    ],
+    "title": "Southern Sierra Critical Zone Observatory (SSCZO), Providence Creek meteorological data, soil moisture and temperature, snow depth and air temperature",
+    "version": "2"
+}

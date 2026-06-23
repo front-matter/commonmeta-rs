@@ -3,7 +3,8 @@ use std::io::IsTerminal;
 use indicatif::{ProgressBar, ProgressStyle};
 
 const COUNT_TEMPLATE: &str = "{prefix} {bar:40.cyan/blue} {pos}/{len} ({eta})";
-const BYTES_TEMPLATE: &str = "{prefix} {bar:40.cyan/blue} {bytes}/{total_bytes} ({bytes_per_sec}, {eta})";
+const BYTES_TEMPLATE: &str =
+    "{prefix} {bar:40.cyan/blue} {bytes}/{total_bytes} ({bytes_per_sec}, {eta})";
 
 /// A progress bar over a known number of items (e.g. records to convert or
 /// render). Renders to stderr, and is a no-op when stderr isn't a terminal

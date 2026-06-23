@@ -40,11 +40,22 @@ impl std::fmt::Display for Mismatch {
         match self {
             Mismatch::Lost(p) => write!(f, "LOST     {p} (in expected, not in output)"),
             Mismatch::Spurious(p) => write!(f, "SPURIOUS {p} (in output, not in expected)"),
-            Mismatch::Changed { path, expected, actual } => {
+            Mismatch::Changed {
+                path,
+                expected,
+                actual,
+            } => {
                 write!(f, "CHANGED  {path}: expected {expected}, got {actual}")
             }
-            Mismatch::LengthChanged { path, expected, actual } => {
-                write!(f, "LENGTH   {path}: expected {expected} items, got {actual}")
+            Mismatch::LengthChanged {
+                path,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "LENGTH   {path}: expected {expected} items, got {actual}"
+                )
             }
         }
     }
@@ -151,11 +162,15 @@ pub fn collect_json(dir: &Path) -> Vec<PathBuf> {
 }
 
 pub fn collect_bib(dir: &Path) -> Vec<PathBuf> {
+    collect_ext(dir, "bib")
+}
+
+pub fn collect_ext(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let mut files = Vec::new();
     if let Ok(read) = fs::read_dir(dir) {
         for entry in read.flatten() {
             let p = entry.path();
-            if p.extension().and_then(|s| s.to_str()) == Some("bib") {
+            if p.extension().and_then(|s| s.to_str()) == Some(ext) {
                 files.push(p);
             }
         }

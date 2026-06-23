@@ -1,49 +1,59 @@
 {
   "id": "https://doi.org/10.5555/12345678",
   "type": "JournalArticle",
-  "url": "https://example.org/article/1",
-  "language": "en",
-  "titles": [
-    { "title": "A Study of Things" }
-  ],
+  "container": {
+    "identifier": "1234-5678",
+    "identifier_type": "ISSN",
+    "type": "Journal",
+    "title": "Journal of Examples",
+    "first_page": "100",
+    "last_page": "110",
+    "volume": "12",
+    "issue": "3"
+  },
   "contributors": [
     {
       "type": "Person",
-      "givenName": "Ada",
-      "familyName": "Lovelace",
-      "contributorRoles": ["Author"],
-      "affiliations": [
-        { "id": "https://ror.org/05dxps055", "name": "Example University" }
+      "person": {
+        "given_name": "Ada",
+        "family_name": "Lovelace",
+        "affiliations": [
+          {
+            "id": "https://ror.org/05dxps055",
+            "name": "Example University"
+          }
+        ]
+      },
+      "roles": [
+        "Author"
       ]
     }
   ],
-  "publisher": { "name": "Example Publisher" },
-  "date": { "published": "2024-03-15" },
-  "container": {
-    "type": "Journal",
-    "title": "Journal of Examples",
-    "identifier": "1234-5678",
-    "identifierType": "ISSN",
-    "volume": "12",
-    "issue": "3",
-    "firstPage": "100",
-    "lastPage": "110"
-  },
+  "date_published": "2024-03-15",
+  "description": "An abstract about things.",
   "identifiers": [
-    { "identifier": "https://doi.org/10.5555/12345678", "identifierType": "DOI" }
+    {
+      "identifier": "https://doi.org/10.5555/12345678",
+      "identifier_type": "DOI"
+    }
   ],
+  "language": "en",
   "license": {
     "id": "CC-BY-4.0",
+    "title": "Creative Commons Attribution 4.0 International",
     "url": "https://creativecommons.org/licenses/by/4.0/legalcode"
+  },
+  "publisher": {
+    "name": "Example Publisher"
   },
   "references": [
     {
       "key": "ref1",
       "id": "https://doi.org/10.1000/xyz",
-      "title": "Prior Work",
-      "publicationYear": "2020",
-      "first_page": "1",
-      "last_page": "9"
+      "reference": "Prior Work"
     }
-  ]
+  ],
+  "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+  "title": "A Study of Things",
+  "url": "https://example.org/article/1"
 }

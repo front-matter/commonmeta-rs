@@ -76,7 +76,11 @@ fn ra_for_prefix(prefix: &str) -> Option<String> {
     let url = format!("https://doi.org/ra/{prefix}");
     let resp = reqwest::blocking::get(&url).ok()?;
     let json: serde_json::Value = resp.json().ok()?;
-    json.as_array()?.first()?.get("RA")?.as_str().map(|s| s.to_lowercase())
+    json.as_array()?
+        .first()?
+        .get("RA")?
+        .as_str()
+        .map(|s| s.to_lowercase())
 }
 
 pub(crate) fn detect_format(input: &str) -> String {
@@ -136,8 +140,9 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         .unwrap_or(output);
 
     match out_file {
-        Some(path) => std::fs::write(path, &pretty)
-            .map_err(|e| format!("failed to write '{}': {}", path, e)),
+        Some(path) => {
+            std::fs::write(path, &pretty).map_err(|e| format!("failed to write '{}': {}", path, e))
+        }
         None => {
             println!("{}", String::from_utf8_lossy(&pretty));
             Ok(())

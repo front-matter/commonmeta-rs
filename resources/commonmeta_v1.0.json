@@ -92,10 +92,10 @@
           "items": {
             "type": "object",
             "properties": {
+              "key": { "type": "string" },
               "id": { "$ref": "#/definitions/id" },
               "type": { "$ref": "#/definitions/type" },
-              "key": { "type": "string" },
-              "title": { "description": "The citation formatted as string.", "type": "string" }
+              "citation": { "description": "The citation formatted as string.", "type": "string" }
             }
           }
         },
@@ -282,10 +282,10 @@
           "items": {
             "type": "object",
             "properties": {
+              "key": { "type": "string" },
               "id": { "$ref": "#/definitions/id" },
               "type": { "$ref": "#/definitions/type" },
-              "key": { "type": "string" },
-              "title": { "description": "The reference formatted as string.", "type": "string" }
+              "reference": { "description": "The reference formatted as string.", "type": "string" }
             }
           }
         },

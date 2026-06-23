@@ -39,15 +39,10 @@ pub fn command() -> Command {
                 .required(true)
                 .index(1),
         )
-        .arg(
-            Arg::new("file")
-                .long("file")
-                .value_name("FILE")
-                .help(
-                    "Output file path. Defaults to the input path with .sqlite3 \
+        .arg(Arg::new("file").long("file").value_name("FILE").help(
+            "Output file path. Defaults to the input path with .sqlite3 \
                     replaced by .parquet. Append .zst/.zip/.tgz to compress.",
-                ),
-        )
+        ))
         .arg(
             Arg::new("batch_size")
                 .long("batch-size")
@@ -98,8 +93,8 @@ fn write_output(bytes: &[u8], out_path: &str) -> Result<(), String> {
 
     match compress.as_str() {
         "zst" => {
-            let compressed = zstd::encode_all(bytes, 0)
-                .map_err(|e| format!("zstd encoding: {e}"))?;
+            let compressed =
+                zstd::encode_all(bytes, 0).map_err(|e| format!("zstd encoding: {e}"))?;
             file_utils::write_file(out_path, &compressed)
                 .map_err(|e| format!("writing {out_path}: {e}"))
         }
@@ -173,10 +168,7 @@ mod tests {
 
     #[test]
     fn write_output_plain_roundtrip() {
-        let dir = std::env::temp_dir().join(format!(
-            "commonmeta-dump-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("commonmeta-dump-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("out.parquet").to_string_lossy().into_owned();
         let data = b"PAR1fake";
@@ -190,10 +182,7 @@ mod tests {
 
     #[test]
     fn write_output_zst_roundtrip() {
-        let dir = std::env::temp_dir().join(format!(
-            "commonmeta-dump-zst-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("commonmeta-dump-zst-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("out.parquet.zst").to_string_lossy().into_owned();
         let data = b"PAR1fake";

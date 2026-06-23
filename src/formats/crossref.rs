@@ -3,11 +3,16 @@ use regex::Regex;
 use serde::{Deserialize, Deserializer};
 use url::Url;
 
-use crate::data::{
-    Affiliation, Container, Contributor, Data, Date, Description, File, FundingReference,
-    Identifier, License, Publisher, Reference, Subject, Title,
+use crate::author_utils::{
+    cleanup_author, infer_contributor_type, normalize_contributor_roles, split_person_name,
 };
+use crate::data::{
+    Affiliation, Container, Contributor, Data, File, FundingReference, Identifier, Organization,
+    Person, Publisher, Reference, Subject, Title,
+};
+use crate::constants as C;
 use crate::error::{Error, Result};
+use crate::utils::normalize_id;
 
 // Crossref sometimes sends an explicit JSON `null` for an optional string
 // (e.g. `"publisher":null`) rather than omitting the key. `#[serde(default)]`
@@ -20,7 +25,9 @@ fn null_to_string<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String
 
 /// Same as `null_to_string`, but for array fields (e.g. `"title":[null]`)
 /// where an individual element may be an explicit `null`.
-fn null_to_string_vec<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
+fn null_to_string_vec<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Vec<String>, D::Error> {
     let values: Vec<Option<String>> = Deserialize::deserialize(d)?;
     Ok(values.into_iter().map(Option::unwrap_or_default).collect())
 }
@@ -53,11 +60,17 @@ pub(crate) struct CrossrefWork {
     type_: String,
     #[serde(default, deserialize_with = "null_to_string_vec")]
     title: Vec<String>,
+    #[serde(default, deserialize_with = "null_to_string_vec")]
+    subtitle: Vec<String>,
     #[serde(default)]
     author: Vec<CrossrefAuthor>,
     #[serde(default, deserialize_with = "null_to_string")]
     publisher: String,
-    #[serde(rename = "container-title", default, deserialize_with = "null_to_string_vec")]
+    #[serde(
+        rename = "container-title",
+        default,
+        deserialize_with = "null_to_string_vec"
+    )]
     container_title: Vec<String>,
     #[serde(default)]
     volume: Option<String>,
@@ -225,15 +238,16 @@ fn format_date(d: &CrossrefDate) -> String {
     }
 }
 
-/// `published` derivation: `issued.date-time` (raw timestamp string), else `issued` 
-/// reconstructed from `date-parts`, else `created.date-time`. Note `date.created` 
+/// `published` derivation: `issued.date-time` (raw timestamp string), else `issued`
+/// reconstructed from `date-parts`, else `created.date-time`. Note `date.created`
 /// is never set for Crossref records.
 fn published_date(issued: &Option<CrossrefDate>, created: &Option<CrossrefDate>) -> String {
     if let Some(issued) = issued {
         if let Some(dt) = &issued.date_time
-            && !dt.is_empty() {
-                return dt.clone();
-            }
+            && !dt.is_empty()
+        {
+            return dt.clone();
+        }
         let formatted = format_date(issued);
         if !formatted.is_empty() {
             return formatted;
@@ -243,56 +257,6 @@ fn published_date(issued: &Option<CrossrefDate>, created: &Option<CrossrefDate>)
         .as_ref()
         .and_then(|c| c.date_time.clone())
         .unwrap_or_default()
-}
-
-/// `CR_TO_CM_TRANSLATIONS`.
-fn crossref_type(t: &str) -> &str {
-    match t {
-        "book-chapter" => "BookChapter",
-        "book-part" => "BookPart",
-        "book-section" => "BookSection",
-        "book-series" => "BookSeries",
-        "book-set" => "BookSet",
-        "book-track" => "BookTrack",
-        "book" => "Book",
-        "component" => "Component",
-        "database" => "Database",
-        "dataset" => "Dataset",
-        "dissertation" => "Dissertation",
-        "edited-book" => "Book",
-        "grant" => "Grant",
-        "journal-article" => "JournalArticle",
-        "journal-issue" => "JournalIssue",
-        "journal-volume" => "JournalVolume",
-        "journal" => "Journal",
-        "monograph" => "Book",
-        "other" => "Other",
-        "peer-review" => "PeerReview",
-        "posted-content" => "Article",
-        "proceedings-article" => "ProceedingsArticle",
-        "proceedings-series" => "ProceedingsSeries",
-        "proceedings" => "Proceedings",
-        "reference-book" => "Book",
-        "reference-entry" => "Entry",
-        "report-component" => "ReportComponent",
-        "report-series" => "ReportSeries",
-        "report" => "Report",
-        "standard" => "Standard",
-        _ => "Other",
-    }
-}
-
-/// `CROSSREF_CONTAINER_TYPES` piped through `CR_TO_CM_CONTAINER_TRANSLATIONS`.
-fn container_type(work_type: &str) -> &str {
-    match work_type {
-        "book-chapter" => "Book",
-        "dataset" => "DataRepository",
-        "journal-article" | "journal-issue" => "Journal",
-        "monograph" => "BookSeries",
-        "proceedings-article" => "Proceedings",
-        "posted-content" => "Periodical",
-        _ => "",
-    }
 }
 
 fn normalize_doi_url(doi: &str) -> String {
@@ -308,12 +272,6 @@ fn normalize_doi_url(doi: &str) -> String {
     }
 }
 
-fn normalize_orcid(orcid: &str) -> String {
-    let bare = orcid
-        .trim_start_matches("https://orcid.org/")
-        .trim_start_matches("http://orcid.org/");
-    format!("https://orcid.org/{}", bare)
-}
 
 lazy_static! {
     static ref JATS_TAG: Regex = Regex::new(r"<[^>]+>").unwrap();
@@ -321,26 +279,6 @@ lazy_static! {
 
 fn strip_jats(s: &str) -> String {
     JATS_TAG.replace_all(s, "").to_string()
-}
-
-fn license_spdx(url: &str) -> &str {
-    if url.contains("creativecommons.org/licenses/by/4.0") {
-        "CC-BY-4.0"
-    } else if url.contains("creativecommons.org/licenses/by-sa/4.0") {
-        "CC-BY-SA-4.0"
-    } else if url.contains("creativecommons.org/licenses/by-nd/4.0") {
-        "CC-BY-ND-4.0"
-    } else if url.contains("creativecommons.org/licenses/by-nc/4.0") {
-        "CC-BY-NC-4.0"
-    } else if url.contains("creativecommons.org/licenses/by-nc-sa/4.0") {
-        "CC-BY-NC-SA-4.0"
-    } else if url.contains("creativecommons.org/licenses/by-nc-nd/4.0") {
-        "CC-BY-NC-ND-4.0"
-    } else if url.contains("creativecommons.org/publicdomain/zero/1.0") {
-        "CC0-1.0"
-    } else {
-        ""
-    }
 }
 
 fn split_page(page: &str) -> (String, String) {
@@ -353,17 +291,26 @@ fn split_page(page: &str) -> (String, String) {
 // ─── Conversion ──────────────────────────────────────────────────────────────
 
 fn from_work(w: CrossrefWork) -> Data {
-    let id = normalize_doi_url(&w.doi);
+    let has_doi = !w.doi.is_empty();
+    let id = if has_doi {
+        normalize_doi_url(&w.doi)
+    } else {
+        w.resource
+            .as_ref()
+            .and_then(|r| r.primary.as_ref())
+            .map(|p| p.url.clone())
+            .unwrap_or_default()
+    };
 
     // posted-content maps to "Article" by default,
     // but is re-classified as "BlogPost" when published by Front Matter
     // (i.e. Rogue Scholar-deposited blog posts).
-    let mut type_ = crossref_type(&w.type_).to_string();
+    let mut type_ = C::cr_to_cm(&w.type_).to_string();
     if type_ == "Article" && w.publisher == "Front Matter" {
         type_ = "BlogPost".to_string();
     }
 
-    // url comes from resource.primary.URL, not from the top-level URL 
+    // url comes from resource.primary.URL, not from the top-level URL
     // (which is just the DOI resolver link) or the DOI itself.
     let url = w
         .resource
@@ -373,34 +320,50 @@ fn from_work(w: CrossrefWork) -> Data {
         .and_then(|u| crate::utils::normalize_url(u, false, false))
         .unwrap_or_default();
 
-    let titles: Vec<Title> = w
-        .title
+    let mut title_strings = w.title;
+    let title = if title_strings.is_empty() {
+        String::new()
+    } else {
+        title_strings.remove(0)
+    };
+    let additional_titles: Vec<Title> = title_strings
         .into_iter()
         .map(|t| Title { title: t, ..Default::default() })
+        .chain(w.subtitle.into_iter().map(|t| Title {
+            title: t,
+            type_: "Subtitle".to_string(),
+            ..Default::default()
+        }))
         .collect();
 
     let contributors: Vec<Contributor> = w
         .author
         .into_iter()
         .map(|a| {
-            let is_person = a.given.is_some() || a.family.is_some();
-            let (type_str, given, family, name) = if is_person {
-                (
-                    "Person".to_string(),
-                    a.given.unwrap_or_default(),
-                    a.family.unwrap_or_default(),
-                    String::new(),
-                )
-            } else {
-                (
-                    "Organization".to_string(),
-                    String::new(),
-                    String::new(),
-                    a.name.unwrap_or_default(),
-                )
-            };
-            let orcid = a.orcid.as_deref().map(normalize_orcid).unwrap_or_default();
-            let affiliations = a
+            let mut given = a.given.unwrap_or_default();
+            let mut family = a.family.unwrap_or_default();
+            let cleaned_name = cleanup_author(a.name.as_deref()).unwrap_or_default();
+
+            if given.is_empty() && family.is_empty() && !cleaned_name.is_empty() {
+                let (g, f, _) = split_person_name(&cleaned_name);
+                given = g;
+                family = f;
+            }
+
+            let orcid = a.orcid.as_deref().map(normalize_id).unwrap_or_default();
+            let mut type_str = infer_contributor_type(
+                "",
+                &orcid,
+                &given,
+                &family,
+                &cleaned_name,
+                Some("crossref"),
+            );
+            if type_str.is_empty() {
+                type_str = "Organization".to_string();
+            }
+
+            let affiliations: Vec<Affiliation> = a
                 .affiliation
                 .into_iter()
                 .map(|af| {
@@ -412,23 +375,23 @@ fn from_work(w: CrossrefWork) -> Data {
                     }
                 })
                 .collect();
-            Contributor {
-                id: orcid,
-                type_: type_str,
-                name,
-                given_name: given,
-                family_name: family,
-                affiliations,
-                contributor_roles: vec!["Author".to_string()],
+            let roles = normalize_contributor_roles(&["Author".to_string()], "Author");
+
+            if type_str == "Person" {
+                Contributor::person(
+                    Person { id: orcid, given_name: given, family_name: family, affiliations },
+                    roles,
+                )
+            } else {
+                Contributor::organization(
+                    Organization { id: orcid, name: cleaned_name },
+                    roles,
+                )
             }
         })
         .collect();
 
-    // part of the Crossref date mapping.
-    let date = Date {
-        published: published_date(&w.issued, &w.created),
-        ..Default::default()
-    };
+    let date_published = published_date(&w.issued, &w.created);
 
     // Container title fallback chain:
     // container-title[0] || group-title || institution[0].name
@@ -438,17 +401,30 @@ fn from_work(w: CrossrefWork) -> Data {
         .next()
         .filter(|t| !t.is_empty())
         .or(w.group_title.filter(|t| !t.is_empty()))
-        .or_else(|| w.institution.into_iter().next().map(|i| i.name).filter(|n| !n.is_empty()))
+        .or_else(|| {
+            w.institution
+                .into_iter()
+                .next()
+                .map(|i| i.name)
+                .filter(|n| !n.is_empty())
+        })
         .unwrap_or_default();
     let issn = w.issn.into_iter().next().unwrap_or_default();
     let has_issn = !issn.is_empty();
-    let (first_page, last_page) =
-        w.page.as_deref().map(split_page).unwrap_or((String::new(), String::new()));
+    let (first_page, last_page) = w
+        .page
+        .as_deref()
+        .map(split_page)
+        .unwrap_or((String::new(), String::new()));
     let container = Container {
-        type_: container_type(&w.type_).to_string(),
+        type_: C::cr_work_to_container(&w.type_).to_string(),
         title: container_name,
         identifier: issn,
-        identifier_type: if has_issn { "ISSN".to_string() } else { String::new() },
+        identifier_type: if has_issn {
+            "ISSN".to_string()
+        } else {
+            String::new()
+        },
         volume: w.volume.unwrap_or_default(),
         issue: w.issue.unwrap_or_default(),
         first_page,
@@ -456,20 +432,16 @@ fn from_work(w: CrossrefWork) -> Data {
         ..Default::default()
     };
 
-    let publisher = Publisher { name: w.publisher, ..Default::default() };
+    let publisher = Publisher {
+        name: w.publisher,
+        ..Default::default()
+    };
 
-    let descriptions: Vec<Description> = w
+    let description = w
         .abstract_text
-        .into_iter()
-        .filter_map(|a| {
-            let text = strip_jats(&a);
-            if text.is_empty() {
-                None
-            } else {
-                Some(Description { description: text, type_: "Abstract".to_string(), ..Default::default() })
-            }
-        })
-        .collect();
+        .map(|a| strip_jats(&a))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default();
 
     let license = {
         let chosen = w
@@ -478,12 +450,15 @@ fn from_work(w: CrossrefWork) -> Data {
             .find(|l| l.content_version.as_deref() == Some("vor"))
             .or_else(|| w.license.first());
         chosen
-            .map(|l| License { id: license_spdx(&l.url).to_string(), url: l.url.clone() })
+            .map(|l| crate::spdx::from_url(&l.url))
             .unwrap_or_default()
     };
 
-    let subjects: Vec<Subject> =
-        w.subject.into_iter().map(|s| Subject { subject: s }).collect();
+    let subjects: Vec<Subject> = w
+        .subject
+        .into_iter()
+        .map(|s| Subject { subject: s, ..Default::default() })
+        .collect();
 
     let funding_references: Vec<FundingReference> = w
         .funder
@@ -491,11 +466,14 @@ fn from_work(w: CrossrefWork) -> Data {
         .flat_map(|f| {
             let funder_id = f.doi.as_deref().map(normalize_doi_url).unwrap_or_default();
             let has_doi = !funder_id.is_empty();
-            let id_type =
-                if has_doi { "Crossref Funder ID".to_string() } else { String::new() };
+            let id_type = if has_doi {
+                "Crossref Funder ID".to_string()
+            } else {
+                String::new()
+            };
             if f.award.is_empty() {
                 vec![FundingReference {
-                    funder_identifier: funder_id,
+                    funder_id,
                     funder_identifier_type: id_type,
                     funder_name: f.name,
                     ..Default::default()
@@ -504,7 +482,7 @@ fn from_work(w: CrossrefWork) -> Data {
                 f.award
                     .into_iter()
                     .map(|award| FundingReference {
-                        funder_identifier: funder_id.clone(),
+                        funder_id: funder_id.clone(),
                         funder_identifier_type: id_type.clone(),
                         funder_name: f.name.clone(),
                         award_number: award,
@@ -518,31 +496,52 @@ fn from_work(w: CrossrefWork) -> Data {
     let references: Vec<Reference> = w
         .reference
         .into_iter()
-        .map(|r| Reference {
-            key: r.key.unwrap_or_default(),
-            id: r.doi.as_deref().map(normalize_doi_url).unwrap_or_default(),
-            title: r.article_title.unwrap_or_default(),
-            publisher: r.publisher.unwrap_or_default(),
-            publication_year: r.year.unwrap_or_default(),
-            volume: r.volume.unwrap_or_default(),
-            issue: r.issue.unwrap_or_default(),
-            first_page: r.first_page.unwrap_or_default(),
-            last_page: r.last_page.unwrap_or_default(),
-            unstructured: r.unstructured.unwrap_or_default(),
-            asserted_by: r.doi_asserted_by.unwrap_or_default(),
-            ..Default::default()
+        .map(|r| {
+            // The formatted reference string prefers the free-text
+            // "unstructured" citation over the structured article title,
+            // since it's typically the fuller (and sometimes only) citation
+            // text Crossref provides.
+            let reference_text = r
+                .unstructured
+                .clone()
+                .or_else(|| r.article_title.clone())
+                .unwrap_or_default();
+            Reference {
+                key: r.key.unwrap_or_default(),
+                id: r.doi.as_deref().map(normalize_doi_url).unwrap_or_default(),
+                reference: reference_text,
+                publisher: r.publisher.unwrap_or_default(),
+                publication_year: r.year.unwrap_or_default(),
+                volume: r.volume.unwrap_or_default(),
+                issue: r.issue.unwrap_or_default(),
+                first_page: r.first_page.unwrap_or_default(),
+                last_page: r.last_page.unwrap_or_default(),
+                unstructured: r.unstructured.unwrap_or_default(),
+                asserted_by: r.doi_asserted_by.unwrap_or_default(),
+                ..Default::default()
+            }
         })
         .collect();
 
-    // Crossref record gets a redundant DOI identifier entry, even though `id` 
-    // is already that same DOI URL. Used for matching against external identifiers.
-    let identifiers = vec![Identifier { identifier: id.clone(), identifier_type: "DOI".to_string() }];
+    // Include explicit DOI identifier only when Crossref provides a DOI.
+    let identifiers = if has_doi {
+        vec![Identifier {
+            identifier: id.clone(),
+            identifier_type: "DOI".to_string(),
+        }]
+    } else {
+        Vec::new()
+    };
 
     let files: Vec<File> = w
         .link
         .into_iter()
         .filter(|l| l.content_type != "unspecified" && !l.url.is_empty())
-        .map(|l| File { url: l.url, mime_type: l.content_type, ..Default::default() })
+        .map(|l| File {
+            url: l.url,
+            mime_type: l.content_type,
+            ..Default::default()
+        })
         .collect();
 
     let version = w.version.map(|v| v.version).unwrap_or_default();
@@ -554,12 +553,13 @@ fn from_work(w: CrossrefWork) -> Data {
         url,
         language: w.language.unwrap_or_default(),
         provider: "Crossref".to_string(),
-        titles,
+        title,
+        additional_titles,
         contributors,
-        date,
+        date_published,
         container,
         publisher,
-        descriptions,
+        description,
         license,
         subjects,
         funding_references,
@@ -773,8 +773,8 @@ pub(crate) fn query_url(
         "standard",
     ];
 
-    let mut url = Url::parse("https://api.crossref.org/works")
-        .expect("hardcoded Crossref URL should parse");
+    let mut url =
+        Url::parse("https://api.crossref.org/works").expect("hardcoded Crossref URL should parse");
     let rows = number.clamp(1, 1000);
     let page = page.max(1);
 
@@ -880,7 +880,7 @@ mod tests {
             "title":[null]
         }}"#;
         let data = read_json(json).unwrap();
-        assert_eq!(data.titles[0].title, "");
+        assert_eq!(data.title, "");
     }
 
     #[test]
@@ -892,6 +892,34 @@ mod tests {
             "author":[{"name":"Some Org","affiliation":[{"name":null}]}]
         }}"#;
         let data = read_json(json).unwrap();
-        assert_eq!(data.contributors[0].affiliations[0].name, "");
+        assert_eq!(data.contributors[0].affiliations()[0].name, "");
+    }
+
+    #[test]
+    fn test_read_json_maps_subtitle_to_subtitle_title() {
+        let json = r#"{"message":{
+            "DOI":"10.1/a",
+            "type":"journal-article",
+            "title":["Main Title"],
+            "subtitle":["Sub Title"]
+        }}"#;
+        let data = read_json(json).unwrap();
+        assert_eq!(data.title, "Main Title");
+        assert_eq!(data.additional_titles.len(), 1);
+        assert_eq!(data.additional_titles[0].title, "Sub Title");
+        assert_eq!(data.additional_titles[0].type_, "Subtitle");
+    }
+
+    #[test]
+    fn test_read_json_without_doi_does_not_add_doi_identifier() {
+        let json = r#"{"message":{
+            "DOI":"",
+            "type":"journal-article",
+            "title":["A Title"],
+            "resource":{"primary":{"URL":"https://example.org/article"}}
+        }}"#;
+        let data = read_json(json).unwrap();
+        assert_eq!(data.id, "https://example.org/article");
+        assert!(data.identifiers.is_empty());
     }
 }

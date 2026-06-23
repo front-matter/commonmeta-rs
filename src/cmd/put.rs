@@ -1,4 +1,4 @@
-use clap::{Arg, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use commonmeta::Data;
 
@@ -38,12 +38,56 @@ pub fn command() -> Command {
                 .help("Target service to register with")
                 .default_value("inveniordm"),
         )
+        .arg(Arg::new("doi").long("doi").help("DOI to assign"))
+        .arg(Arg::new("prefix").long("prefix").help("DOI prefix"))
+        .arg(
+            Arg::new("depositor")
+                .long("depositor")
+                .help("Depositor name (used for Crossref XML registration)"),
+        )
+        .arg(
+            Arg::new("email")
+                .long("email")
+                .help("Depositor email (used for Crossref XML registration)"),
+        )
+        .arg(
+            Arg::new("registrant")
+                .long("registrant")
+                .help("Registrant name (used for Crossref XML registration)"),
+        )
+        .arg(
+            Arg::new("login-id")
+                .long("login-id")
+                .help("Login ID for Crossref XML deposit"),
+        )
+        .arg(
+            Arg::new("login-passwd")
+                .long("login-passwd")
+                .help("Login password for Crossref XML deposit"),
+        )
+        .arg(
+            Arg::new("test-mode")
+                .long("test-mode")
+                .help("Use test mode for Crossref XML deposit")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("legacy-conn")
+                .long("legacy-conn")
+                .help("Legacy connection string"),
+        )
         .arg(
             Arg::new("host")
                 .long("host")
                 .help("InvenioRDM host (e.g. rogue-scholar.org)"),
         )
         .arg(Arg::new("token").long("token").help("InvenioRDM API token"))
+        .arg(
+            Arg::new("show-errors")
+                .long("show-errors")
+                .help("Print validation errors")
+                .action(ArgAction::SetTrue),
+        )
 }
 
 pub fn execute(matches: &ArgMatches) -> Result<(), String> {
@@ -60,12 +104,12 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         input_arg.clone()
     };
 
-    let from = match matches.get_one::<String>("from") {
+    let via = match matches.get_one::<String>("from") {
         Some(f) => f.clone(),
         None => detect_format(&input),
     };
 
-    let data = commonmeta::read(&from, &input).map_err(|e| e.to_string())?;
+    let data = commonmeta::read(&via, &input).map_err(|e| e.to_string())?;
 
     match to {
         "inveniordm" => put_to_inveniordm(&data, matches),
@@ -106,16 +150,12 @@ mod tests {
         let path = dir.join("record.json");
         std::fs::write(
             &path,
-            r#"{"id":"https://doi.org/10.1/a","type":"JournalArticle"}"#,
+            r#"{"id":"https://doi.org/10.1/a","type":"JournalArticle","schema_version":"https://commonmeta.org/commonmeta_v1.0.json"}"#,
         )
         .unwrap();
 
-        let matches = command().get_matches_from(vec![
-            "put",
-            path.to_str().unwrap(),
-            "--from",
-            "commonmeta",
-        ]);
+        let matches =
+            command().get_matches_from(vec!["put", path.to_str().unwrap(), "--from", "commonmeta"]);
         let err = execute(&matches).unwrap_err();
         assert!(err.contains("requires --host"));
 
@@ -129,7 +169,7 @@ mod tests {
         let path = dir.join("record.json");
         std::fs::write(
             &path,
-            r#"{"id":"https://doi.org/10.1/a","type":"JournalArticle"}"#,
+            r#"{"id":"https://doi.org/10.1/a","type":"JournalArticle","schema_version":"https://commonmeta.org/commonmeta_v1.0.json"}"#,
         )
         .unwrap();
 
@@ -154,7 +194,7 @@ mod tests {
         let path = dir.join("record.json");
         std::fs::write(
             &path,
-            r#"{"id":"https://doi.org/10.1/a","type":"JournalArticle"}"#,
+            r#"{"id":"https://doi.org/10.1/a","type":"JournalArticle","schema_version":"https://commonmeta.org/commonmeta_v1.0.json"}"#,
         )
         .unwrap();
 
@@ -176,9 +216,13 @@ mod tests {
     fn test_execute_file_not_found_reads_as_literal_input() {
         // A nonexistent path is treated as a literal identifier string (e.g.
         // a DOI), not a file-read error, matching convert.rs's behavior.
-        let matches =
-            command().get_matches_from(vec!["put", "not-a-real-path-or-doi", "--from", "commonmeta"]);
-        // commonmeta::read with from="commonmeta" will fail to parse the
+        let matches = command().get_matches_from(vec![
+            "put",
+            "not-a-real-path-or-doi",
+            "--from",
+            "commonmeta",
+        ]);
+        // commonmeta::read with via="commonmeta" will fail to parse the
         // literal string as JSON, surfacing a parse error rather than a
         // missing-host error — confirms we got past the file-read branch.
         let err = execute(&matches).unwrap_err();

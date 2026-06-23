@@ -155,7 +155,10 @@ pub fn write_zip_archive<P: AsRef<Path>>(filename: P, entries: &[(String, Vec<u8
 }
 
 /// Saves multiple named entries into a single gzip-compressed tar (.tgz) archive.
-pub fn write_tar_gz_archive<P: AsRef<Path>>(filename: P, entries: &[(String, Vec<u8>)]) -> Result<()> {
+pub fn write_tar_gz_archive<P: AsRef<Path>>(
+    filename: P,
+    entries: &[(String, Vec<u8>)],
+) -> Result<()> {
     let file = File::create(filename)?;
     let encoder = GzEncoder::new(file, Compression::default());
     let mut builder = tar::Builder::new(encoder);
@@ -260,7 +263,10 @@ pub fn download_file(url: &str) -> Result<Vec<u8>> {
     let bar = crate::progress::bytes_bar("downloading", total_bytes);
 
     let mut buffer = Vec::new();
-    let mut writer = ProgressWriter { buffer: &mut buffer, bar: &bar };
+    let mut writer = ProgressWriter {
+        buffer: &mut buffer,
+        bar: &bar,
+    };
     let copy_result = resp.copy_to(&mut writer);
     bar.finish_and_clear();
 
@@ -283,7 +289,10 @@ pub fn download_file(url: &str) -> Result<Vec<u8>> {
 /// `~/.cache/commonmeta/{namespace}` on Linux. Falls back to the system temp
 /// dir if no cache dir is available.
 pub fn cache_dir(namespace: &str) -> PathBuf {
-    dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("commonmeta").join(namespace)
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("commonmeta")
+        .join(namespace)
 }
 
 /// Like [`download_file`], but checks a local cache first and populates it
@@ -335,9 +344,17 @@ fn prune_cache(namespace: &str, ttl: Duration) {
         return;
     };
     for entry in entries.flatten() {
-        let Ok(metadata) = entry.metadata() else { continue };
-        let Ok(modified) = metadata.modified() else { continue };
-        if SystemTime::now().duration_since(modified).unwrap_or_default() > ttl {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        if SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or_default()
+            > ttl
+        {
             fs::remove_file(entry.path()).ok();
         }
     }
@@ -372,9 +389,7 @@ fn describe_reqwest_error(e: &reqwest::Error) -> String {
     } else if e.is_connect() {
         format!("could not connect to the server: {e}")
     } else if e.is_body() || e.is_decode() {
-        format!(
-            "the connection was interrupted before the download finished: {e}"
-        )
+        format!("the connection was interrupted before the download finished: {e}")
     } else {
         e.to_string()
     }
@@ -386,9 +401,10 @@ fn describe_reqwest_error(e: &reqwest::Error) -> String {
 pub fn write_file<P: AsRef<Path>>(filename: P, output: &[u8]) -> Result<()> {
     // Create parent directories if they don't exist
     if let Some(parent) = filename.as_ref().parent()
-        && !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
+        && !parent.exists()
+    {
+        fs::create_dir_all(parent)?;
+    }
 
     let mut file = File::create(filename)?;
     file.write_all(output)?;
@@ -406,7 +422,11 @@ pub fn get_extension<P: AsRef<Path>>(filename: P, ext: &str) -> (PathBuf, String
             .map(|ext| ext.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let compress = if extension == "zip" || extension == "gz" || extension == "zst" || extension == "tgz" {
+        let compress = if extension == "zip"
+            || extension == "gz"
+            || extension == "zst"
+            || extension == "tgz"
+        {
             // Remove trailing compression extension (".zip"/".gz"/".zst"/".tgz") from filename.
             let stem = path.file_stem().unwrap_or_default();
             let parent = path.parent().unwrap_or_else(|| Path::new(""));
@@ -484,7 +504,10 @@ mod tests {
         }
     }
 
-    fn respond_once(listener: std::net::TcpListener, body: &'static [u8]) -> std::thread::JoinHandle<()> {
+    fn respond_once(
+        listener: std::net::TcpListener,
+        body: &'static [u8],
+    ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
             use std::io::Write;
             if let Ok((mut stream, _)) = listener.accept() {
@@ -547,7 +570,8 @@ mod tests {
         let handle = respond_once(listener, b"first download");
         let ttl = Duration::from_millis(50);
         let (bytes, from_cache) =
-            download_file_cached(&format!("http://{addr}/file"), namespace, cache_key, ttl).unwrap();
+            download_file_cached(&format!("http://{addr}/file"), namespace, cache_key, ttl)
+                .unwrap();
         assert_eq!(bytes, b"first download");
         assert!(!from_cache);
         handle.join().unwrap();
@@ -558,9 +582,13 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let handle = respond_once(listener, b"second download");
         let (bytes, from_cache) =
-            download_file_cached(&format!("http://{addr}/file"), namespace, cache_key, ttl).unwrap();
+            download_file_cached(&format!("http://{addr}/file"), namespace, cache_key, ttl)
+                .unwrap();
         assert_eq!(bytes, b"second download");
-        assert!(!from_cache, "expired cache entry should trigger a fresh download");
+        assert!(
+            !from_cache,
+            "expired cache entry should trigger a fresh download"
+        );
         handle.join().unwrap();
 
         std::fs::remove_dir_all(cache_dir(namespace)).ok();
@@ -574,8 +602,9 @@ mod tests {
             use std::io::Write;
             if let Ok((mut stream, _)) = listener.accept() {
                 drain_http_request(&stream);
-                let _ = stream
-                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = stream.write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
             }
         });
 
@@ -672,7 +701,11 @@ mod tests {
         let mut archive = zip::ZipArchive::new(File::open(&path).unwrap()).unwrap();
         assert_eq!(archive.len(), 2);
         let mut contents = String::new();
-        archive.by_name("a.json").unwrap().read_to_string(&mut contents).unwrap();
+        archive
+            .by_name("a.json")
+            .unwrap()
+            .read_to_string(&mut contents)
+            .unwrap();
         assert_eq!(contents, "{\"a\":1}");
 
         fs::remove_dir_all(&dir).ok();
@@ -716,7 +749,10 @@ mod tests {
 
         let bytes = read_file(&path).unwrap();
         let read_back = read_zip_entries(&bytes).unwrap();
-        assert_eq!(read_back, vec![b"first-blob".to_vec(), b"second-blob".to_vec()]);
+        assert_eq!(
+            read_back,
+            vec![b"first-blob".to_vec(), b"second-blob".to_vec()]
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -735,7 +771,10 @@ mod tests {
 
         let bytes = read_file(&path).unwrap();
         let read_back = read_tar_gz_entries(&bytes).unwrap();
-        assert_eq!(read_back, vec![b"first-blob".to_vec(), b"second-blob".to_vec()]);
+        assert_eq!(
+            read_back,
+            vec![b"first-blob".to_vec(), b"second-blob".to_vec()]
+        );
 
         fs::remove_dir_all(&dir).ok();
     }

@@ -50,7 +50,10 @@ fn fetch_vraix<'py>(
 
 /// Write a list of commonmeta record dicts as a single lossless Parquet file.
 #[pyfunction]
-fn write_parquet<'py>(py: Python<'py>, records: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyBytes>> {
+fn write_parquet<'py>(
+    py: Python<'py>,
+    records: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyBytes>> {
     let list = records_from_py(records)?;
     let bytes = commonmeta::write_parquet(&list).map_err(to_py_err)?;
     Ok(PyBytes::new(py, &bytes))
@@ -78,12 +81,20 @@ fn write_archive<'py>(
 ) -> PyResult<Vec<(String, Bound<'py, PyBytes>)>> {
     let list = records_from_py(records)?;
     let entries = commonmeta::write_archive(&list, to, base_name, batch_size).map_err(to_py_err)?;
-    Ok(entries.into_iter().map(|(name, bytes)| (name, PyBytes::new(py, &bytes))).collect())
+    Ok(entries
+        .into_iter()
+        .map(|(name, bytes)| (name, PyBytes::new(py, &bytes)))
+        .collect())
 }
 
 /// Convert a single record from `from_` format to `to` format.
 #[pyfunction]
-fn convert<'py>(py: Python<'py>, from_: &str, to: &str, input: &str) -> PyResult<Bound<'py, PyBytes>> {
+fn convert<'py>(
+    py: Python<'py>,
+    from_: &str,
+    to: &str,
+    input: &str,
+) -> PyResult<Bound<'py, PyBytes>> {
     let bytes = commonmeta::convert(from_, to, input).map_err(to_py_err)?;
     Ok(PyBytes::new(py, &bytes))
 }

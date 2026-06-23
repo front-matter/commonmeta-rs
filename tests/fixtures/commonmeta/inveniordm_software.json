@@ -1,0 +1,80 @@
+{
+  "id": "https://doi.org/10.5281/zenodo.7752775",
+  "type": "Software",
+  "additional_descriptions": [
+    {
+      "description": "If you use ruby-cff in your work, please cite it using the following metadata",
+      "type": "Other"
+    }
+  ],
+  "container": {
+    "identifier": "https://www.re3data.org/repository/r3d100010468",
+    "identifier_type": "URL",
+    "type": "Repository",
+    "title": "Zenodo"
+  },
+  "contributors": [
+    {
+      "type": "Person",
+      "person": {
+        "id": "https://orcid.org/0000-0003-1419-2405",
+        "given_name": "Martin",
+        "family_name": "Fenner",
+        "affiliations": [
+          {
+            "name": "Front Matter"
+          }
+        ]
+      },
+      "roles": [
+        "Author"
+      ]
+    }
+  ],
+  "date_published": "2023-03-20",
+  "date_updated": "2023-03-20T14:26:48+00:00",
+  "description": "Ruby gem and command-line utility for conversion of DOI metadata from and to different metadata formats, including schema.org. Fork of version 1.19.12 of the bolognese gem.",
+  "identifiers": [
+    {
+      "identifier": "https://doi.org/10.5281/zenodo.7752775",
+      "identifier_type": "DOI"
+    }
+  ],
+  "license": {
+    "id": "MIT",
+    "title": "MIT License",
+    "url": "https://opensource.org/license/mit/"
+  },
+  "provider": "DataCite",
+  "publisher": {
+    "name": "Zenodo"
+  },
+  "relations": [
+    {
+      "id": "https://github.com/front-matter/commonmeta-ruby/tree/v3.0.1",
+      "type": "IsSupplementTo"
+    },
+    {
+      "id": "https://doi.org/10.5281/zenodo.5785518",
+      "type": "IsVersionOf"
+    }
+  ],
+  "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+  "subjects": [
+    {
+      "subject": "ruby"
+    },
+    {
+      "subject": "metadata"
+    },
+    {
+      "subject": "software citation"
+    },
+    {
+      "subject": "research software"
+    }
+  ],
+  "title": "commonmeta-ruby",
+  "url": "https://zenodo.org/records/7752775",
+  "version": "v3.0.1"
+}
