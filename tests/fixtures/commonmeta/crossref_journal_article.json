@@ -52,11 +52,7 @@
     {
       "key": "ref1",
       "id": "https://doi.org/10.1000/xyz",
-      "reference": "Prior Work",
-      "publication_year": "2020",
-      "first_page": "1",
-      "last_page": "9",
-      "asserted_by": "publisher"
+      "reference": "Author, A. (2020). Prior Work. Journal, 10(1), 1–9. https://doi.org/10.1000/xyz."
     }
   ],
   "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",

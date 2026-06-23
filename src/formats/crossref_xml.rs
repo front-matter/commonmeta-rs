@@ -1980,7 +1980,6 @@ fn convert_funding_references(programs: &[XmlProgram]) -> Vec<FundingReference> 
 
         let mut funder_name = String::new();
         let mut funder_id = String::new();
-        let mut funder_id_type = String::new();
 
         for assertion in &top.assertion {
             if assertion.name == "funder_name" {
@@ -1989,7 +1988,6 @@ fn convert_funding_references(programs: &[XmlProgram]) -> Vec<FundingReference> 
                     if child.name == "funder_identifier" {
                         if child.provider == "crossref" {
                             funder_id = normalize_doi(&format!("10.13039/{}", child.text.trim()));
-                            funder_id_type = "Crossref Funder ID".to_string();
                         } else {
                             let raw = child.text.trim();
                             funder_id = normalize_doi(raw);
@@ -2007,7 +2005,6 @@ fn convert_funding_references(programs: &[XmlProgram]) -> Vec<FundingReference> 
         if award_numbers.is_empty() {
             refs.push(FundingReference {
                 funder_id: funder_id.clone(),
-                funder_identifier_type: funder_id_type.clone(),
                 funder_name: funder_name.clone(),
                 ..Default::default()
             });
@@ -2015,7 +2012,6 @@ fn convert_funding_references(programs: &[XmlProgram]) -> Vec<FundingReference> 
             for award in &award_numbers {
                 refs.push(FundingReference {
                     funder_id: funder_id.clone(),
-                    funder_identifier_type: funder_id_type.clone(),
                     funder_name: funder_name.clone(),
                     award_number: award.to_string(),
                     ..Default::default()

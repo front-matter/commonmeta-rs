@@ -616,7 +616,7 @@ fn from_xml_resource(r: XmlResource) -> Data {
 
     // Funding references
     for f in r.funding_references.funding_reference {
-        let (funder_id, funder_id_type) = match f
+        let funder_id = match f
             .funder_identifier
             .as_ref()
             .map(|fi| fi.identifier_type.as_str())
@@ -627,9 +627,9 @@ fn from_xml_resource(r: XmlResource) -> Data {
                     .as_ref()
                     .map(|fi| fi.value.trim())
                     .unwrap_or("");
-                (normalize_ror(raw), "ROR".to_string())
+                normalize_ror(raw)
             }
-            _ => (String::new(), String::new()),
+            _ => String::new(),
         };
         let award_number = f
             .award_number
@@ -643,7 +643,6 @@ fn from_xml_resource(r: XmlResource) -> Data {
             .unwrap_or_default();
         data.funding_references.push(FundingReference {
             funder_id,
-            funder_identifier_type: funder_id_type,
             funder_name: f.funder_name.trim().to_string(),
             award_number,
             award_title: f.award_title.trim().to_string(),

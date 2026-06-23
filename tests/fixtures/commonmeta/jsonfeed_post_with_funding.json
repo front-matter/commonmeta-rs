@@ -101,7 +101,6 @@
   "funding_references": [
     {
       "funder_id": "https://ror.org/021nxhr62",
-      "funder_identifier_type": "ROR",
       "funder_name": "National Science Foundation",
       "award_id": "https://www.nsf.gov/awardsearch/showaward?awd_id=2134956",
       "award_number": "2134956"
@@ -127,8 +126,7 @@
   "references": [
     {
       "id": "https://doi.org/10.5281/zenodo.8284206",
-      "reference": "Plankytė, V., Macneil, R., &amp; Chen, X. (2023). <i>Guiding principles for implementing persistent identification and metadata features on research tools to boost interoperability of research data and support sample management workflows</i>. Zenodo.",
-      "unstructured": "Plankytė, V., Macneil, R., &amp; Chen, X. (2023). <i>Guiding principles for implementing persistent identification and metadata features on research tools to boost interoperability of research data and support sample management workflows</i>. Zenodo."
+      "reference": "Plankytė, V., Macneil, R., &amp; Chen, X. (2023). <i>Guiding principles for implementing persistent identification and metadata features on research tools to boost interoperability of research data and support sample management workflows</i>. Zenodo."
     }
   ],
   "relations": [

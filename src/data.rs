@@ -385,15 +385,10 @@ pub struct File {
     pub mime_type: String,
 }
 
-/// `funder_identifier_type` rides along for internal use (e.g. deciding
-/// whether a Crossref Funder ID needs ROR translation); it isn't part of
-/// the v1.0 schema's `funding_references` definition.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FundingReference {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub funder_id: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub funder_identifier_type: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub funder_name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]

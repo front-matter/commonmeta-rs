@@ -474,11 +474,6 @@ fn from_work(work: Work) -> Data {
             let funder_id = normalize_ror(&g.funder);
             FundingReference {
                 funder_id,
-                funder_identifier_type: if !g.funder.is_empty() {
-                    "ROR".to_string()
-                } else {
-                    String::new()
-                },
                 funder_name: g.funder_display_name.clone(),
                 award_number: g.award_id.clone(),
                 ..Default::default()

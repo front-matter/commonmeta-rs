@@ -465,16 +465,9 @@ fn from_work(w: CrossrefWork) -> Data {
         .into_iter()
         .flat_map(|f| {
             let funder_id = f.doi.as_deref().map(normalize_doi_url).unwrap_or_default();
-            let has_doi = !funder_id.is_empty();
-            let id_type = if has_doi {
-                "Crossref Funder ID".to_string()
-            } else {
-                String::new()
-            };
             if f.award.is_empty() {
                 vec![FundingReference {
                     funder_id,
-                    funder_identifier_type: id_type,
                     funder_name: f.name,
                     ..Default::default()
                 }]
@@ -483,7 +476,6 @@ fn from_work(w: CrossrefWork) -> Data {
                     .into_iter()
                     .map(|award| FundingReference {
                         funder_id: funder_id.clone(),
-                        funder_identifier_type: id_type.clone(),
                         funder_name: f.name.clone(),
                         award_number: award,
                         ..Default::default()

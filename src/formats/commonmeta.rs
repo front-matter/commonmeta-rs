@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde::Serialize;
 use serde_json::Value;
 
@@ -22,11 +24,22 @@ pub fn read(json: &str) -> Result<Data> {
     serde_json::from_value(value).map_err(|e| Error::Parse(e.to_string()))
 }
 
-/// Stamp `schema_version` and clear non-ROR `funder_id` values that would
-/// fail schema validation (the v1.0 schema constrains `funder_id` to ROR URLs).
+/// Stamp `schema_version`, strip non-v1.0 reference fields, and clear
+/// non-ROR `funder_id` values that would fail schema validation.
 fn prepare(data: &Data) -> Data {
     let mut out = data.clone();
     out.schema_version = COMMONMETA_V1_SCHEMA_URL.to_string();
+    // v1.0 references schema only defines: key, id, type, reference
+    for r in &mut out.references {
+        r.publisher.clear();
+        r.publication_year.clear();
+        r.volume.clear();
+        r.issue.clear();
+        r.first_page.clear();
+        r.last_page.clear();
+        r.unstructured.clear();
+        r.asserted_by.clear();
+    }
     for fr in &mut out.funding_references {
         if !fr.funder_id.is_empty() && normalize_ror(&fr.funder_id).is_empty() {
             fr.funder_id.clear();
@@ -341,6 +354,327 @@ fn unflatten_row_lossy(row: &CommonmetaRow) -> Data {
     }
 }
 
+const SQLITE_DDL: &str = r#"PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
+CREATE TABLE IF NOT EXISTS works (
+    "id"                      TEXT PRIMARY KEY NOT NULL,
+    "type"                    TEXT NOT NULL DEFAULT '',
+    "additional_type"         TEXT NOT NULL DEFAULT '',
+    "url"                     TEXT NOT NULL DEFAULT '',
+    "title"                   TEXT NOT NULL DEFAULT '',
+    "additional_titles"       TEXT NOT NULL DEFAULT '[]',
+    "contributors"            TEXT NOT NULL DEFAULT '[]',
+    "date_published"          TEXT NOT NULL DEFAULT '',
+    "date_updated"            TEXT NOT NULL DEFAULT '',
+    "dates"                   TEXT NOT NULL DEFAULT '{}',
+    "publisher"               TEXT NOT NULL DEFAULT '{}',
+    "container"               TEXT NOT NULL DEFAULT '{}',
+    "description"             TEXT NOT NULL DEFAULT '',
+    "additional_descriptions" TEXT NOT NULL DEFAULT '[]',
+    "license"                 TEXT NOT NULL DEFAULT '{}',
+    "version"                 TEXT NOT NULL DEFAULT '',
+    "language"                TEXT NOT NULL DEFAULT '',
+    "subjects"                TEXT NOT NULL DEFAULT '[]',
+    "identifiers"             TEXT NOT NULL DEFAULT '[]',
+    "relations"               TEXT NOT NULL DEFAULT '[]',
+    "references"              TEXT NOT NULL DEFAULT '[]',
+    "citations"               TEXT NOT NULL DEFAULT '[]',
+    "funding_references"      TEXT NOT NULL DEFAULT '[]',
+    "geo_locations"           TEXT NOT NULL DEFAULT '[]',
+    "files"                   TEXT NOT NULL DEFAULT '[]',
+    "archive_locations"       TEXT NOT NULL DEFAULT '[]',
+    "image"                   TEXT NOT NULL DEFAULT '',
+    "content"                 TEXT NOT NULL DEFAULT '',
+    "schema_version"          TEXT NOT NULL DEFAULT '',
+    "provider"                TEXT NOT NULL DEFAULT ''
+);"#;
+
+const SQLITE_INSERT: &str = r#"INSERT OR REPLACE INTO works (
+    "id", "type", "additional_type", "url", "title", "additional_titles",
+    "contributors", "date_published", "date_updated", "dates", "publisher",
+    "container", "description", "additional_descriptions", "license",
+    "version", "language", "subjects", "identifiers", "relations", "references",
+    "citations", "funding_references", "geo_locations", "files",
+    "archive_locations", "image", "content", "schema_version", "provider"
+) VALUES (
+    ?1, ?2, ?3, ?4, ?5, ?6,
+    ?7, ?8, ?9, ?10, ?11,
+    ?12, ?13, ?14, ?15,
+    ?16, ?17, ?18, ?19, ?20, ?21,
+    ?22, ?23, ?24, ?25,
+    ?26, ?27, ?28, ?29, ?30
+)"#;
+
+// ── Streaming-optimised write path ────────────────────────────────────────────
+
+/// A single record fully prepared and JSON-serialized, ready to bind directly
+/// to the SQLite INSERT statement without any further allocation.
+pub struct PreparedRow {
+    pub id: String,
+    pub type_: String,
+    pub additional_type: String,
+    pub url: String,
+    pub title: String,
+    pub additional_titles: String,
+    pub contributors: String,
+    pub date_published: String,
+    pub date_updated: String,
+    pub dates: String,
+    pub publisher: String,
+    pub container: String,
+    pub description: String,
+    pub additional_descriptions: String,
+    pub license: String,
+    pub version: String,
+    pub language: String,
+    pub subjects: String,
+    pub identifiers: String,
+    pub relations: String,
+    pub references: String,
+    pub citations: String,
+    pub funding_references: String,
+    pub geo_locations: String,
+    pub files: String,
+    pub archive_locations: String,
+    pub image: String,
+    pub content: String,
+    pub schema_version: String,
+    pub provider: String,
+}
+
+/// Apply v1.0 preparation (schema_version stamp, reference field stripping,
+/// funder-ID validation) and serialize all complex fields to JSON strings,
+/// consuming `data` so no clone is required.
+pub fn serialize_to_row(mut data: Data) -> PreparedRow {
+    data.schema_version = COMMONMETA_V1_SCHEMA_URL.to_string();
+    for r in &mut data.references {
+        r.publisher.clear();
+        r.publication_year.clear();
+        r.volume.clear();
+        r.issue.clear();
+        r.first_page.clear();
+        r.last_page.clear();
+        r.unstructured.clear();
+        r.asserted_by.clear();
+    }
+    for fr in &mut data.funding_references {
+        if !fr.funder_id.is_empty() && normalize_ror(&fr.funder_id).is_empty() {
+            fr.funder_id.clear();
+        }
+    }
+    macro_rules! js {
+        ($v:expr) => {
+            serde_json::to_string(&$v).unwrap_or_default()
+        };
+    }
+    PreparedRow {
+        id: data.id,
+        type_: data.type_,
+        additional_type: data.additional_type,
+        url: data.url,
+        title: data.title,
+        additional_titles: js!(data.additional_titles),
+        contributors: js!(data.contributors),
+        date_published: data.date_published,
+        date_updated: data.date_updated,
+        dates: js!(data.dates),
+        publisher: js!(data.publisher),
+        container: js!(data.container),
+        description: data.description,
+        additional_descriptions: js!(data.additional_descriptions),
+        license: js!(data.license),
+        version: data.version,
+        language: data.language,
+        subjects: js!(data.subjects),
+        identifiers: js!(data.identifiers),
+        relations: js!(data.relations),
+        references: js!(data.references),
+        citations: js!(data.citations),
+        funding_references: js!(data.funding_references),
+        geo_locations: js!(data.geo_locations),
+        files: js!(data.files),
+        archive_locations: js!(data.archive_locations),
+        image: data.image,
+        content: data.content,
+        schema_version: data.schema_version,
+        provider: data.provider,
+    }
+}
+
+/// Open (or create) a SQLite3 database at `path` and initialise the `works`
+/// table. Deletes any existing file first so the result is always a fresh DB.
+/// Returns the open connection ready for batch inserts.
+pub(crate) async fn init_sqlite_writer_async(path: &Path) -> Result<libsql::Connection> {
+    if path.exists() {
+        std::fs::remove_file(path)
+            .map_err(|e| Error::Parse(format!("failed to remove '{}': {}", path.display(), e)))?;
+    }
+    let db = libsql::Builder::new_local(path)
+        .build()
+        .await
+        .map_err(|e| Error::Parse(format!("failed to open sqlite '{}': {}", path.display(), e)))?;
+    let conn = db
+        .connect()
+        .map_err(|e| Error::Parse(format!("failed to connect sqlite '{}': {}", path.display(), e)))?;
+    conn.execute_batch(SQLITE_DDL)
+        .await
+        .map_err(|e| Error::Parse(format!("failed to create works table: {}", e)))?;
+    Ok(conn)
+}
+
+/// Write pre-serialized rows in a single transaction. Takes ownership so no
+/// cloning is needed — the caller (typically [`stream_dump_to_sqlite`]) already
+/// produced the rows in parallel via [`serialize_to_row`].
+pub(crate) async fn write_sqlite_batch_rows_async(
+    conn: &libsql::Connection,
+    rows: Vec<PreparedRow>,
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let tx = conn
+        .transaction()
+        .await
+        .map_err(|e| Error::Parse(format!("failed to begin transaction: {}", e)))?;
+    for row in rows {
+        let id_for_err = row.id.clone();
+        tx.execute(
+            SQLITE_INSERT,
+            libsql::params![
+                row.id, row.type_, row.additional_type, row.url, row.title,
+                row.additional_titles, row.contributors, row.date_published,
+                row.date_updated, row.dates, row.publisher, row.container,
+                row.description, row.additional_descriptions, row.license,
+                row.version, row.language, row.subjects, row.identifiers,
+                row.relations, row.references, row.citations,
+                row.funding_references, row.geo_locations, row.files,
+                row.archive_locations, row.image, row.content,
+                row.schema_version, row.provider,
+            ],
+        )
+        .await
+        .map_err(|e| Error::Parse(format!("failed to insert '{}': {}", id_for_err, e)))?;
+    }
+    tx.commit()
+        .await
+        .map_err(|e| Error::Parse(format!("failed to commit transaction: {}", e)))?;
+    Ok(())
+}
+
+/// Write `data` as a SQLite3 database at `path` with a `works` table whose
+/// columns map 1:1 to the commonmeta v1.0 top-level fields. Simple string
+/// fields are stored as TEXT; complex fields (objects, arrays) are stored as
+/// compact JSON TEXT so every record round-trips losslessly.
+pub fn write_sqlite(data: &[Data], path: &Path) -> Result<()> {
+    let rows: Vec<PreparedRow> = data.iter().map(|d| serialize_to_row(d.clone())).collect();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Error::Parse(e.to_string()))?
+        .block_on(async {
+            let conn = init_sqlite_writer_async(path).await?;
+            write_sqlite_batch_rows_async(&conn, rows).await
+        })
+}
+
+const SQLITE_SELECT: &str = r#"SELECT
+    "id", "type", "additional_type", "url", "title", "additional_titles",
+    "contributors", "date_published", "date_updated", "dates", "publisher",
+    "container", "description", "additional_descriptions", "license",
+    "version", "language", "subjects", "identifiers", "relations", "references",
+    "citations", "funding_references", "geo_locations", "files",
+    "archive_locations", "image", "content", "schema_version", "provider"
+FROM works ORDER BY rowid"#;
+
+/// Inverse of `serialize_to_row`: deserialises all columns back to `Data`.
+async fn read_sqlite_rows_async(
+    conn: &libsql::Connection,
+    limit: Option<usize>,
+    offset: usize,
+) -> Result<Vec<Data>> {
+    let sql = match (limit, offset) {
+        (Some(n), o) => format!("{} LIMIT {} OFFSET {}", SQLITE_SELECT, n, o),
+        (None, o) if o > 0 => format!("{} LIMIT -1 OFFSET {}", SQLITE_SELECT, o),
+        _ => SQLITE_SELECT.to_string(),
+    };
+
+    let mut rows = conn
+        .query(&sql, ())
+        .await
+        .map_err(|e| Error::Parse(e.to_string()))?;
+
+    // Helper: parse JSON TEXT column; returns Default if the string is empty or unparseable.
+    fn col_json<T: serde::de::DeserializeOwned + Default>(s: String) -> T {
+        if s.is_empty() {
+            T::default()
+        } else {
+            serde_json::from_str(&s).unwrap_or_default()
+        }
+    }
+
+    let mut results = Vec::new();
+    while let Some(row) = rows.next().await.map_err(|e| Error::Parse(e.to_string()))? {
+        macro_rules! s {
+            ($i:literal) => {
+                row.get::<String>($i).unwrap_or_default()
+            };
+        }
+        let data = Data {
+            id: s!(0),
+            type_: s!(1),
+            additional_type: s!(2),
+            url: s!(3),
+            title: s!(4),
+            additional_titles: col_json(s!(5)),
+            contributors: col_json(s!(6)),
+            date_published: s!(7),
+            date_updated: s!(8),
+            dates: col_json(s!(9)),
+            publisher: col_json(s!(10)),
+            container: col_json(s!(11)),
+            description: s!(12),
+            additional_descriptions: col_json(s!(13)),
+            license: col_json(s!(14)),
+            version: s!(15),
+            language: s!(16),
+            subjects: col_json(s!(17)),
+            identifiers: col_json(s!(18)),
+            relations: col_json(s!(19)),
+            references: col_json(s!(20)),
+            citations: col_json(s!(21)),
+            funding_references: col_json(s!(22)),
+            geo_locations: col_json(s!(23)),
+            files: col_json(s!(24)),
+            archive_locations: col_json(s!(25)),
+            image: s!(26),
+            content: s!(27),
+            schema_version: s!(28),
+            provider: s!(29),
+        };
+        results.push(data);
+    }
+    Ok(results)
+}
+
+/// Read records from a commonmeta SQLite database written by [`write_sqlite`].
+/// Pass `limit = None` to load all rows; `offset` can be used for pagination.
+pub fn read_sqlite_commonmeta(path: &Path, limit: Option<usize>, offset: usize) -> Result<Vec<Data>> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Error::Parse(e.to_string()))?
+        .block_on(async {
+            let db = libsql::Builder::new_local(path)
+                .build()
+                .await
+                .map_err(|e| Error::Parse(format!("failed to open '{}': {}", path.display(), e)))?;
+            let conn = db
+                .connect()
+                .map_err(|e| Error::Parse(format!("failed to connect '{}': {}", path.display(), e)))?;
+            read_sqlite_rows_async(&conn, limit, offset).await
+        })
+}
+
 /// Read a list of commonmeta records back from the `CommonmetaRow` Parquet
 /// schema written by `write_parquet_all`. Lossless: each record is restored
 /// from its `json` column, the complete original serialization.
@@ -549,5 +883,104 @@ mod tests {
         let bytes = write_parquet_all(&[]).unwrap();
         let roundtripped = read_parquet_all(&bytes).unwrap();
         assert!(roundtripped.is_empty());
+    }
+
+    #[test]
+    fn test_write_sqlite_creates_works_table() {
+        let dir = std::env::temp_dir().join("commonmeta_sqlite_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.sqlite3");
+
+        let list = vec![sample_data()];
+        write_sqlite(&list, &path).unwrap();
+
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let db = libsql::Builder::new_local(&path).build().await.unwrap();
+                let conn = db.connect().unwrap();
+
+                let mut rows = conn.query("SELECT COUNT(*) FROM works", ()).await.unwrap();
+                let count: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+                assert_eq!(count, 1);
+
+                let mut rows = conn
+                    .query(r#"SELECT "id", "title", "type" FROM works"#, ())
+                    .await
+                    .unwrap();
+                let row = rows.next().await.unwrap().unwrap();
+                let id: String = row.get(0).unwrap();
+                let title: String = row.get(1).unwrap();
+                let type_: String = row.get(2).unwrap();
+                assert_eq!(id, "https://doi.org/10.1234/abc");
+                assert_eq!(title, "A Sample Title");
+                assert_eq!(type_, "JournalArticle");
+
+                let mut rows = conn
+                    .query("SELECT contributors FROM works", ())
+                    .await
+                    .unwrap();
+                let contributors: String =
+                    rows.next().await.unwrap().unwrap().get(0).unwrap();
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&contributors).unwrap();
+                assert!(parsed.is_array());
+                assert_eq!(parsed.as_array().unwrap().len(), 1);
+            });
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_write_sqlite_sets_schema_version() {
+        let dir = std::env::temp_dir().join("commonmeta_sqlite_test_sv");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.sqlite3");
+
+        write_sqlite(&[sample_data()], &path).unwrap();
+
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let db = libsql::Builder::new_local(&path).build().await.unwrap();
+                let conn = db.connect().unwrap();
+                let mut rows = conn
+                    .query("SELECT schema_version FROM works", ())
+                    .await
+                    .unwrap();
+                let sv: String = rows.next().await.unwrap().unwrap().get(0).unwrap();
+                assert_eq!(sv, COMMONMETA_V1_SCHEMA_URL);
+            });
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_write_sqlite_replaces_existing_file() {
+        let dir = std::env::temp_dir().join("commonmeta_sqlite_test_replace");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.sqlite3");
+
+        // Write twice with the same record — should still have 1 row.
+        write_sqlite(&[sample_data()], &path).unwrap();
+        write_sqlite(&[sample_data()], &path).unwrap();
+
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let db = libsql::Builder::new_local(&path).build().await.unwrap();
+                let conn = db.connect().unwrap();
+                let mut rows = conn.query("SELECT COUNT(*) FROM works", ()).await.unwrap();
+                let count: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+                assert_eq!(count, 1);
+            });
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

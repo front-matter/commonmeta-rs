@@ -164,8 +164,6 @@ pub struct Blog {
 pub struct JfFundingReference {
     #[serde(rename = "funderIdentifier", default)]
     pub funder_identifier: String,
-    #[serde(rename = "funderIdentifierType", default)]
-    pub funder_identifier_type: String,
     #[serde(rename = "funderName", default)]
     pub funder_name: String,
     #[serde(rename = "awardNumber", default)]
@@ -554,7 +552,6 @@ fn get_funding_references(content: &Content) -> Vec<FundingReference> {
         refs.push(FundingReference {
             funder_name: content.blog.funding.funder_name.clone(),
             funder_id: content.blog.funding.funder_identifier.clone(),
-            funder_identifier_type: content.blog.funding.funder_identifier_type.clone(),
             award_title: content.blog.funding.award_title.clone(),
             award_number: content.blog.funding.award_number.clone(),
             award_id: content.blog.funding.award_uri.clone(),
@@ -567,7 +564,6 @@ fn get_funding_references(content: &Content) -> Vec<FundingReference> {
             refs.push(FundingReference {
                 funder_name: v.funder_name.clone(),
                 funder_id: v.funder_identifier.clone(),
-                funder_identifier_type: v.funder_identifier_type.clone(),
                 award_title: v.award_title.clone(),
                 award_number: v.award_number.clone(),
                 award_id: v.award_uri.clone(),
@@ -600,7 +596,6 @@ fn get_funding_references(content: &Content) -> Vec<FundingReference> {
                 refs.push(FundingReference {
                     funder_name: "European Commission".to_string(),
                     funder_id: "https://ror.org/00k4n6c32".to_string(),
-                    funder_identifier_type: "ROR".to_string(),
                     award_number,
                     award_id: u.to_string(),
                     ..Default::default()
@@ -611,21 +606,19 @@ fn get_funding_references(content: &Content) -> Vec<FundingReference> {
             let award_url = urls[1];
             let prefix = validate_prefix(funder_url).unwrap_or_default();
             if prefix == "10.13039" {
-                let (funder_name, funder_id, funder_id_type) =
+                let (funder_name, funder_id) =
                     if funder_url == "https://doi.org/10.13039/100000001" {
                         (
                             "National Science Foundation".to_string(),
                             "https://ror.org/021nxhr62".to_string(),
-                            "ROR".to_string(),
                         )
                     } else {
-                        (String::new(), String::new(), String::new())
+                        (String::new(), String::new())
                     };
                 let award_number = extract_award_number(award_url);
                 refs.push(FundingReference {
                     funder_name,
                     funder_id,
-                    funder_identifier_type: funder_id_type,
                     award_number,
                     award_id: award_url.to_string(),
                     ..Default::default()
@@ -634,7 +627,6 @@ fn get_funding_references(content: &Content) -> Vec<FundingReference> {
                 let award_number = extract_award_number(award_url);
                 refs.push(FundingReference {
                     funder_id: funder_url.to_string(),
-                    funder_identifier_type: "ROR".to_string(),
                     award_number,
                     award_id: award_url.to_string(),
                     ..Default::default()

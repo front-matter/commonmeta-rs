@@ -39,7 +39,6 @@
   "funding_references": [
     {
       "funder_id": "https://ror.org/00k4n6c32",
-      "funder_identifier_type": "ROR",
       "funder_name": "European Commission",
       "award_id": "https://doi.org/10.3030/777523",
       "award_number": "777523"
@@ -65,28 +64,23 @@
   "references": [
     {
       "id": "https://doi.org/10.5438/s6d3-k860",
-      "reference": "Dasler, R., &amp; Cousijn, H. (2018). Are your data being used? Event Data has the answer!. In <i>DataCite Blog</i> (1.0). DataCite.",
-      "unstructured": "Dasler, R., &amp; Cousijn, H. (2018). Are your data being used? Event Data has the answer!. In <i>DataCite Blog</i> (1.0). DataCite."
+      "reference": "Dasler, R., &amp; Cousijn, H. (2018). Are your data being used? Event Data has the answer!. In <i>DataCite Blog</i> (1.0). DataCite."
     },
     {
       "id": "https://doi.org/10.25490/a97f-egyk",
-      "reference": "Data Citation Synthesis Group, &amp; Martone, M. (2014). <i>Joint Declaration of Data Citation Principles</i>. Force11.",
-      "unstructured": "Data Citation Synthesis Group, &amp; Martone, M. (2014). <i>Joint Declaration of Data Citation Principles</i>. Force11."
+      "reference": "Data Citation Synthesis Group, &amp; Martone, M. (2014). <i>Joint Declaration of Data Citation Principles</i>. Force11."
     },
     {
       "id": "https://doi.org/10.5281/zenodo.2548643",
-      "reference": "Ioannidis, A., &amp; Gonzalez Lopez, J. B. (2019). <i>Asclepias: Flower Power for Software Citation</i>. Zenodo.",
-      "unstructured": "Ioannidis, A., &amp; Gonzalez Lopez, J. B. (2019). <i>Asclepias: Flower Power for Software Citation</i>. Zenodo."
+      "reference": "Ioannidis, A., &amp; Gonzalez Lopez, J. B. (2019). <i>Asclepias: Flower Power for Software Citation</i>. Zenodo."
     },
     {
       "id": "https://doi.org/10.5438/pre3-2f25",
-      "reference": "Lowenberg, D., Budden, A., &amp; Cruse, P. (2018). <i>It's Time to Make Your Data Count!</i> (1.0). DataCite.",
-      "unstructured": "Lowenberg, D., Budden, A., &amp; Cruse, P. (2018). <i>It's Time to Make Your Data Count!</i> (1.0). DataCite."
+      "reference": "Lowenberg, D., Budden, A., &amp; Cruse, P. (2018). <i>It's Time to Make Your Data Count!</i> (1.0). DataCite."
     },
     {
       "id": "https://doi.org/10.5281/zenodo.2600275",
-      "reference": "Manghi, P., &amp; Bardi, A. (2019). <i>The OpenAIRE Research Graph - Opportunities and challenges for science</i>. Zenodo.",
-      "unstructured": "Manghi, P., &amp; Bardi, A. (2019). <i>The OpenAIRE Research Graph - Opportunities and challenges for science</i>. Zenodo."
+      "reference": "Manghi, P., &amp; Bardi, A. (2019). <i>The OpenAIRE Research Graph - Opportunities and challenges for science</i>. Zenodo."
     }
   ],
   "relations": [

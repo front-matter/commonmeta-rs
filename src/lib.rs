@@ -80,6 +80,37 @@ pub fn read_parquet(bytes: &[u8]) -> Result<Vec<Data>> {
     formats::commonmeta::read_parquet_all(bytes)
 }
 
+/// Write `list` as a SQLite3 database with a `works` table whose columns
+/// mirror the commonmeta v1.0 schema. Simple string fields are stored as
+/// TEXT; complex fields are stored as compact JSON TEXT.
+pub fn write_sqlite(list: &[Data], path: &std::path::Path) -> Result<()> {
+    formats::commonmeta::write_sqlite(list, path)
+}
+
+/// Read records from a commonmeta SQLite database written by [`write_sqlite`].
+pub fn read_sqlite_commonmeta(
+    path: &std::path::Path,
+    limit: Option<usize>,
+    offset: usize,
+) -> Result<Vec<Data>> {
+    formats::commonmeta::read_sqlite_commonmeta(path, limit, offset)
+}
+
+/// Stream a VRAIX daily dump at `input_path` directly to a commonmeta SQLite
+/// database at `output_path` in batches of 10 000 rows, converting with
+/// `from`-specific parser and writing each batch in a single transaction.
+/// `limit` caps total records written; pass `0` for all rows.
+/// Returns the number of records written. No `Vec<Data>` is held for the
+/// whole file — peak memory is proportional to one batch, not the whole dump.
+pub fn stream_vraix_to_sqlite(
+    input_path: &std::path::Path,
+    from: &str,
+    output_path: &std::path::Path,
+    limit: usize,
+) -> Result<usize> {
+    formats::vraix::stream_dump_to_sqlite(input_path, from, output_path, limit)
+}
+
 /// Render a list of records to `to` format as a single buffer: a JSON array
 /// for object-shaped formats (`commonmeta`, `csl`, `datacite`, `inveniordm`,
 /// `schemaorg`, `ror`), or newline-joined output for line/document-shaped
@@ -422,20 +453,29 @@ mod tests {
         let path = dir.join("datacite.sqlite3");
         std::fs::remove_file(&path).ok();
 
-        let connection = rusqlite::Connection::open(&path).unwrap();
-        connection
-            .execute_batch("CREATE TABLE works (pid TEXT, source_id INTEGER, raw_metadata TEXT);")
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO works (pid, source_id, raw_metadata) VALUES (?1, ?2, ?3)",
-                rusqlite::params![
-                    "pid-0",
-                    1i64,
-                    r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#
-                ],
-            )
-            .unwrap();
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let db = libsql::Builder::new_local(&path).build().await.unwrap();
+                let conn = db.connect().unwrap();
+                conn.execute_batch(
+                    "CREATE TABLE works (pid TEXT, source_id INTEGER, raw_metadata TEXT);",
+                )
+                .await
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO works (pid, source_id, raw_metadata) VALUES (?1, ?2, ?3)",
+                    libsql::params![
+                        "pid-0",
+                        1i64,
+                        r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#
+                    ],
+                )
+                .await
+                .unwrap();
+            });
 
         let data = fetch_vraix_dump(
             "datacite",

@@ -66,7 +66,10 @@
         "doi-asserted-by": "publisher",
         "DOI": "10.1000/xyz",
         "article-title": "Prior Work",
+        "unstructured": "Author, A. (2020). Prior Work. Journal, 10(1), 1–9. https://doi.org/10.1000/xyz.",
         "year": "2020",
+        "volume": "10",
+        "issue": "1",
         "first-page": "1",
         "last-page": "9"
       }

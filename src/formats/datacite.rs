@@ -597,15 +597,13 @@ fn from_attributes(attr: DcAttributes) -> Data {
 
     // Funding references — ROR identifier pass-through; skip live lookups
     for f in attr.funding_references {
-        let (funder_id, funder_id_type) = if f.funder_identifier_type == "ROR" {
-            let id = normalize_ror(&f.funder_identifier);
-            (id, "ROR".to_string())
+        let funder_id = if f.funder_identifier_type == "ROR" {
+            normalize_ror(&f.funder_identifier)
         } else {
-            (String::new(), String::new())
+            String::new()
         };
         data.funding_references.push(FundingReference {
             funder_id,
-            funder_identifier_type: funder_id_type,
             funder_name: f.funder_name,
             award_number: f.award_number,
             award_title: f.award_title,
@@ -1255,12 +1253,23 @@ fn convert(data: &Data) -> OutPayload {
     let funding_references: Vec<OutFundingReference> = data
         .funding_references
         .iter()
-        .map(|f| OutFundingReference {
-            funder_name: f.funder_name.clone(),
-            funder_identifier: f.funder_id.clone(),
-            funder_identifier_type: f.funder_identifier_type.clone(),
-            award_number: f.award_number.clone(),
-            award_uri: f.award_id.clone(),
+        .map(|f| {
+            let funder_identifier_type = if f.funder_id.starts_with("https://ror.org/") {
+                "ROR".to_string()
+            } else if f.funder_id.starts_with("https://doi.org/10.13039/") {
+                "Crossref Funder ID".to_string()
+            } else if !f.funder_id.is_empty() {
+                "Other".to_string()
+            } else {
+                String::new()
+            };
+            OutFundingReference {
+                funder_name: f.funder_name.clone(),
+                funder_identifier: f.funder_id.clone(),
+                funder_identifier_type,
+                award_number: f.award_number.clone(),
+                award_uri: f.award_id.clone(),
+            }
         })
         .collect();
 

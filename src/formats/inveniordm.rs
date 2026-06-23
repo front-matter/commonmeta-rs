@@ -905,12 +905,7 @@ fn from_content(content: Content) -> Data {
     // Funding references
     if !content.metadata.funding.is_empty() {
         for v in &content.metadata.funding {
-            let funder_identifier = normalize_ror(&v.funder.id);
-            let funder_identifier_type = if !funder_identifier.is_empty() {
-                "ROR".to_string()
-            } else {
-                String::new()
-            };
+            let funder_id = normalize_ror(&v.funder.id);
             let award_number = v.award.number.clone();
             let award_title = v
                 .award
@@ -936,8 +931,7 @@ fn from_content(content: Content) -> Data {
                 String::new()
             };
             data.funding_references.push(FundingReference {
-                funder_id: funder_identifier,
-                funder_identifier_type,
+                funder_id,
                 funder_name: v.funder.name.clone(),
                 award_number,
                 award_title,
@@ -946,16 +940,10 @@ fn from_content(content: Content) -> Data {
         }
     } else if !content.metadata.grants.is_empty() {
         for v in &content.metadata.grants {
-            let funder_identifier = normalize_doi(&v.funder.doi);
-            let funder_identifier_type = if !funder_identifier.is_empty() {
-                "Crossref Funder ID".to_string()
-            } else {
-                String::new()
-            };
+            let funder_id = normalize_doi(&v.funder.doi);
             let award_uri = normalize_url(&v.url, true, false).unwrap_or_default();
             data.funding_references.push(FundingReference {
-                funder_id: funder_identifier,
-                funder_identifier_type,
+                funder_id,
                 funder_name: v.funder.name.clone(),
                 award_number: v.code.clone(),
                 award_title: v.title.clone(),
@@ -1820,7 +1808,7 @@ fn convert(data: &Data) -> OutInveniordm {
 
     // Funding references
     for v in &data.funding_references {
-        let ror_id = if v.funder_identifier_type == "Crossref Funder ID" {
+        let ror_id = if v.funder_id.starts_with("https://doi.org/10.13039/") {
             // Crossref Funder IDs are not ROR IDs; no conversion available
             String::new()
         } else {

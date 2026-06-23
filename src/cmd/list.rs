@@ -5,7 +5,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use serde_json::json;
 use url::Url;
 
-use commonmeta::Data;
+use commonmeta::{self, Data};
 use commonmeta::file_utils;
 
 /// Maximum number of records per output batch, used both for Parquet batch
@@ -215,15 +215,86 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         return Err(format!("list: unsupported --to format: {}", to));
     }
 
+    let number = *matches.get_one::<usize>("number").unwrap_or(&10);
     let input_path = matches.get_one::<String>("input").map(String::as_str);
-    // A `.sqlite3`/`.sqlite3.zst` input is unambiguously a VRAIX dump (see
-    // `write_parquet`'s sibling concept for `.parquet`), so detect it from
-    // the extension rather than requiring `--date` to be passed just to
-    // pick the loader — `--date` is only otherwise needed to name the file
-    // to download when no local input path is given.
-    let is_vraix_sqlite_input = input_path
+    // A `.sqlite3`/`.sqlite3.zst` input is treated as a VRAIX dump when
+    // `--from crossref` or `--from datacite` is given, and as a commonmeta
+    // SQLite dump (written by `--file *.sqlite3`) when `--from commonmeta`
+    // (or the default) is given. Detect by extension first; `from` decides
+    // which reader is used.
+    let is_sqlite_input = input_path
         .map(|p| file_utils::get_extension(p, ".json").1 == ".sqlite3")
         .unwrap_or(false);
+    let is_vraix_sqlite_input = is_sqlite_input && matches!(from, "crossref" | "datacite");
+
+    // Fast path: VRAIX SQLite → commonmeta SQLite (optionally compressed)
+    // without a Vec<Data> intermediary. Records are streamed in batches,
+    // converted in parallel, and written in one SQLite transaction per batch.
+    // For compressed output (.zst) we stream directly to a temp .sqlite3 file
+    // and then pipe through zstd to the final path — no full in-RAM copy.
+    if let Some(out_path) = out_file {
+        let (_base, out_ext, out_compress) = file_utils::get_extension(out_path, ".json");
+        let compress_supported = out_compress.is_empty() || out_compress == "zst";
+        if out_ext == ".sqlite3"
+            && compress_supported
+            && to == "commonmeta"
+            && is_vraix_sqlite_input
+            && date.is_none()
+            && matches!(from, "crossref" | "datacite")
+        {
+            let in_path = input_path.unwrap();
+            let write_start = Instant::now();
+            let (base_out, _ext, _c) = file_utils::get_extension(out_path, ".sqlite3");
+
+            // For compressed output, stream to a temp file in the same directory.
+            let sqlite_path = if out_compress.is_empty() {
+                base_out.clone()
+            } else {
+                base_out.with_extension("sqlite3.tmp")
+            };
+
+            let n = commonmeta::stream_vraix_to_sqlite(
+                std::path::Path::new(in_path),
+                from,
+                &sqlite_path,
+                number,
+            )
+            .map_err(|e| e.to_string())?;
+
+            if !out_compress.is_empty() {
+                // Streaming zstd compression — avoids loading the whole SQLite
+                // file into RAM (which would be 2–3 GB for a full Crossref dump).
+                let compress_start = Instant::now();
+                {
+                    let out_file = std::fs::File::create(out_path)
+                        .map_err(|e| format!("failed to create '{}': {}", out_path, e))?;
+                    let mut encoder = zstd::Encoder::new(out_file, 0)
+                        .map_err(|e| format!("failed to create zstd encoder: {}", e))?;
+                    let mut in_file = std::fs::File::open(&sqlite_path)
+                        .map_err(|e| format!("failed to open '{}': {}", sqlite_path.display(), e))?;
+                    std::io::copy(&mut in_file, &mut encoder)
+                        .map_err(|e| format!("zstd compression failed: {}", e))?;
+                    encoder
+                        .finish()
+                        .map_err(|e| format!("failed to finish zstd encoder: {}", e))?;
+                }
+                std::fs::remove_file(&sqlite_path).ok();
+                if timers {
+                    eprintln!("list: zstd compression took {:.2?}", compress_start.elapsed());
+                }
+            }
+
+            if timers {
+                eprintln!(
+                    "list: stream to sqlite3 took {:.2?} ({} records)",
+                    write_start.elapsed(),
+                    n
+                );
+            }
+            println!("wrote {} ({} records)", out_path, n);
+            return Ok(());
+        }
+    }
 
     let data = if date.is_some() || is_vraix_sqlite_input {
         if !matches!(from, "crossref" | "datacite") {
@@ -234,10 +305,19 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         }
         load_vraix_list_for_date(date.unwrap_or(""), input_path, from, matches, timers)?
     } else if let Some(input_path) = input_path {
-        load_list_from_file(input_path, from)?
+        let read_start = Instant::now();
+        let d = load_list_from_file(input_path, from)?;
+        if timers {
+            eprintln!(
+                "list: read from file took {:.2?} ({} records)",
+                read_start.elapsed(),
+                d.len()
+            );
+        }
+        d
     } else {
         if from == "commonmeta" {
-            return Err("list: --from commonmeta requires an input Parquet file path".to_string());
+            return Err("list: --from commonmeta requires an input .parquet or .sqlite3 file path".to_string());
         }
         fetch_list_from_api(matches, from)?
     };
@@ -268,6 +348,24 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
                 eprintln!(
                     "list: write {} took {:.2?} ({} records)",
                     to,
+                    write_start.elapsed(),
+                    data.len()
+                );
+            }
+            return result;
+        }
+        if extension == ".sqlite3" {
+            if to != "commonmeta" {
+                return Err(format!(
+                    "list: --file *.sqlite3 output is only supported for --to commonmeta (got --to {})",
+                    to
+                ));
+            }
+            let write_start = Instant::now();
+            let result = write_sqlite_output(&data, path, &compress);
+            if timers {
+                eprintln!(
+                    "list: write sqlite3 took {:.2?} ({} records)",
                     write_start.elapsed(),
                     data.len()
                 );
@@ -402,6 +500,56 @@ fn write_parquet_archive(data: &[Data], out_path: &str, compress: &str) -> Resul
         "tgz" => file_utils::write_tar_gz_archive(out_path, std::slice::from_ref(&entry))
             .map_err(|e| format!("failed to write tgz '{}': {}", out_path, e))?,
         other => return Err(format!("list: unsupported archive compression: {}", other)),
+    }
+    println!("wrote {} ({} records)", out_path, data.len());
+    Ok(())
+}
+
+/// Write `data` as a SQLite3 file at `out_path`. When `compress` is non-empty
+/// the database is first written to a temp file, read into memory, then
+/// zstd-compressed or archived (zip/tgz) to the final `out_path`.
+fn write_sqlite_output(data: &[Data], out_path: &str, compress: &str) -> Result<(), String> {
+    if data.is_empty() {
+        return Err("list: no records to write".to_string());
+    }
+
+    let (base_path, _extension, _) = file_utils::get_extension(out_path, ".sqlite3");
+
+    if compress.is_empty() {
+        commonmeta::write_sqlite(data, &base_path).map_err(|e| e.to_string())?;
+        println!("wrote {} ({} records)", base_path.display(), data.len());
+        return Ok(());
+    }
+
+    // Write to a temp file in the same directory, read bytes, then compress.
+    let tmp_path = base_path.with_extension("sqlite3.tmp");
+    commonmeta::write_sqlite(data, &tmp_path).map_err(|e| e.to_string())?;
+    let bytes = std::fs::read(&tmp_path)
+        .map_err(|e| format!("failed to read temp sqlite '{}': {}", tmp_path.display(), e))?;
+    std::fs::remove_file(&tmp_path).ok();
+
+    let entry_name = base_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    match compress {
+        "zst" => {
+            let compressed = zstd::stream::encode_all(std::io::Cursor::new(&bytes), 0)
+                .map_err(|e| format!("failed to zstd-compress sqlite: {}", e))?;
+            file_utils::write_file(Path::new(out_path), &compressed)
+                .map_err(|e| format!("failed to write zst '{}': {}", out_path, e))?;
+        }
+        "zip" => {
+            file_utils::write_zip_archive(out_path, std::slice::from_ref(&(entry_name, bytes)))
+                .map_err(|e| format!("failed to write zip '{}': {}", out_path, e))?;
+        }
+        "tgz" => {
+            file_utils::write_tar_gz_archive(out_path, std::slice::from_ref(&(entry_name, bytes)))
+                .map_err(|e| format!("failed to write tgz '{}': {}", out_path, e))?;
+        }
+        other => return Err(format!("list: unsupported compression for sqlite3: {}", other)),
     }
     println!("wrote {} ({} records)", out_path, data.len());
     Ok(())
@@ -692,21 +840,58 @@ fn fetch_openalex_list(
 }
 
 pub(crate) fn load_list_from_file(path: &str, from: &str) -> Result<Vec<Data>, String> {
-    // A `.parquet`/`.parquet.zst` input is unambiguously a commonmeta dump
-    // written by `--file *.parquet` (see `write_parquet_batches`), so detect
-    // it from the extension rather than relying on `--from commonmeta`.
-    let (_base, extension, _compress) = file_utils::get_extension(path, ".json");
+    // Detect by extension first so the caller doesn't need to specify --from.
+    let (_base, extension, compress) = file_utils::get_extension(path, ".json");
     if extension == ".parquet" {
         return load_commonmeta_list_from_parquet(path);
+    }
+    if extension == ".sqlite3" {
+        return load_commonmeta_list_from_sqlite(path, &compress);
     }
 
     match from {
         "crossref" => load_crossref_list_from_file(path),
         "datacite" => load_datacite_list_from_file(path),
         "openalex" => load_openalex_list_from_file(path),
-        "commonmeta" => load_commonmeta_list_from_parquet(path),
+        "commonmeta" => Err(format!(
+            "list: --from commonmeta expects a .parquet or .sqlite3 input file, got '{}'",
+            path
+        )),
         _ => Err(format!("unsupported source: {from}")),
     }
+}
+
+/// Read a commonmeta SQLite database (optionally zstd-compressed) written by
+/// `--file *.sqlite3` back into a list of records.
+fn load_commonmeta_list_from_sqlite(path: &str, compress: &str) -> Result<Vec<Data>, String> {
+    let sqlite_path = if compress == "zst" {
+        // Stream-decompress to a temp file (avoids loading multi-GB into RAM).
+        let tmp = std::env::temp_dir().join(format!(
+            "commonmeta-sqlite-{}.sqlite3",
+            std::process::id()
+        ));
+        {
+            let src = std::fs::File::open(path)
+                .map_err(|e| format!("failed to open '{}': {}", path, e))?;
+            let mut decoder = zstd::Decoder::new(src)
+                .map_err(|e| format!("failed to create zstd decoder: {}", e))?;
+            let mut dst = std::fs::File::create(&tmp)
+                .map_err(|e| format!("failed to create temp file: {}", e))?;
+            std::io::copy(&mut decoder, &mut dst)
+                .map_err(|e| format!("failed to decompress '{}': {}", path, e))?;
+        }
+        tmp
+    } else {
+        std::path::PathBuf::from(path)
+    };
+
+    let result = commonmeta::read_sqlite_commonmeta(&sqlite_path, None, 0)
+        .map_err(|e| e.to_string());
+
+    if compress == "zst" {
+        std::fs::remove_file(&sqlite_path).ok();
+    }
+    result
 }
 
 /// Read a commonmeta Parquet dump (optionally zstd-compressed, e.g.
@@ -1033,8 +1218,6 @@ fn load_vraix_list_for_date(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
-
     fn sample_data(id: &str) -> Data {
         Data {
             id: id.to_string(),
@@ -1354,18 +1537,27 @@ mod tests {
     /// (and thus `--from`) determines what every `raw_metadata` row is.
     fn write_vraix_sqlite(path: &Path, rows: &[(&str, &str)]) {
         std::fs::remove_file(path).ok();
-        let connection = Connection::open(path).unwrap();
-        connection
-            .execute_batch("CREATE TABLE works (pid TEXT, source_id INTEGER, raw_metadata TEXT);")
-            .unwrap();
-        for (pid, raw_metadata) in rows {
-            connection
-                .execute(
-                    "INSERT INTO works (pid, source_id, raw_metadata) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![pid, 1i64, raw_metadata],
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let db = libsql::Builder::new_local(path).build().await.unwrap();
+                let conn = db.connect().unwrap();
+                conn.execute_batch(
+                    "CREATE TABLE works (pid TEXT, source_id INTEGER, raw_metadata TEXT);",
                 )
+                .await
                 .unwrap();
-        }
+                for (pid, raw_metadata) in rows {
+                    conn.execute(
+                        "INSERT INTO works (pid, source_id, raw_metadata) VALUES (?1, ?2, ?3)",
+                        libsql::params![*pid, 1i64, *raw_metadata],
+                    )
+                    .await
+                    .unwrap();
+                }
+            });
     }
 
     #[test]

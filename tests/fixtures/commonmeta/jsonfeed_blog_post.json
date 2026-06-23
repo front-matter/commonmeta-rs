@@ -70,53 +70,43 @@
   "references": [
     {
       "id": "https://doi.org/10.1145/3744169.3744180",
-      "reference": "<b>[cito:citesAsSourceDocument]</b>",
-      "unstructured": "<b>[cito:citesAsSourceDocument]</b>"
+      "reference": "<b>[cito:citesAsSourceDocument]</b>"
     },
     {
       "id": "https://doi.org/10.1145/1863543.1863557",
-      "reference": "<b>[cito:citesAsSourceDocument]</b>",
-      "unstructured": "<b>[cito:citesAsSourceDocument]</b>"
+      "reference": "<b>[cito:citesAsSourceDocument]</b>"
     },
     {
       "id": "https://doi.org/10.59350/13ras-yd957",
-      "reference": "<b>[cito:citesAsRelated]</b>",
-      "unstructured": "<b>[cito:citesAsRelated]</b>"
+      "reference": "<b>[cito:citesAsRelated]</b>"
     },
     {
       "id": "https://doi.org/10.59350/g40yy-ks003",
-      "reference": "<b>[cito:citesAsRelated]</b>",
-      "unstructured": "<b>[cito:citesAsRelated]</b>"
+      "reference": "<b>[cito:citesAsRelated]</b>"
     },
     {
       "id": "https://doi.org/10.59350/snnnf-asc02",
-      "reference": "<b>[cito:citesAsRelated]</b>",
-      "unstructured": "<b>[cito:citesAsRelated]</b>"
+      "reference": "<b>[cito:citesAsRelated]</b>"
     },
     {
       "id": "https://doi.org/10.59350/3jkaq-d3398",
-      "reference": "<b>[cito:citesAsRelated]</b>",
-      "unstructured": "<b>[cito:citesAsRelated]</b>"
+      "reference": "<b>[cito:citesAsRelated]</b>"
     },
     {
       "id": "https://doi.org/10.1145/3503158",
-      "reference": "<b>[cito:cites]</b>",
-      "unstructured": "<b>[cito:cites]</b>"
+      "reference": "<b>[cito:cites]</b>"
     },
     {
       "id": "https://doi.org/10.1145/3419394.3423657",
-      "reference": "<b>[cito:cites]</b>",
-      "unstructured": "<b>[cito:cites]</b>"
+      "reference": "<b>[cito:cites]</b>"
     },
     {
       "id": "https://doi.org/10.1145/3487552.3487853",
-      "reference": "<b>[cito:cites]</b>",
-      "unstructured": "<b>[cito:cites]</b>"
+      "reference": "<b>[cito:cites]</b>"
     },
     {
       "id": "https://doi.org/10.1145/3716489.3728437",
-      "reference": "<b>[cito:cites]</b>",
-      "unstructured": "<b>[cito:cites]</b>"
+      "reference": "<b>[cito:cites]</b>"
     }
   ],
   "relations": [

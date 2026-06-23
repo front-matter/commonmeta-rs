@@ -17,7 +17,18 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/front-matter/commonmeta-rs"
 homepage = "https://rs.commonmeta.org/"
-keywords = ["scholarly-metadata", "doi", "crossref", "datacite", "citation"]
+keywords = [
+  "metadata",
+  "doi",
+  "crossref",
+  "datacite",
+  "openalex",
+  "bibtex",
+  "csl",
+  "citation",
+  "orcid",
+  "ror",
+]
 categories = ["command-line-utilities", "encoding", "science"]
 
 [lib]
@@ -52,7 +63,7 @@ quick-xml = { version = "0.40.1", features = ["serialize", "overlapped-lists"] }
 unicode-normalization = "0.1"
 ammonia = "4"
 scraper = "0.27.0"
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+libsql = { version = "0.9", default-features = false, features = ["core"] }
 flate2 = "1.1.9"
 tar = "0.4"
 zstd = "0.13"
@@ -68,4 +79,4 @@ indicatif = "0.18.4"
 dirs = "6.0.0"
 duckdb = "1.10504.0"
 arrow = "59.0.0"
-isolang = { version = "2", features = ["list_languages", "english_names"] }
+isolang = { version = "2", features = ["list_languages", "local_names"] }
