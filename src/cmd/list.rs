@@ -301,10 +301,18 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
             }
         }
 
-        // Stream-decompress .zst → temp sqlite3, again without loading into RAM.
+        let (base_out, _ext, _c) = file_utils::get_extension(out_path, ".sqlite3");
+        let sqlite_out = if out_compress.is_empty() {
+            base_out.clone()
+        } else {
+            base_out.with_extension("sqlite3.tmp")
+        };
+
+        // Stream-decompress .zst → temp sqlite3 next to the output file so it
+        // lands on real disk, not on a tmpfs /tmp that would exhaust RAM.
         let decompress_start = Instant::now();
-        let tmp_sqlite = temp_dir().join(format!(
-            "commonmeta-pidbox-{}.sqlite3",
+        let tmp_sqlite = sqlite_out.with_extension(format!(
+            "sqlite3.pidbox-{}.tmp",
             std::process::id()
         ));
         let decompressed_bytes = file_utils::decompress_zst_file(&cache_path, &tmp_sqlite)
@@ -316,13 +324,6 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
                 decompressed_bytes
             );
         }
-
-        let (base_out, _ext, _c) = file_utils::get_extension(out_path, ".sqlite3");
-        let sqlite_out = if out_compress.is_empty() {
-            base_out.clone()
-        } else {
-            base_out.with_extension("sqlite3.tmp")
-        };
 
         let convert_start = Instant::now();
         let result =
@@ -401,6 +402,9 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
 
             // Resolve the VRAIX input to a local .sqlite3 path, downloading and
             // decompressing on demand for the --date case.
+            // Both steps stream file-to-file to avoid loading multi-GB dumps into RAM.
+            // The decompressed temp is placed next to the output file so it lands on
+            // real disk rather than a tmpfs /tmp that would exhaust RAM.
             let (in_sqlite, tmp_to_clean) = if is_date_download {
                 let url = format!(
                     "https://metadata.vraix.org/{}-{}.sqlite3.zst",
@@ -409,41 +413,37 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
                 );
                 let cache_key = format!("{}-{}.sqlite3.zst", from, date.unwrap());
                 let download_start = Instant::now();
-                let (compressed, from_cache) =
-                    file_utils::download_file_cached(&url, "vraix", &cache_key, VRAIX_CACHE_TTL)
+                let (cache_path, from_cache) =
+                    file_utils::ensure_cached_path(&url, "vraix", &cache_key, VRAIX_CACHE_TTL)
                         .map_err(|e| format!("failed to download '{}': {}", url, e))?;
                 if timers {
+                    let size = cache_path.metadata().map(|m| m.len()).unwrap_or(0);
                     if from_cache {
                         eprintln!(
                             "list: download took {:.2?} ({} bytes, from local cache)",
                             download_start.elapsed(),
-                            compressed.len()
+                            size
                         );
                     } else {
                         eprintln!(
                             "list: download took {:.2?} ({} bytes)",
                             download_start.elapsed(),
-                            compressed.len()
+                            size
                         );
                     }
                 }
                 let decompress_start = Instant::now();
-                let decompressed = file_utils::unzst_content(&compressed)
-                    .map_err(|e| format!("failed to decompress '{}': {}", url, e))?;
-                let tmp_path = temp_dir().join(format!(
-                    "commonmeta-vraix-{}-{}-{}.sqlite3",
-                    from,
-                    date.unwrap(),
+                let tmp_path = sqlite_out.with_extension(format!(
+                    "sqlite3.vraix-{}.tmp",
                     std::process::id()
                 ));
-                file_utils::write_file(&tmp_path, &decompressed).map_err(|e| {
-                    format!("failed to write temp file '{}': {}", tmp_path.display(), e)
-                })?;
+                let decompressed_bytes = file_utils::decompress_zst_file(&cache_path, &tmp_path)
+                    .map_err(|e| format!("failed to decompress '{}': {}", url, e))?;
                 if timers {
                     eprintln!(
                         "list: decompress + write temp took {:.2?} ({} bytes)",
                         decompress_start.elapsed(),
-                        decompressed.len()
+                        decompressed_bytes
                     );
                 }
                 (tmp_path.clone(), Some(tmp_path))
