@@ -14,7 +14,7 @@ Commonmeta-rs reads and/or writes these metadata formats:
 | [CrossRef XML](https://www.crossref.org/schema/documentation/unixref1.1/unixref1.1.html) | crossref_xml | application/vnd.crossref.unixref+xml    | yes   | yes   |
 | [Crossref](https://api.crossref.org)                                                     | crossref     | application/vnd.crossref+json           | yes   | n/a   |
 | [DataCite](https://api.datacite.org/)                                                    | datacite     | application/vnd.datacite.datacite+json  | yes   | yes   |
-| [DataCite XML](https://api.datacite.org/)                                                            | datacite_xml | application/vnd.datacite.datacite+xml | yes     | yes |
+| [DataCite XML](https://api.datacite.org/)                                                            | datacite_xml | application/vnd.datacite.datacite+xml | yes     | no |
 | [Schema.org (in JSON-LD)](http://schema.org/)                                            | schema_org   | application/vnd.schemaorg.ld+json       | yes   | yes   |
 | [RDF XML](http://www.w3.org/TR/rdf-syntax-grammar/)                                      | rdf_xml      | application/rdf+xml                     | no    | later |
 | [RDF Turtle](http://www.w3.org/TeamSubmission/turtle/)                                   | turtle       | text/turtle                             | no    | later |

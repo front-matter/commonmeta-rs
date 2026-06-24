@@ -10,6 +10,17 @@ fn null_to_string<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String
     Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
 }
 
+/// Like null_to_string but also coerces numeric scalars to their string
+/// representation (e.g. a bare integer year in a `date` field).
+fn value_to_string<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::String(s) => s,
+        Value::Number(n) => n.to_string(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    })
+}
+
 use crate::data::{
     Affiliation, Citation, Container, Contributor, Data, Description, FundingReference,
     GeoLocation, Identifier, Organization, Person, Publisher, Reference, Relation, Subject, Title,
@@ -180,7 +191,7 @@ struct DcSubject {
 
 #[derive(Deserialize, Default)]
 struct DcDate {
-    #[serde(default, deserialize_with = "null_to_string")]
+    #[serde(default, deserialize_with = "value_to_string")]
     date: String,
     #[serde(rename = "dateType", default, deserialize_with = "null_to_string")]
     date_type: String,
