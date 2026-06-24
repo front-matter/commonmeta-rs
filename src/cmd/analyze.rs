@@ -151,7 +151,7 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use commonmeta::data::{Data, Publisher, Title};
+    use commonmeta::data::{Data, Publisher};
 
     fn write_test_parquet() -> String {
         let mut article = Data {
