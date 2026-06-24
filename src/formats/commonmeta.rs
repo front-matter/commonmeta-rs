@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::data::Data;
-use crate::error::{Error, Result};
+use crate::error::{sqlite_err, Error, Result};
 use crate::schema_utils::json_schema_errors;
 use crate::utils::normalize_ror;
 
@@ -543,11 +543,17 @@ pub(crate) async fn write_sqlite_batch_rows_async(
             ],
         )
         .await
-        .map_err(|e| Error::Parse(format!("failed to insert '{}': {}", id_for_err, e)))?;
+        .map_err(|e| sqlite_err(e, &format!("failed to insert '{}'", id_for_err)))?;
     }
     tx.commit()
         .await
-        .map_err(|e| Error::Parse(format!("failed to commit transaction: {}", e)))?;
+        .map_err(|e| sqlite_err(e, "failed to commit transaction"))?;
+    // Flush WAL frames back to the main database file when no readers are
+    // blocking. Prevents unbounded WAL growth (and SQLITE_FULL) when a
+    // concurrent reader holds an open transaction across multiple batches.
+    conn.execute("PRAGMA wal_checkpoint(PASSIVE)", ())
+        .await
+        .ok();
     Ok(())
 }
 

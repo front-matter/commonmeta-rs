@@ -16,4 +16,18 @@ pub enum Error {
     Decode(String),
     #[error("http error: {0}")]
     Http(String),
+    #[error("disk full: {0}\n  hint: free up disk space before retrying; set COMMONMETA_TEMP_DIR to redirect temp files to a larger volume")]
+    DiskFull(String),
+}
+
+/// Convert a libsql / SQLite error into the appropriate [`Error`] variant.
+/// Distinguishes disk-full (SQLITE_FULL) from other SQLite failures so callers
+/// receive an actionable message instead of a raw "parse error".
+pub(crate) fn sqlite_err(e: impl std::fmt::Display, context: &str) -> Error {
+    let msg = e.to_string();
+    if msg.contains("disk is full") || msg.contains("SQLITE_FULL") {
+        Error::DiskFull(context.to_string())
+    } else {
+        Error::Parse(format!("{}: {}", context, msg))
+    }
 }
