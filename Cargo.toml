@@ -9,7 +9,7 @@ default-members = ["."]
 
 [package]
 name = "commonmeta"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2024"
 authors = ["Front Matter <info@front-matter.de>"]
 description = "Library for conversions to/from the Commonmeta scholarly metadata format"
@@ -66,6 +66,5 @@ jsonschema = "0.46.5"
 fastxml = "0.9.0"
 indicatif = "0.18.4"
 dirs = "6.0.0"
-duckdb = "1.10504.0"
 arrow = "59.0.0"
 isolang = { version = "2", features = ["list_languages", "local_names"] }

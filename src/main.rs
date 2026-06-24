@@ -10,7 +10,6 @@ fn main() -> Result<(), String> {
         .version(env!("CARGO_PKG_VERSION"))
         .author("Front Matter <info@front-matter.de>")
         .about("Commonmeta")
-        .subcommand(cmd::analyze::command())
         .subcommand(cmd::convert::command())
         .subcommand(cmd::decode::command())
         .subcommand(cmd::dump::command())
@@ -22,7 +21,6 @@ fn main() -> Result<(), String> {
         .get_matches();
 
     match matches.subcommand() {
-        Some(("analyze", sub_matches)) => cmd::analyze::execute(sub_matches),
         Some(("convert", sub_matches)) => cmd::convert::execute(sub_matches),
         Some(("decode", sub_matches)) => cmd::decode::execute(sub_matches),
         Some(("package", sub_matches)) => cmd::dump::execute(sub_matches),

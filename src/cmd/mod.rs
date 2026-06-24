@@ -1,4 +1,3 @@
-pub mod analyze;
 pub mod convert;
 pub mod decode;
 pub mod dump;
