@@ -376,12 +376,12 @@ pub fn read(content: &Content) -> Result<Data> {
 
         let contributor = if type_ == "Person" {
             Contributor::person(
-                Person { id, given_name: given, family_name: family, affiliations },
+                Person { id, given_name: given, family_name: family, affiliations, asserted_by: String::new() },
                 roles,
             )
         } else {
             Contributor::organization(
-                Organization { id, name: org_name },
+                Organization { id, name: org_name, asserted_by: String::new() },
                 roles,
             )
         };

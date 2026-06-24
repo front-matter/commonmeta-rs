@@ -25,7 +25,7 @@ pub fn read(json: &str) -> Result<Data> {
 }
 
 /// Stamp `schema_version`, strip non-v1.0 reference fields, and clear
-/// non-ROR `funder_id` values that would fail schema validation.
+/// non-ROR ids from organization/publisher (schema requires ROR for those).
 fn prepare(data: &Data) -> Data {
     let mut out = data.clone();
     out.schema_version = COMMONMETA_V1_SCHEMA_URL.to_string();
@@ -40,9 +40,22 @@ fn prepare(data: &Data) -> Data {
         r.unstructured.clear();
         r.asserted_by.clear();
     }
-    for fr in &mut out.funding_references {
-        if !fr.funder_id.is_empty() && normalize_ror(&fr.funder_id).is_empty() {
-            fr.funder_id.clear();
+    // organization.id must be a ROR URL per the v1.0 schema
+    if !out.publisher.id.is_empty() && normalize_ror(&out.publisher.id).is_empty() {
+        out.publisher.id.clear();
+    }
+    for c in &mut out.contributors {
+        if let Some(p) = &mut c.person {
+            for aff in &mut p.affiliations {
+                if !aff.id.is_empty() && normalize_ror(&aff.id).is_empty() {
+                    aff.id.clear();
+                }
+            }
+        }
+        if let Some(org) = &mut c.organization {
+            if !org.id.is_empty() && normalize_ror(&org.id).is_empty() {
+                org.id.clear();
+            }
         }
     }
     out
@@ -357,52 +370,46 @@ fn unflatten_row_lossy(row: &CommonmetaRow) -> Data {
 const SQLITE_DDL: &str = r#"PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
 CREATE TABLE IF NOT EXISTS works (
-    "id"                      TEXT PRIMARY KEY NOT NULL,
-    "type"                    TEXT NOT NULL DEFAULT '',
-    "additional_type"         TEXT NOT NULL DEFAULT '',
-    "url"                     TEXT NOT NULL DEFAULT '',
-    "title"                   TEXT NOT NULL DEFAULT '',
-    "additional_titles"       TEXT NOT NULL DEFAULT '[]',
-    "contributors"            TEXT NOT NULL DEFAULT '[]',
-    "date_published"          TEXT NOT NULL DEFAULT '',
-    "date_updated"            TEXT NOT NULL DEFAULT '',
-    "dates"                   TEXT NOT NULL DEFAULT '{}',
-    "publisher"               TEXT NOT NULL DEFAULT '{}',
-    "container"               TEXT NOT NULL DEFAULT '{}',
-    "description"             TEXT NOT NULL DEFAULT '',
-    "additional_descriptions" TEXT NOT NULL DEFAULT '[]',
-    "license"                 TEXT NOT NULL DEFAULT '{}',
-    "version"                 TEXT NOT NULL DEFAULT '',
-    "language"                TEXT NOT NULL DEFAULT '',
-    "subjects"                TEXT NOT NULL DEFAULT '[]',
-    "identifiers"             TEXT NOT NULL DEFAULT '[]',
-    "relations"               TEXT NOT NULL DEFAULT '[]',
-    "references"              TEXT NOT NULL DEFAULT '[]',
-    "citations"               TEXT NOT NULL DEFAULT '[]',
-    "funding_references"      TEXT NOT NULL DEFAULT '[]',
-    "geo_locations"           TEXT NOT NULL DEFAULT '[]',
-    "files"                   TEXT NOT NULL DEFAULT '[]',
-    "archive_locations"       TEXT NOT NULL DEFAULT '[]',
-    "image"                   TEXT NOT NULL DEFAULT '',
-    "content"                 TEXT NOT NULL DEFAULT '',
-    "schema_version"          TEXT NOT NULL DEFAULT '',
-    "provider"                TEXT NOT NULL DEFAULT ''
+    "id"               TEXT PRIMARY KEY NOT NULL,
+    "type"             TEXT NOT NULL DEFAULT '',
+    "url"              TEXT NOT NULL DEFAULT '',
+    "title"            TEXT NOT NULL DEFAULT '',
+    "additional_titles" TEXT NOT NULL DEFAULT '[]',
+    "contributors"     TEXT NOT NULL DEFAULT '[]',
+    "date_published"   TEXT NOT NULL DEFAULT '',
+    "date_updated"     TEXT NOT NULL DEFAULT '',
+    "dates"            TEXT NOT NULL DEFAULT '{}',
+    "publisher"        TEXT NOT NULL DEFAULT '{}',
+    "container"        TEXT NOT NULL DEFAULT '{}',
+    "description"      TEXT NOT NULL DEFAULT '',
+    "license"          TEXT NOT NULL DEFAULT '{}',
+    "version"          TEXT NOT NULL DEFAULT '',
+    "language"         TEXT NOT NULL DEFAULT '',
+    "subjects"         TEXT NOT NULL DEFAULT '[]',
+    "identifiers"      TEXT NOT NULL DEFAULT '[]',
+    "relations"        TEXT NOT NULL DEFAULT '[]',
+    "references"       TEXT NOT NULL DEFAULT '[]',
+    "funding_references" TEXT NOT NULL DEFAULT '[]',
+    "geo_locations"    TEXT NOT NULL DEFAULT '[]',
+    "files"            TEXT NOT NULL DEFAULT '[]',
+    "archive_locations" TEXT NOT NULL DEFAULT '[]',
+    "provider"         TEXT NOT NULL DEFAULT ''
 );"#;
 
 const SQLITE_INSERT: &str = r#"INSERT OR REPLACE INTO works (
-    "id", "type", "additional_type", "url", "title", "additional_titles",
+    "id", "type", "url", "title", "additional_titles",
     "contributors", "date_published", "date_updated", "dates", "publisher",
-    "container", "description", "additional_descriptions", "license",
+    "container", "description", "license",
     "version", "language", "subjects", "identifiers", "relations", "references",
-    "citations", "funding_references", "geo_locations", "files",
-    "archive_locations", "image", "content", "schema_version", "provider"
+    "funding_references", "geo_locations", "files",
+    "archive_locations", "provider"
 ) VALUES (
-    ?1, ?2, ?3, ?4, ?5, ?6,
-    ?7, ?8, ?9, ?10, ?11,
-    ?12, ?13, ?14, ?15,
-    ?16, ?17, ?18, ?19, ?20, ?21,
-    ?22, ?23, ?24, ?25,
-    ?26, ?27, ?28, ?29, ?30
+    ?1, ?2, ?3, ?4, ?5,
+    ?6, ?7, ?8, ?9, ?10,
+    ?11, ?12, ?13,
+    ?14, ?15, ?16, ?17, ?18, ?19,
+    ?20, ?21, ?22,
+    ?23, ?24
 )"#;
 
 // ── Streaming-optimised write path ────────────────────────────────────────────
@@ -412,7 +419,6 @@ const SQLITE_INSERT: &str = r#"INSERT OR REPLACE INTO works (
 pub struct PreparedRow {
     pub id: String,
     pub type_: String,
-    pub additional_type: String,
     pub url: String,
     pub title: String,
     pub additional_titles: String,
@@ -423,7 +429,6 @@ pub struct PreparedRow {
     pub publisher: String,
     pub container: String,
     pub description: String,
-    pub additional_descriptions: String,
     pub license: String,
     pub version: String,
     pub language: String,
@@ -431,14 +436,10 @@ pub struct PreparedRow {
     pub identifiers: String,
     pub relations: String,
     pub references: String,
-    pub citations: String,
     pub funding_references: String,
     pub geo_locations: String,
     pub files: String,
     pub archive_locations: String,
-    pub image: String,
-    pub content: String,
-    pub schema_version: String,
     pub provider: String,
 }
 
@@ -446,7 +447,6 @@ pub struct PreparedRow {
 /// funder-ID validation) and serialize all complex fields to JSON strings,
 /// consuming `data` so no clone is required.
 pub fn serialize_to_row(mut data: Data) -> PreparedRow {
-    data.schema_version = COMMONMETA_V1_SCHEMA_URL.to_string();
     for r in &mut data.references {
         r.publisher.clear();
         r.publication_year.clear();
@@ -457,11 +457,6 @@ pub fn serialize_to_row(mut data: Data) -> PreparedRow {
         r.unstructured.clear();
         r.asserted_by.clear();
     }
-    for fr in &mut data.funding_references {
-        if !fr.funder_id.is_empty() && normalize_ror(&fr.funder_id).is_empty() {
-            fr.funder_id.clear();
-        }
-    }
     macro_rules! js {
         ($v:expr) => {
             serde_json::to_string(&$v).unwrap_or_default()
@@ -470,7 +465,6 @@ pub fn serialize_to_row(mut data: Data) -> PreparedRow {
     PreparedRow {
         id: data.id,
         type_: data.type_,
-        additional_type: data.additional_type,
         url: data.url,
         title: data.title,
         additional_titles: js!(data.additional_titles),
@@ -481,7 +475,6 @@ pub fn serialize_to_row(mut data: Data) -> PreparedRow {
         publisher: js!(data.publisher),
         container: js!(data.container),
         description: data.description,
-        additional_descriptions: js!(data.additional_descriptions),
         license: js!(data.license),
         version: data.version,
         language: data.language,
@@ -489,14 +482,10 @@ pub fn serialize_to_row(mut data: Data) -> PreparedRow {
         identifiers: js!(data.identifiers),
         relations: js!(data.relations),
         references: js!(data.references),
-        citations: js!(data.citations),
         funding_references: js!(data.funding_references),
         geo_locations: js!(data.geo_locations),
         files: js!(data.files),
         archive_locations: js!(data.archive_locations),
-        image: data.image,
-        content: data.content,
-        schema_version: data.schema_version,
         provider: data.provider,
     }
 }
@@ -541,15 +530,14 @@ pub(crate) async fn write_sqlite_batch_rows_async(
         tx.execute(
             SQLITE_INSERT,
             libsql::params![
-                row.id, row.type_, row.additional_type, row.url, row.title,
+                row.id, row.type_, row.url, row.title,
                 row.additional_titles, row.contributors, row.date_published,
                 row.date_updated, row.dates, row.publisher, row.container,
-                row.description, row.additional_descriptions, row.license,
+                row.description, row.license,
                 row.version, row.language, row.subjects, row.identifiers,
-                row.relations, row.references, row.citations,
+                row.relations, row.references,
                 row.funding_references, row.geo_locations, row.files,
-                row.archive_locations, row.image, row.content,
-                row.schema_version, row.provider,
+                row.archive_locations, row.provider,
             ],
         )
         .await
@@ -578,12 +566,12 @@ pub fn write_sqlite(data: &[Data], path: &Path) -> Result<()> {
 }
 
 const SQLITE_SELECT: &str = r#"SELECT
-    "id", "type", "additional_type", "url", "title", "additional_titles",
+    "id", "type", "url", "title", "additional_titles",
     "contributors", "date_published", "date_updated", "dates", "publisher",
-    "container", "description", "additional_descriptions", "license",
+    "container", "description", "license",
     "version", "language", "subjects", "identifiers", "relations", "references",
-    "citations", "funding_references", "geo_locations", "files",
-    "archive_locations", "image", "content", "schema_version", "provider"
+    "funding_references", "geo_locations", "files",
+    "archive_locations", "provider"
 FROM works ORDER BY rowid"#;
 
 /// Inverse of `serialize_to_row`: deserialises all columns back to `Data`.
@@ -622,34 +610,29 @@ async fn read_sqlite_rows_async(
         let data = Data {
             id: s!(0),
             type_: s!(1),
-            additional_type: s!(2),
-            url: s!(3),
-            title: s!(4),
-            additional_titles: col_json(s!(5)),
-            contributors: col_json(s!(6)),
-            date_published: s!(7),
-            date_updated: s!(8),
-            dates: col_json(s!(9)),
-            publisher: col_json(s!(10)),
-            container: col_json(s!(11)),
-            description: s!(12),
-            additional_descriptions: col_json(s!(13)),
-            license: col_json(s!(14)),
-            version: s!(15),
-            language: s!(16),
-            subjects: col_json(s!(17)),
-            identifiers: col_json(s!(18)),
-            relations: col_json(s!(19)),
-            references: col_json(s!(20)),
-            citations: col_json(s!(21)),
-            funding_references: col_json(s!(22)),
-            geo_locations: col_json(s!(23)),
-            files: col_json(s!(24)),
-            archive_locations: col_json(s!(25)),
-            image: s!(26),
-            content: s!(27),
-            schema_version: s!(28),
-            provider: s!(29),
+            url: s!(2),
+            title: s!(3),
+            additional_titles: col_json(s!(4)),
+            contributors: col_json(s!(5)),
+            date_published: s!(6),
+            date_updated: s!(7),
+            dates: col_json(s!(8)),
+            publisher: col_json(s!(9)),
+            container: col_json(s!(10)),
+            description: s!(11),
+            license: col_json(s!(12)),
+            version: s!(13),
+            language: s!(14),
+            subjects: col_json(s!(15)),
+            identifiers: col_json(s!(16)),
+            relations: col_json(s!(17)),
+            references: col_json(s!(18)),
+            funding_references: col_json(s!(19)),
+            geo_locations: col_json(s!(20)),
+            files: col_json(s!(21)),
+            archive_locations: col_json(s!(22)),
+            provider: s!(23),
+            ..Data::default()
         };
         results.push(data);
     }
@@ -934,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn test_write_sqlite_sets_schema_version() {
+    fn test_write_sqlite_roundtrip_provider() {
         let dir = std::env::temp_dir().join("commonmeta_sqlite_test_sv");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("out.sqlite3");
@@ -949,11 +932,11 @@ mod tests {
                 let db = libsql::Builder::new_local(&path).build().await.unwrap();
                 let conn = db.connect().unwrap();
                 let mut rows = conn
-                    .query("SELECT schema_version FROM works", ())
+                    .query("SELECT provider FROM works", ())
                     .await
                     .unwrap();
-                let sv: String = rows.next().await.unwrap().unwrap().get(0).unwrap();
-                assert_eq!(sv, COMMONMETA_V1_SCHEMA_URL);
+                let provider: String = rows.next().await.unwrap().unwrap().get(0).unwrap();
+                assert_eq!(provider, sample_data().provider);
             });
 
         std::fs::remove_dir_all(&dir).ok();

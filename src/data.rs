@@ -264,6 +264,7 @@ impl<'de> Deserialize<'de> for Contributor {
                     given_name: input.given_name,
                     family_name: input.family_name,
                     affiliations: input.affiliations.clone(),
+                    asserted_by: String::new(),
                 })
             }
         });
@@ -275,6 +276,7 @@ impl<'de> Deserialize<'de> for Contributor {
                 Some(Organization {
                     id: input.id.clone(),
                     name: input.name,
+                    asserted_by: String::new(),
                 })
             }
         });
@@ -308,6 +310,8 @@ pub struct Person {
     pub family_name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub affiliations: Vec<Affiliation>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub asserted_by: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -316,6 +320,8 @@ pub struct Organization {
     pub id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub asserted_by: String,
 }
 
 /// "Other dates" beyond `date_published`/`date_updated`. All fields are
@@ -447,11 +453,13 @@ pub struct Publisher {
     pub id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub asserted_by: String,
 }
 
 impl Publisher {
     pub fn is_empty(&self) -> bool {
-        self.id.is_empty() && self.name.is_empty()
+        self.id.is_empty() && self.name.is_empty() && self.asserted_by.is_empty()
     }
 }
 

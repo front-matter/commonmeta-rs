@@ -146,6 +146,8 @@ struct CrossrefLink {
 struct CrossrefAuthor {
     #[serde(rename = "ORCID")]
     orcid: Option<String>,
+    #[serde(rename = "authenticated-orcid", default)]
+    authenticated_orcid: Option<bool>,
     given: Option<String>,
     family: Option<String>,
     name: Option<String>,
@@ -257,6 +259,14 @@ fn published_date(issued: &Option<CrossrefDate>, created: &Option<CrossrefDate>)
         .as_ref()
         .and_then(|c| c.date_time.clone())
         .unwrap_or_default()
+}
+
+fn capitalize_provider(s: &str) -> String {
+    match s {
+        "publisher" => "Publisher".to_string(),
+        "author" => "Author".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn normalize_doi_url(doi: &str) -> String {
@@ -371,20 +381,39 @@ fn from_work(w: CrossrefWork) -> Data {
                     Affiliation {
                         id: ror.as_ref().map(|r| r.id.clone()).unwrap_or_default(),
                         name: af.name,
-                        asserted_by: ror.map(|r| r.asserted_by).unwrap_or_default(),
+                        asserted_by: ror
+                            .map(|r| capitalize_provider(&r.asserted_by))
+                            .unwrap_or_default(),
                     }
                 })
                 .collect();
             let roles = normalize_contributor_roles(&["Author".to_string()], "Author");
 
+            // authenticated-orcid=true → the author authenticated via OAuth;
+            // false/absent → the publisher supplied the ORCID without verification.
+            let orcid_asserted_by = if !orcid.is_empty() {
+                match a.authenticated_orcid {
+                    Some(true) => "Author",
+                    _ => "Publisher",
+                }
+            } else {
+                ""
+            };
+
             if type_str == "Person" {
                 Contributor::person(
-                    Person { id: orcid, given_name: given, family_name: family, affiliations },
+                    Person {
+                        id: orcid,
+                        given_name: given,
+                        family_name: family,
+                        affiliations,
+                        asserted_by: orcid_asserted_by.to_string(),
+                    },
                     roles,
                 )
             } else {
                 Contributor::organization(
-                    Organization { id: orcid, name: cleaned_name },
+                    Organization { id: orcid, name: cleaned_name, asserted_by: String::new() },
                     roles,
                 )
             }

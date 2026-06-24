@@ -22,9 +22,10 @@
           {
             "id": "https://ror.org/05dxps055",
             "name": "Example University",
-            "asserted_by": "publisher"
+            "asserted_by": "Publisher"
           }
-        ]
+        ],
+        "asserted_by": "Publisher"
       },
       "roles": [
         "Author"

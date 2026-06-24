@@ -183,6 +183,7 @@ fn parse_cff_contributors(authors: &[Value]) -> Vec<Contributor> {
                         given_name,
                         family_name,
                         affiliations,
+                        asserted_by: String::new(),
                     },
                     roles,
                 )

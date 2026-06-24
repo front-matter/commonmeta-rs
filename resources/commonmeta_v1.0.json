@@ -213,7 +213,7 @@
           "items": {
             "type": "object",
             "properties": {
-              "funder_id": { "$ref": "#/definitions/ror_id" },
+              "funder_id": { "$ref": "#/definitions/id" },
               "funder_name": { "type": "string" },
               "award_id": { "$ref": "#/definitions/id" },
               "award_title": { "type": "string" },
@@ -261,21 +261,7 @@
         },
         "language": { "$ref": "#/definitions/language" },
         "license": { "$ref": "#/definitions/license" },
-        "provider": {
-          "description": "The provider of the resource. This can be a DOI registration agency or a repository.",
-          "type": "string",
-          "enum": [
-            "Crossref",
-            "DataCite",
-            "GitHub",
-            "JaLC",
-            "KISTI",
-            "mEDRA",
-            "OP",
-            "OpenAlex",
-            "Other"
-          ]
-        },
+        "provider": { "$ref": "#/definitions/provider" },
         "publisher": { "$ref": "#/definitions/organization" },
         "references": {
           "type": "array",
@@ -285,7 +271,8 @@
               "key": { "type": "string" },
               "id": { "$ref": "#/definitions/id" },
               "type": { "$ref": "#/definitions/type" },
-              "reference": { "description": "The reference formatted as string.", "type": "string" }
+              "reference": { "description": "The reference formatted as string.", "type": "string" },
+              "asserted_by": { "$ref": "#/definitions/provider" }
             }
           }
         },
@@ -320,7 +307,8 @@
                   "IsSupplementedBy",
                   "Other"
                 ]
-              }
+              },
+              "asserted_by": { "$ref": "#/definitions/provider" }
             },
             "required": ["id", "type"]
           },
@@ -491,11 +479,17 @@
     "organization": {
       "type": "object",
       "properties": {
-        "id": { "$ref": "#/definitions/ror_id" },
+        "id": {
+          "description": "ROR identifier URL.",
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://ror\\.org/[0-9a-z]{9}$"
+        },
         "name": {
           "description": "The name of the organization.",
           "type": "string"
-        }
+        },
+        "asserted_by": { "$ref": "#/definitions/provider" }
       },
       "required": ["name"]
     },
@@ -506,7 +500,8 @@
           "description": "ORCID identifier URL.",
           "type": "string", 
           "format": "uri" , 
-          "pattern": "^https://orcid\\.org/\\d{4}-\\d{4}-\\d{4}-\\d{3}[0-9X]$"
+          "pattern": "^https://orcid\\.org/\\d{4}-\\d{4}-\\d{4}-\\d{3}[0-9X]$",
+          "asserted_by": { "$ref": "#/definitions/provider" }
         },
         "given_name": {
           "description": "The given name of the person.",
@@ -527,11 +522,28 @@
         { "required": ["family_name"] }
       ]
     },
-    "ror_id": {
-      "description": "ROR identifier URL.",
+    "provider": {
+      "description": "The provider of the resource or the assertion. This can be a DOI registration agency, a repository, or any other entity asserting the information.",
       "type": "string",
-      "format": "uri",
-      "pattern": "^https://ror\\.org/[0-9a-z]{9}$"
+      "enum": [
+        "Crossref",
+        "DataCite",
+        "Airiti",
+        "CNKI",
+        "JaLC",
+        "KISTI",
+        "mEDRA",
+        "OP",
+        "Author",
+        "GitHub",
+        "OpenAIRE",
+        "OpenAlex",
+        "ORCID",
+        "Publisher",
+        "PubMed",
+        "ROR",
+        "Other"
+      ]
     },
     "type": {
       "type": "string",

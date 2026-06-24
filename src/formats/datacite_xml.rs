@@ -484,9 +484,12 @@ fn get_xml_contributor(
     let roles = normalize_contributor_roles(&[normalized_role.clone()], &normalized_role);
 
     if inferred_type == "Person" {
-        Contributor::person(Person { id, given_name, family_name, affiliations: affils }, roles)
+        Contributor::person(
+            Person { id, given_name, family_name, affiliations: affils, asserted_by: String::new() },
+            roles,
+        )
     } else {
-        Contributor::organization(Organization { id, name }, roles)
+        Contributor::organization(Organization { id, name, asserted_by: String::new() }, roles)
     }
 }
 
@@ -707,7 +710,7 @@ fn from_xml_resource(r: XmlResource) -> Data {
             } else {
                 String::new()
             };
-            data.publisher = Publisher { id, name };
+            data.publisher = Publisher { id, name, asserted_by: String::new() };
         }
     }
 

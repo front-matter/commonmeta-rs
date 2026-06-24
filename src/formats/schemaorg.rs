@@ -241,11 +241,12 @@ pub(crate) fn get_contributor(v: SoContributor, default_role: &str) -> Contribut
                 given_name,
                 family_name,
                 affiliations,
+                asserted_by: String::new(),
             },
             roles,
         )
     } else {
-        Contributor::organization(Organization { id, name }, roles)
+        Contributor::organization(Organization { id, name, asserted_by: String::new() }, roles)
     }
 }
 

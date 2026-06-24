@@ -309,12 +309,12 @@ fn get_contributors(authorships: &[Authorship]) -> Vec<Contributor> {
 
             if type_ == "Person" {
                 Contributor::person(
-                    Person { id: orcid, given_name, family_name, affiliations },
+                    Person { id: orcid, given_name, family_name, affiliations, asserted_by: String::new() },
                     roles,
                 )
             } else {
                 Contributor::organization(
-                    Organization { id: orcid, name: org_name },
+                    Organization { id: orcid, name: org_name, asserted_by: String::new() },
                     roles,
                 )
             }

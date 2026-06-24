@@ -536,12 +536,12 @@ fn get_contributor(v: &Creator, default_role: &str) -> Contributor {
 
     if type_ == "Person" {
         Contributor::person(
-            Person { id, given_name, family_name, affiliations },
+            Person { id, given_name, family_name, affiliations, asserted_by: String::new() },
             roles,
         )
     } else {
         Contributor::organization(
-            Organization { id, name: name_out },
+            Organization { id, name: name_out, asserted_by: String::new() },
             roles,
         )
     }
@@ -581,12 +581,12 @@ fn get_zenodo_contributor(v: &Creator, default_role: &str) -> Contributor {
 
     if type_ == "Person" {
         Contributor::person(
-            Person { id, given_name, family_name: family_name_out, affiliations },
+            Person { id, given_name, family_name: family_name_out, affiliations, asserted_by: String::new() },
             roles,
         )
     } else {
         Contributor::organization(
-            Organization { id, name: name_out },
+            Organization { id, name: name_out, asserted_by: String::new() },
             roles,
         )
     }

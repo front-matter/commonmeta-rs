@@ -461,12 +461,12 @@ fn get_contributor(v: DcContributor, default_role: &str) -> Contributor {
 
     if inferred_type == "Person" {
         Contributor::person(
-            Person { id, given_name, family_name, affiliations },
+            Person { id, given_name, family_name, affiliations, asserted_by: String::new() },
             roles,
         )
     } else {
         Contributor::organization(
-            Organization { id, name },
+            Organization { id, name, asserted_by: String::new() },
             roles,
         )
     }
@@ -595,12 +595,17 @@ fn from_attributes(attr: DcAttributes) -> Data {
         }
     }
 
-    // Funding references — ROR identifier pass-through; skip live lookups
+    // Funding references
     for f in attr.funding_references {
-        let funder_id = if f.funder_identifier_type == "ROR" {
-            normalize_ror(&f.funder_identifier)
-        } else {
-            String::new()
+        let funder_id = match f.funder_identifier_type.as_str() {
+            "ROR" => normalize_ror(&f.funder_identifier),
+            "Crossref Funder ID" => normalize_doi(&f.funder_identifier),
+            _ if f.funder_identifier.starts_with("https://")
+                || f.funder_identifier.starts_with("http://") =>
+            {
+                f.funder_identifier.clone()
+            }
+            _ => String::new(),
         };
         data.funding_references.push(FundingReference {
             funder_id,
@@ -654,6 +659,7 @@ fn from_attributes(attr: DcAttributes) -> Data {
             data.publisher = Publisher {
                 id: normalize_ror(&p.publisher_identifier),
                 name: p.name,
+                asserted_by: String::new(),
             };
         }
     }

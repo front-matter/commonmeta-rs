@@ -1939,6 +1939,7 @@ fn convert_contributors(contrib: &XmlContributors) -> Vec<Contributor> {
                 given_name: p.given_name.clone(),
                 family_name: p.surname.clone(),
                 affiliations,
+                asserted_by: String::new(),
             },
             normalize_contributor_roles(&[role.to_string()], role),
         ));
@@ -1954,7 +1955,7 @@ fn convert_contributors(contrib: &XmlContributors) -> Vec<Contributor> {
             _ => "Author",
         };
         out.push(Contributor::organization(
-            DataOrganization { id: String::new(), name: org.name.clone() },
+            DataOrganization { id: String::new(), name: org.name.clone(), asserted_by: String::new() },
             normalize_contributor_roles(&[role.to_string()], role),
         ));
     }
@@ -2188,6 +2189,7 @@ fn from_query(query: XmlQuery) -> Data {
     data.publisher = Publisher {
         id: publisher_id,
         name: publisher_name.clone(),
+        asserted_by: String::new(),
     };
 
     // Workaround: Front Matter posts registered as posted-content are blog posts
@@ -2290,6 +2292,7 @@ fn from_query(query: XmlQuery) -> Data {
                     data.publisher = Publisher {
                         id: data.publisher.id.clone(),
                         name: d.institution.institution_name.clone(),
+                        asserted_by: String::new(),
                     };
                 }
             }
