@@ -17,18 +17,7 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/front-matter/commonmeta-rs"
 homepage = "https://rs.commonmeta.org/"
-keywords = [
-  "metadata",
-  "doi",
-  "crossref",
-  "datacite",
-  "openalex",
-  "bibtex",
-  "csl",
-  "citation",
-  "orcid",
-  "ror",
-]
+keywords = ["metadata", "doi", "crossref", "datacite", "openalex"]
 categories = ["command-line-utilities", "encoding", "science"]
 
 [lib]
