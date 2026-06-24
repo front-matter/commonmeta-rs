@@ -413,7 +413,7 @@ pub fn download_file_to_path(url: &str, path: &Path) -> Result<u64> {
     let file = File::create(path)?;
     let mut written: u64 = 0;
     let mut buf = vec![0u8; 256 * 1024];
-    let mut src = resp.by_ref();
+    let src = resp.by_ref();
     loop {
         let n = src.read(&mut buf).map_err(|e| FileError::Download {
             url: url.to_string(),
