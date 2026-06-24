@@ -491,10 +491,12 @@ pub fn serialize_to_row(mut data: Data) -> PreparedRow {
 }
 
 /// Open (or create) a SQLite3 database at `path` and initialise the `works`
-/// table. Deletes any existing file first so the result is always a fresh DB.
-/// Returns the open connection ready for batch inserts.
-pub(crate) async fn init_sqlite_writer_async(path: &Path) -> Result<libsql::Connection> {
-    if path.exists() {
+/// table. When `overwrite` is true any existing file is deleted first (fresh
+/// DB). When false the existing file is kept and the table is created only if
+/// it does not exist yet — callers use `INSERT OR REPLACE` so rows with the
+/// same `id` are updated in place.
+pub(crate) async fn init_sqlite_writer_async(path: &Path, overwrite: bool) -> Result<libsql::Connection> {
+    if overwrite && path.exists() {
         std::fs::remove_file(path)
             .map_err(|e| Error::Parse(format!("failed to remove '{}': {}", path.display(), e)))?;
     }
@@ -553,15 +555,55 @@ pub(crate) async fn write_sqlite_batch_rows_async(
 /// columns map 1:1 to the commonmeta v1.0 top-level fields. Simple string
 /// fields are stored as TEXT; complex fields (objects, arrays) are stored as
 /// compact JSON TEXT so every record round-trips losslessly.
+/// Any existing file at `path` is deleted first.
 pub fn write_sqlite(data: &[Data], path: &Path) -> Result<()> {
+    write_sqlite_impl(data, path, true)
+}
+
+/// Like [`write_sqlite`] but opens an existing database instead of recreating
+/// it. Rows whose `id` already exists are replaced; new rows are inserted.
+pub fn upsert_sqlite(data: &[Data], path: &Path) -> Result<()> {
+    write_sqlite_impl(data, path, false)
+}
+
+fn write_sqlite_impl(data: &[Data], path: &Path, overwrite: bool) -> Result<()> {
     let rows: Vec<PreparedRow> = data.iter().map(|d| serialize_to_row(d.clone())).collect();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| Error::Parse(e.to_string()))?
         .block_on(async {
-            let conn = init_sqlite_writer_async(path).await?;
+            let conn = init_sqlite_writer_async(path, overwrite).await?;
             write_sqlite_batch_rows_async(&conn, rows).await
+        })
+}
+
+/// Return the total number of rows in the `works` table of a commonmeta SQLite
+/// database. Used to report the cumulative count after an upsert.
+pub fn count_sqlite_works(path: &Path) -> Result<usize> {
+    let path = path.to_path_buf();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Error::Parse(e.to_string()))?
+        .block_on(async {
+            let db = libsql::Builder::new_local(&path)
+                .build()
+                .await
+                .map_err(|e| Error::Parse(e.to_string()))?;
+            let conn = db.connect().map_err(|e| Error::Parse(e.to_string()))?;
+            let mut rows = conn
+                .query("SELECT COUNT(*) FROM works", ())
+                .await
+                .map_err(|e| Error::Parse(e.to_string()))?;
+            let n: i64 = rows
+                .next()
+                .await
+                .map_err(|e| Error::Parse(e.to_string()))?
+                .ok_or_else(|| Error::Parse("empty COUNT result".into()))?
+                .get(0)
+                .map_err(|e| Error::Parse(e.to_string()))?;
+            Ok(n.max(0) as usize)
         })
 }
 

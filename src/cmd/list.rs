@@ -12,11 +12,40 @@ use commonmeta::file_utils;
 /// files and for entries within a `.zip`/`.tgz` archive.
 const BATCH_SIZE: usize = 100_000;
 
+/// Return the directory to use for temporary files. Reads `COMMONMETA_TEMP_DIR`
+/// first so callers can redirect large intermediates (e.g. the pidbox decompress)
+/// to a mounted volume or network filesystem without changing any other config.
+fn temp_dir() -> PathBuf {
+    std::env::var_os("COMMONMETA_TEMP_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+/// Format the "wrote" line for a SQLite output file.
+/// In upsert mode `total` is the post-write row count of the whole file;
+/// when it differs from `written` (the records added/replaced this run)
+/// both numbers are shown so the caller can see cumulative progress.
+fn fmt_wrote_sqlite(path: &str, written: usize, total: Option<usize>) -> String {
+    match total {
+        Some(t) if t != written => {
+            format!("wrote {} ({} added, {} total)", path, written, t)
+        }
+        _ => format!("wrote {} ({} records)", path, written),
+    }
+}
+
 /// How long a downloaded VRAIX dump stays valid in the local cache before
 /// it's re-downloaded. Dumps are daily snapshots that don't change once
 /// published, so this is purely a disk-space/staleness bound, not a
 /// correctness one.
 const VRAIX_CACHE_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// Sentinel date that selects the full pidbox dump instead of a per-source
+/// daily VRAIX snapshot. Using a date outside the valid range makes it
+/// impossible to collide with a real dump.
+const PIDBOX_DATE: &str = "1929-06-19";
+const PIDBOX_URL: &str = "https://metadata.vraix.org/pidbox.sqlite3.zst";
+const PIDBOX_CACHE_KEY: &str = "pidbox.sqlite3.zst";
 
 pub fn command() -> Command {
     Command::new("list")
@@ -202,6 +231,7 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
     let out_file = matches.get_one::<String>("file");
     let date = matches.get_one::<String>("date").map(String::as_str);
     let timers = matches.get_flag("timers");
+    let update = out_file.map(|p| std::path::Path::new(p).exists()).unwrap_or(false);
     let style = matches.get_one::<String>("style").map(String::as_str);
     let locale = matches.get_one::<String>("locale").map(String::as_str);
 
@@ -227,39 +257,221 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         .unwrap_or(false);
     let is_vraix_sqlite_input = is_sqlite_input && matches!(from, "crossref" | "datacite");
 
+    // Pidbox: --date 1929-06-19 triggers a full mixed-source download from
+    // metadata.vraix.org/pidbox.sqlite3.zst. The file is several hundred GB
+    // decompressed so we never buffer it in RAM — download and decompress are
+    // both file-to-file streaming operations. Only --file *.sqlite3 output is
+    // supported; the dataset is far too large for an in-memory Vec<Data>.
+    let is_pidbox = date == Some(PIDBOX_DATE)
+        && input_path.is_none()
+        && matches!(from, "crossref" | "datacite");
+
+    if is_pidbox {
+        let out_path = out_file.ok_or_else(|| {
+            "list: pidbox dump requires --file *.sqlite3 output".to_string()
+        })?;
+        let (_base, out_ext, out_compress) = file_utils::get_extension(out_path, ".json");
+        if out_ext != ".sqlite3" || !matches!(out_compress.as_str(), "" | "zst") {
+            return Err(
+                "list: pidbox dump only supports --file *.sqlite3 or *.sqlite3.zst output"
+                    .to_string(),
+            );
+        }
+        if to != "commonmeta" {
+            return Err(format!(
+                "list: pidbox dump only supports --to commonmeta (got --to {})",
+                to
+            ));
+        }
+
+        // Download compressed pidbox to the cache directory as a file — not
+        // a Vec<u8> — since the compressed file can be tens of GB.
+        let download_start = Instant::now();
+        let (cache_path, from_cache) =
+            file_utils::ensure_cached_path(PIDBOX_URL, "vraix", PIDBOX_CACHE_KEY, VRAIX_CACHE_TTL)
+                .map_err(|e| format!("failed to download pidbox: {}", e))?;
+        if timers {
+            if from_cache {
+                eprintln!(
+                    "list: pidbox download skipped (cached at {})",
+                    cache_path.display()
+                );
+            } else {
+                eprintln!("list: pidbox download took {:.2?}", download_start.elapsed());
+            }
+        }
+
+        // Stream-decompress .zst → temp sqlite3, again without loading into RAM.
+        let decompress_start = Instant::now();
+        let tmp_sqlite = temp_dir().join(format!(
+            "commonmeta-pidbox-{}.sqlite3",
+            std::process::id()
+        ));
+        let decompressed_bytes = file_utils::decompress_zst_file(&cache_path, &tmp_sqlite)
+            .map_err(|e| format!("failed to decompress pidbox: {}", e))?;
+        if timers {
+            eprintln!(
+                "list: pidbox decompress took {:.2?} ({} bytes)",
+                decompress_start.elapsed(),
+                decompressed_bytes
+            );
+        }
+
+        let (base_out, _ext, _c) = file_utils::get_extension(out_path, ".sqlite3");
+        let sqlite_out = if out_compress.is_empty() {
+            base_out.clone()
+        } else {
+            base_out.with_extension("sqlite3.tmp")
+        };
+
+        let convert_start = Instant::now();
+        let result =
+            commonmeta::stream_pidbox_to_sqlite(&tmp_sqlite, &sqlite_out, number, update)
+                .map_err(|e| e.to_string());
+        std::fs::remove_file(&tmp_sqlite).ok();
+        let n = result?;
+        if timers {
+            eprintln!(
+                "list: pidbox convert+write took {:.2?} ({} records)",
+                convert_start.elapsed(),
+                n
+            );
+        }
+
+        // Count total before compression removes the uncompressed temp file.
+        let total = if update {
+            commonmeta::count_sqlite_works(&sqlite_out).ok()
+        } else {
+            None
+        };
+
+        if !out_compress.is_empty() {
+            let compress_start = Instant::now();
+            {
+                let out_file = std::fs::File::create(out_path)
+                    .map_err(|e| format!("failed to create '{}': {}", out_path, e))?;
+                let mut encoder = zstd::Encoder::new(out_file, 0)
+                    .map_err(|e| format!("failed to create zstd encoder: {}", e))?;
+                let mut in_file = std::fs::File::open(&sqlite_out)
+                    .map_err(|e| format!("failed to open '{}': {}", sqlite_out.display(), e))?;
+                std::io::copy(&mut in_file, &mut encoder)
+                    .map_err(|e| format!("zstd compression failed: {}", e))?;
+                encoder
+                    .finish()
+                    .map_err(|e| format!("failed to finish zstd encoder: {}", e))?;
+            }
+            std::fs::remove_file(&sqlite_out).ok();
+            if timers {
+                eprintln!("list: zstd compression took {:.2?}", compress_start.elapsed());
+            }
+        }
+
+        println!("{}", fmt_wrote_sqlite(out_path, n, total));
+        return Ok(());
+    }
+
     // Fast path: VRAIX SQLite → commonmeta SQLite (optionally compressed)
     // without a Vec<Data> intermediary. Records are streamed in batches,
     // converted in parallel, and written in one SQLite transaction per batch.
     // For compressed output (.zst) we stream directly to a temp .sqlite3 file
     // and then pipe through zstd to the final path — no full in-RAM copy.
+    //
+    // Triggers for two cases:
+    //   (a) a local VRAIX .sqlite3 input is given directly (is_vraix_sqlite_input)
+    //   (b) --date is given without an explicit input path (non-pidbox download)
     if let Some(out_path) = out_file {
         let (_base, out_ext, out_compress) = file_utils::get_extension(out_path, ".json");
         let compress_supported = out_compress.is_empty() || out_compress == "zst";
+        let is_date_download = date.is_some() && input_path.is_none() && !is_pidbox;
         if out_ext == ".sqlite3"
             && compress_supported
             && to == "commonmeta"
-            && is_vraix_sqlite_input
-            && date.is_none()
             && matches!(from, "crossref" | "datacite")
+            && (is_vraix_sqlite_input || is_date_download)
         {
-            let in_path = input_path.unwrap();
             let write_start = Instant::now();
             let (base_out, _ext, _c) = file_utils::get_extension(out_path, ".sqlite3");
 
             // For compressed output, stream to a temp file in the same directory.
-            let sqlite_path = if out_compress.is_empty() {
+            let sqlite_out = if out_compress.is_empty() {
                 base_out.clone()
             } else {
                 base_out.with_extension("sqlite3.tmp")
             };
 
-            let n = commonmeta::stream_vraix_to_sqlite(
-                std::path::Path::new(in_path),
-                from,
-                &sqlite_path,
-                number,
-            )
-            .map_err(|e| e.to_string())?;
+            // Resolve the VRAIX input to a local .sqlite3 path, downloading and
+            // decompressing on demand for the --date case.
+            let (in_sqlite, tmp_to_clean) = if is_date_download {
+                let url = format!(
+                    "https://metadata.vraix.org/{}-{}.sqlite3.zst",
+                    from,
+                    date.unwrap()
+                );
+                let cache_key = format!("{}-{}.sqlite3.zst", from, date.unwrap());
+                let download_start = Instant::now();
+                let (compressed, from_cache) =
+                    file_utils::download_file_cached(&url, "vraix", &cache_key, VRAIX_CACHE_TTL)
+                        .map_err(|e| format!("failed to download '{}': {}", url, e))?;
+                if timers {
+                    if from_cache {
+                        eprintln!(
+                            "list: download took {:.2?} ({} bytes, from local cache)",
+                            download_start.elapsed(),
+                            compressed.len()
+                        );
+                    } else {
+                        eprintln!(
+                            "list: download took {:.2?} ({} bytes)",
+                            download_start.elapsed(),
+                            compressed.len()
+                        );
+                    }
+                }
+                let decompress_start = Instant::now();
+                let decompressed = file_utils::unzst_content(&compressed)
+                    .map_err(|e| format!("failed to decompress '{}': {}", url, e))?;
+                let tmp_path = temp_dir().join(format!(
+                    "commonmeta-vraix-{}-{}-{}.sqlite3",
+                    from,
+                    date.unwrap(),
+                    std::process::id()
+                ));
+                file_utils::write_file(&tmp_path, &decompressed).map_err(|e| {
+                    format!("failed to write temp file '{}': {}", tmp_path.display(), e)
+                })?;
+                if timers {
+                    eprintln!(
+                        "list: decompress + write temp took {:.2?} ({} bytes)",
+                        decompress_start.elapsed(),
+                        decompressed.len()
+                    );
+                }
+                (tmp_path.clone(), Some(tmp_path))
+            } else {
+                (std::path::PathBuf::from(input_path.unwrap()), None)
+            };
+
+            let convert_start = Instant::now();
+            let result = commonmeta::stream_vraix_to_sqlite(&in_sqlite, from, &sqlite_out, number, update)
+                .map_err(|e| e.to_string());
+            if let Some(tmp) = tmp_to_clean {
+                std::fs::remove_file(&tmp).ok();
+            }
+            let n = result?;
+            if timers {
+                eprintln!(
+                    "list: stream convert+write took {:.2?} ({} records)",
+                    convert_start.elapsed(),
+                    n
+                );
+            }
+
+            // Count total before compression removes the uncompressed temp file.
+            let total = if update {
+                commonmeta::count_sqlite_works(&sqlite_out).ok()
+            } else {
+                None
+            };
 
             if !out_compress.is_empty() {
                 // Streaming zstd compression — avoids loading the whole SQLite
@@ -270,15 +482,15 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
                         .map_err(|e| format!("failed to create '{}': {}", out_path, e))?;
                     let mut encoder = zstd::Encoder::new(out_file, 0)
                         .map_err(|e| format!("failed to create zstd encoder: {}", e))?;
-                    let mut in_file = std::fs::File::open(&sqlite_path)
-                        .map_err(|e| format!("failed to open '{}': {}", sqlite_path.display(), e))?;
+                    let mut in_file = std::fs::File::open(&sqlite_out)
+                        .map_err(|e| format!("failed to open '{}': {}", sqlite_out.display(), e))?;
                     std::io::copy(&mut in_file, &mut encoder)
                         .map_err(|e| format!("zstd compression failed: {}", e))?;
                     encoder
                         .finish()
                         .map_err(|e| format!("failed to finish zstd encoder: {}", e))?;
                 }
-                std::fs::remove_file(&sqlite_path).ok();
+                std::fs::remove_file(&sqlite_out).ok();
                 if timers {
                     eprintln!("list: zstd compression took {:.2?}", compress_start.elapsed());
                 }
@@ -286,14 +498,18 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
 
             if timers {
                 eprintln!(
-                    "list: stream to sqlite3 took {:.2?} ({} records)",
+                    "list: total took {:.2?} ({} records)",
                     write_start.elapsed(),
                     n
                 );
             }
-            println!("wrote {} ({} records)", out_path, n);
+            println!("{}", fmt_wrote_sqlite(out_path, n, total));
             return Ok(());
         }
+    }
+
+    if is_pidbox {
+        return Err("list: pidbox dump requires --file *.sqlite3 output".to_string());
     }
 
     let data = if date.is_some() || is_vraix_sqlite_input {
@@ -362,7 +578,7 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
                 ));
             }
             let write_start = Instant::now();
-            let result = write_sqlite_output(&data, path, &compress);
+            let result = write_sqlite_output(&data, path, &compress, update);
             if timers {
                 eprintln!(
                     "list: write sqlite3 took {:.2?} ({} records)",
@@ -508,22 +724,41 @@ fn write_parquet_archive(data: &[Data], out_path: &str, compress: &str) -> Resul
 /// Write `data` as a SQLite3 file at `out_path`. When `compress` is non-empty
 /// the database is first written to a temp file, read into memory, then
 /// zstd-compressed or archived (zip/tgz) to the final `out_path`.
-fn write_sqlite_output(data: &[Data], out_path: &str, compress: &str) -> Result<(), String> {
+/// When `update` is true an existing file is opened and rows are upserted;
+/// when false the file is recreated from scratch.
+fn write_sqlite_output(data: &[Data], out_path: &str, compress: &str, update: bool) -> Result<(), String> {
     if data.is_empty() {
         return Err("list: no records to write".to_string());
     }
 
     let (base_path, _extension, _) = file_utils::get_extension(out_path, ".sqlite3");
 
+    let write_fn = if update {
+        commonmeta::upsert_sqlite as fn(&[Data], &Path) -> commonmeta::Result<()>
+    } else {
+        commonmeta::write_sqlite as fn(&[Data], &Path) -> commonmeta::Result<()>
+    };
+
     if compress.is_empty() {
-        commonmeta::write_sqlite(data, &base_path).map_err(|e| e.to_string())?;
-        println!("wrote {} ({} records)", base_path.display(), data.len());
+        write_fn(data, &base_path).map_err(|e| e.to_string())?;
+        let total = if update {
+            commonmeta::count_sqlite_works(&base_path).ok()
+        } else {
+            None
+        };
+        println!("{}", fmt_wrote_sqlite(&base_path.to_string_lossy(), data.len(), total));
         return Ok(());
     }
 
     // Write to a temp file in the same directory, read bytes, then compress.
     let tmp_path = base_path.with_extension("sqlite3.tmp");
-    commonmeta::write_sqlite(data, &tmp_path).map_err(|e| e.to_string())?;
+    write_fn(data, &tmp_path).map_err(|e| e.to_string())?;
+    // Count before the temp file is read and removed.
+    let total = if update {
+        commonmeta::count_sqlite_works(&tmp_path).ok()
+    } else {
+        None
+    };
     let bytes = std::fs::read(&tmp_path)
         .map_err(|e| format!("failed to read temp sqlite '{}': {}", tmp_path.display(), e))?;
     std::fs::remove_file(&tmp_path).ok();
@@ -551,7 +786,7 @@ fn write_sqlite_output(data: &[Data], out_path: &str, compress: &str) -> Result<
         }
         other => return Err(format!("list: unsupported compression for sqlite3: {}", other)),
     }
-    println!("wrote {} ({} records)", out_path, data.len());
+    println!("{}", fmt_wrote_sqlite(out_path, data.len(), total));
     Ok(())
 }
 
@@ -866,7 +1101,7 @@ pub(crate) fn load_list_from_file(path: &str, from: &str) -> Result<Vec<Data>, S
 fn load_commonmeta_list_from_sqlite(path: &str, compress: &str) -> Result<Vec<Data>, String> {
     let sqlite_path = if compress == "zst" {
         // Stream-decompress to a temp file (avoids loading multi-GB into RAM).
-        let tmp = std::env::temp_dir().join(format!(
+        let tmp = temp_dir().join(format!(
             "commonmeta-sqlite-{}.sqlite3",
             std::process::id()
         ));
@@ -1141,7 +1376,7 @@ fn load_vraix_list_for_date(
             // read_zst_file already decompresses; despite the name it
             // returns the decompressed bytes, ready to write straight to
             // a temp sqlite file (sqlite needs a real file path, not bytes).
-            let tmp_path = std::env::temp_dir().join(format!(
+            let tmp_path = temp_dir().join(format!(
                 "commonmeta-vraix-local-{}-{}.sqlite3",
                 from,
                 std::process::id()
@@ -1193,7 +1428,7 @@ fn load_vraix_list_for_date(
     let decompressed = file_utils::unzst_content(&compressed)
         .map_err(|e| format!("failed to decompress '{}': {}", url, e))?;
 
-    let tmp_path = std::env::temp_dir().join(format!(
+    let tmp_path = temp_dir().join(format!(
         "commonmeta-vraix-{}-{}-{}.sqlite3",
         from,
         date,
@@ -1240,7 +1475,7 @@ mod tests {
 
     #[test]
     fn test_write_archive_batches_zip() {
-        let dir = std::env::temp_dir().join("commonmeta_list_archive_zip");
+        let dir = temp_dir().join("commonmeta_list_archive_zip");
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.zip");
 
@@ -1268,7 +1503,7 @@ mod tests {
 
     #[test]
     fn test_write_archive_batches_tgz_no_inner_extension() {
-        let dir = std::env::temp_dir().join("commonmeta_list_archive_tgz");
+        let dir = temp_dir().join("commonmeta_list_archive_tgz");
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.tgz");
 
@@ -1306,7 +1541,7 @@ mod tests {
 
     #[test]
     fn test_write_parquet_batches_single_batch() {
-        let dir = std::env::temp_dir().join("commonmeta_list_parquet_single");
+        let dir = temp_dir().join("commonmeta_list_parquet_single");
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.parquet");
 
@@ -1326,7 +1561,7 @@ mod tests {
 
     #[test]
     fn test_write_parquet_batches_large_list_still_one_file() {
-        let dir = std::env::temp_dir().join("commonmeta_list_parquet_large");
+        let dir = temp_dir().join("commonmeta_list_parquet_large");
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.parquet");
 
@@ -1346,7 +1581,7 @@ mod tests {
 
     #[test]
     fn test_write_parquet_archive_zip_single_batch() {
-        let dir = std::env::temp_dir().join("commonmeta_list_parquet_archive_zip");
+        let dir = temp_dir().join("commonmeta_list_parquet_archive_zip");
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.parquet.zip");
 
@@ -1371,7 +1606,7 @@ mod tests {
         assert_eq!(name, "out.parquet.zst");
         assert!(!bytes.is_empty());
 
-        let dir = std::env::temp_dir().join("commonmeta_list_parquet_archive_tgz");
+        let dir = temp_dir().join("commonmeta_list_parquet_archive_tgz");
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.parquet.tgz");
         let data = vec![
@@ -1400,7 +1635,7 @@ mod tests {
 
     #[test]
     fn test_load_commonmeta_list_from_parquet_zst() {
-        let dir = std::env::temp_dir().join("commonmeta_list_load_parquet_zst");
+        let dir = temp_dir().join("commonmeta_list_load_parquet_zst");
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("batch-commonmeta.parquet");
 
@@ -1421,7 +1656,7 @@ mod tests {
 
     #[test]
     fn test_load_commonmeta_list_from_parquet_zip_round_trip() {
-        let dir = std::env::temp_dir().join("commonmeta_list_load_parquet_zip");
+        let dir = temp_dir().join("commonmeta_list_load_parquet_zip");
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.parquet.zip");
 
@@ -1441,7 +1676,7 @@ mod tests {
 
     #[test]
     fn test_load_commonmeta_list_from_parquet_tgz_round_trip() {
-        let dir = std::env::temp_dir().join("commonmeta_list_load_parquet_tgz");
+        let dir = temp_dir().join("commonmeta_list_load_parquet_tgz");
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.parquet.tgz");
 
@@ -1461,7 +1696,7 @@ mod tests {
 
     #[test]
     fn test_load_commonmeta_list_from_parquet_zip_multi_batch_round_trip() {
-        let dir = std::env::temp_dir().join("commonmeta_list_load_parquet_zip_multi");
+        let dir = temp_dir().join("commonmeta_list_load_parquet_zip_multi");
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.parquet.zip");
 
@@ -1486,7 +1721,7 @@ mod tests {
 
     #[test]
     fn test_load_commonmeta_list_from_parquet_uncompressed() {
-        let dir = std::env::temp_dir().join("commonmeta_list_load_parquet_plain");
+        let dir = temp_dir().join("commonmeta_list_load_parquet_plain");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("data.parquet");
 
@@ -1516,7 +1751,7 @@ mod tests {
     fn test_write_parquet_batch_roundtrip_readable() {
         use parquet::file::reader::{FileReader, SerializedFileReader};
 
-        let dir = std::env::temp_dir().join("commonmeta_list_parquet_readable");
+        let dir = temp_dir().join("commonmeta_list_parquet_readable");
         std::fs::create_dir_all(&dir).unwrap();
         let out_path = dir.join("out.parquet");
 
@@ -1562,7 +1797,7 @@ mod tests {
 
     #[test]
     fn test_load_vraix_list_for_date_uses_local_input_path() {
-        let dir = std::env::temp_dir().join("commonmeta_list_vraix_local_date");
+        let dir = temp_dir().join("commonmeta_list_vraix_local_date");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("datacite.sqlite3");
         write_vraix_sqlite(
@@ -1614,7 +1849,7 @@ mod tests {
 
     #[test]
     fn test_load_vraix_list_for_date_decompresses_local_zst_input() {
-        let dir = std::env::temp_dir().join("commonmeta_list_vraix_local_zst");
+        let dir = temp_dir().join("commonmeta_list_vraix_local_zst");
         std::fs::create_dir_all(&dir).unwrap();
         let sqlite_path = dir.join("datacite.sqlite3");
         write_vraix_sqlite(
@@ -1647,7 +1882,7 @@ mod tests {
 
     #[test]
     fn test_execute_auto_detects_sqlite_input_without_date() {
-        let dir = std::env::temp_dir().join("commonmeta_list_execute_sqlite_no_date");
+        let dir = temp_dir().join("commonmeta_list_execute_sqlite_no_date");
         std::fs::create_dir_all(&dir).unwrap();
         let sqlite_path = dir.join("datacite.sqlite3");
         write_vraix_sqlite(
@@ -1675,7 +1910,7 @@ mod tests {
 
     #[test]
     fn test_execute_auto_detects_sqlite_zst_input_without_date() {
-        let dir = std::env::temp_dir().join("commonmeta_list_execute_sqlite_zst_no_date");
+        let dir = temp_dir().join("commonmeta_list_execute_sqlite_zst_no_date");
         std::fs::create_dir_all(&dir).unwrap();
         let sqlite_path = dir.join("datacite.sqlite3");
         write_vraix_sqlite(

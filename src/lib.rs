@@ -94,8 +94,21 @@ pub fn read_parquet(bytes: &[u8]) -> Result<Vec<Data>> {
 /// Write `list` as a SQLite3 database with a `works` table whose columns
 /// mirror the commonmeta v1.0 schema. Simple string fields are stored as
 /// TEXT; complex fields are stored as compact JSON TEXT.
+/// Any existing file at `path` is deleted first.
 pub fn write_sqlite(list: &[Data], path: &std::path::Path) -> Result<()> {
     formats::commonmeta::write_sqlite(list, path)
+}
+
+/// Like [`write_sqlite`] but opens an existing database instead of recreating
+/// it. Rows whose `id` already exists are replaced; new rows are inserted.
+pub fn upsert_sqlite(list: &[Data], path: &std::path::Path) -> Result<()> {
+    formats::commonmeta::upsert_sqlite(list, path)
+}
+
+/// Return the total number of rows in the `works` table of a commonmeta SQLite
+/// database — useful for reporting the cumulative count after an upsert.
+pub fn count_sqlite_works(path: &std::path::Path) -> Result<usize> {
+    formats::commonmeta::count_sqlite_works(path)
 }
 
 /// Read records from a commonmeta SQLite database written by [`write_sqlite`].
@@ -111,6 +124,9 @@ pub fn read_sqlite_commonmeta(
 /// database at `output_path` in batches of 10 000 rows, converting with
 /// `from`-specific parser and writing each batch in a single transaction.
 /// `limit` caps total records written; pass `0` for all rows.
+/// When `update` is false the output file is deleted and recreated (default).
+/// When `update` is true the existing file is kept and rows are upserted by
+/// their `id` primary key — new rows are inserted, existing rows are replaced.
 /// Returns the number of records written. No `Vec<Data>` is held for the
 /// whole file — peak memory is proportional to one batch, not the whole dump.
 pub fn stream_vraix_to_sqlite(
@@ -118,8 +134,23 @@ pub fn stream_vraix_to_sqlite(
     from: &str,
     output_path: &std::path::Path,
     limit: usize,
+    update: bool,
 ) -> Result<usize> {
-    formats::vraix::stream_dump_to_sqlite(input_path, from, output_path, limit)
+    formats::vraix::stream_dump_to_sqlite(input_path, from, output_path, limit, !update)
+}
+
+/// Stream the pidbox dump (a mixed-source VRAIX SQLite file containing crossref,
+/// datacite, and ROR rows) directly to a commonmeta SQLite database. Each row
+/// is routed to the appropriate parser by its `source_id`; ROR rows are
+/// skipped. When `update` is false the output file is recreated; when true
+/// rows are upserted by `id`. Returns the number of records written.
+pub fn stream_pidbox_to_sqlite(
+    input_path: &std::path::Path,
+    output_path: &std::path::Path,
+    limit: usize,
+    update: bool,
+) -> Result<usize> {
+    formats::vraix::stream_pidbox_to_sqlite(input_path, output_path, limit, !update)
 }
 
 /// Render a list of records to `to` format as a single buffer: a JSON array

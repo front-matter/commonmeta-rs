@@ -380,6 +380,100 @@ impl Write for ProgressWriter<'_> {
     }
 }
 
+/// Stream-download `url` directly into a file at `path`, bypassing an
+/// in-memory buffer. Suitable for files that are too large to hold in RAM
+/// (e.g. the pidbox dump). Parent directories are created if needed.
+/// Returns the number of bytes written.
+pub fn download_file_to_path(url: &str, path: &Path) -> Result<u64> {
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(6 * 60 * 60)) // 6 h for very large files
+        .build()
+        .map_err(FileError::Http)?;
+
+    let mut resp = client.get(url).send().map_err(|e| FileError::Download {
+        url: url.to_string(),
+        message: describe_reqwest_error(&e),
+    })?;
+
+    if !resp.status().is_success() {
+        return Err(FileError::StatusCode {
+            status: resp.status().as_u16(),
+            text: resp.status().to_string(),
+        });
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let total_bytes = resp.content_length().unwrap_or(0);
+    let bar = crate::progress::bytes_bar("downloading", total_bytes);
+
+    let file = File::create(path)?;
+    let mut written: u64 = 0;
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut src = resp.by_ref();
+    loop {
+        let n = src.read(&mut buf).map_err(|e| FileError::Download {
+            url: url.to_string(),
+            message: format!("read error after {} bytes: {}", written, e),
+        })?;
+        if n == 0 {
+            break;
+        }
+        (&file).write_all(&buf[..n])?;
+        written += n as u64;
+        bar.inc(n as u64);
+    }
+    bar.finish_and_clear();
+    Ok(written)
+}
+
+/// Like [`download_file_cached`] but the cached copy is a file on disk rather
+/// than a `Vec<u8>` in memory, making it suitable for very large downloads.
+/// Returns `(path, was_cache_hit)`. The file at `path` is always valid on
+/// `Ok`; a partial write from a previous interrupted download is replaced.
+pub fn ensure_cached_path(
+    url: &str,
+    namespace: &str,
+    cache_key: &str,
+    ttl: Duration,
+) -> Result<(PathBuf, bool)> {
+    let path = cache_dir(namespace).join(cache_key);
+    prune_cache(namespace, ttl);
+
+    if let Ok(meta) = fs::metadata(&path) {
+        if let Ok(modified) = meta.modified() {
+            if SystemTime::now()
+                .duration_since(modified)
+                .unwrap_or(ttl + Duration::from_secs(1))
+                <= ttl
+            {
+                return Ok((path, true));
+            }
+        }
+    }
+
+    // Remove a stale or partial file before writing.
+    fs::remove_file(&path).ok();
+    download_file_to_path(url, &path)?;
+    Ok((path, false))
+}
+
+/// Stream-decompress the zstd file at `src` into `dest`, creating `dest`
+/// (and its parents) if needed. Returns the number of decompressed bytes.
+pub fn decompress_zst_file(src: &Path, dest: &Path) -> Result<u64> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let src_file = File::open(src)?;
+    let mut decoder = zstd::Decoder::new(src_file)?;
+    let mut dest_file = File::create(dest)?;
+    let bytes = io::copy(&mut decoder, &mut dest_file)?;
+    Ok(bytes)
+}
+
 /// Classify a `reqwest::Error` into a more actionable message than its
 /// `Display` impl alone, which for body/decode failures is just the opaque
 /// "error decoding response body" regardless of root cause.

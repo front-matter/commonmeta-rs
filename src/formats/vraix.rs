@@ -344,6 +344,7 @@ pub fn stream_dump_to_sqlite(
     from: &str,
     output_path: &Path,
     limit: usize,
+    overwrite: bool,
 ) -> crate::error::Result<usize> {
     use crate::formats::commonmeta::{init_sqlite_writer_async, write_sqlite_batch_rows_async};
     use crate::error::Error;
@@ -410,7 +411,7 @@ pub fn stream_dump_to_sqlite(
                 "SELECT rowid, raw_metadata FROM {quoted} WHERE rowid > ?1 ORDER BY rowid LIMIT ?2"
             );
 
-            let out_conn = init_sqlite_writer_async(&output_path).await?;
+            let out_conn = init_sqlite_writer_async(&output_path, overwrite).await?;
             let mut written = 0usize;
             let mut last_rowid: i64 = 0;
 
@@ -445,6 +446,171 @@ pub fn stream_dump_to_sqlite(
 
                 let raw: Vec<String> = raw_batch.into_iter().map(|(_, s)| s).collect();
                 let rows_prepared = parallel_convert_and_prepare(&raw, convert);
+                let batch_written = rows_prepared.len();
+                write_sqlite_batch_rows_async(&out_conn, rows_prepared).await?;
+
+                bar.inc(batch_len as u64);
+                written += batch_written;
+
+                if batch_len < batch_size {
+                    break;
+                }
+            }
+            bar.finish_and_clear();
+
+            Ok(written)
+        })
+}
+
+// ── Pidbox (mixed-source) streaming ────────────────────────────────────────
+
+/// Like [`parallel_convert_and_prepare`] but routes each record by its
+/// `source_id` rather than a fixed converter. ROR rows (`source_id == 3`)
+/// and any unrecognised source are silently skipped.
+fn parallel_convert_and_prepare_mixed(
+    raw: &[(i64, String)],
+) -> Vec<crate::formats::commonmeta::PreparedRow> {
+    use crate::formats::commonmeta::serialize_to_row;
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    let ncpu = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .max(1);
+    let chunk_size = (raw.len() / ncpu).max(1);
+
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = raw
+            .chunks(chunk_size)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .filter_map(|(source_id, s)| {
+                            let data = match source_id {
+                                1 => read_crossref_row(s).ok(),
+                                2 => read_datacite_row(s).ok(),
+                                _ => None,
+                            }?;
+                            Some(serialize_to_row(data))
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect()
+    })
+}
+
+/// Stream the pidbox dump (a mixed-source VRAIX SQLite file) to a commonmeta
+/// SQLite database. Each row is routed to the crossref or datacite parser by
+/// its `source_id`; ROR rows (`source_id == 3`) and any other unrecognised
+/// source are skipped. Conversion is parallelised; writes are batched.
+pub fn stream_pidbox_to_sqlite(
+    input_path: &Path,
+    output_path: &Path,
+    limit: usize,
+    overwrite: bool,
+) -> crate::error::Result<usize> {
+    use crate::formats::commonmeta::{init_sqlite_writer_async, write_sqlite_batch_rows_async};
+    use crate::error::Error;
+
+    let input_path = input_path.to_path_buf();
+    let output_path = output_path.to_path_buf();
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Error::Parse(e.to_string()))?
+        .block_on(async {
+            let in_db = libsql::Builder::new_local(&input_path)
+                .build()
+                .await
+                .map_err(|e| Error::Parse(format!("failed to open '{}': {}", input_path.display(), e)))?;
+            let in_conn = in_db.connect()
+                .map_err(|e| Error::Parse(format!("failed to connect '{}': {}", input_path.display(), e)))?;
+
+            in_conn
+                .execute_batch(
+                    "PRAGMA cache_size=-262144;\
+                     PRAGMA mmap_size=17179869184;",
+                )
+                .await
+                .ok();
+
+            let Some(table_name) = find_transport_table(&in_conn).await? else {
+                return Err(Error::Parse(
+                    "no VRAIX table with pid/source_id/raw_metadata found".to_string(),
+                ));
+            };
+            let quoted = quote_identifier(&table_name);
+
+            let row_count: u64 = {
+                let mut rows = in_conn
+                    .query(
+                        &format!("SELECT COUNT(*) FROM {quoted} WHERE source_id != 3"),
+                        (),
+                    )
+                    .await
+                    .unwrap_or_else(|_| unreachable!());
+                if let Ok(Some(row)) = rows.next().await {
+                    row.get::<i64>(0).unwrap_or(0).max(0) as u64
+                } else {
+                    0
+                }
+            };
+            let total = if limit == 0 { row_count } else { row_count.min(limit as u64) };
+            let bar = crate::progress::count_bar("converting", total);
+
+            let cursor_sql = format!(
+                "SELECT rowid, source_id, raw_metadata FROM {quoted} \
+                 WHERE rowid > ?1 AND source_id != 3 \
+                 ORDER BY rowid LIMIT ?2"
+            );
+
+            let out_conn = init_sqlite_writer_async(&output_path, overwrite).await?;
+            let mut written = 0usize;
+            let mut last_rowid: i64 = 0;
+
+            loop {
+                let remaining = if limit == 0 {
+                    STREAM_BATCH_SIZE
+                } else {
+                    limit.saturating_sub(written)
+                };
+                if remaining == 0 {
+                    break;
+                }
+                let batch_size = STREAM_BATCH_SIZE.min(remaining);
+
+                let mut row_iter = in_conn
+                    .query(&cursor_sql, libsql::params![last_rowid, batch_size as i64])
+                    .await
+                    .map_err(|e| Error::Parse(e.to_string()))?;
+
+                let mut raw_batch: Vec<(i64, i64, String)> = Vec::with_capacity(batch_size);
+                while let Some(row) =
+                    row_iter.next().await.map_err(|e| Error::Parse(e.to_string()))?
+                {
+                    let rowid: i64 = row.get(0).map_err(|e| Error::Parse(e.to_string()))?;
+                    let source_id: i64 = row.get(1).map_err(|e| Error::Parse(e.to_string()))?;
+                    let raw: String = row.get(2).map_err(|e| Error::Parse(e.to_string()))?;
+                    raw_batch.push((rowid, source_id, raw));
+                }
+
+                if raw_batch.is_empty() {
+                    break;
+                }
+                let batch_len = raw_batch.len();
+                last_rowid = raw_batch.last().unwrap().0;
+
+                let pairs: Vec<(i64, String)> =
+                    raw_batch.into_iter().map(|(_, sid, s)| (sid, s)).collect();
+                let rows_prepared = parallel_convert_and_prepare_mixed(&pairs);
                 let batch_written = rows_prepared.len();
                 write_sqlite_batch_rows_async(&out_conn, rows_prepared).await?;
 
