@@ -163,13 +163,14 @@ struct DcContainer {
     identifier_type: String,
     #[serde(default, deserialize_with = "null_to_string")]
     title: String,
-    #[serde(default, deserialize_with = "null_to_string")]
+    // volume/issue/page numbers are sometimes stored as bare integers
+    #[serde(default, deserialize_with = "value_to_string")]
     volume: String,
-    #[serde(default, deserialize_with = "null_to_string")]
+    #[serde(default, deserialize_with = "value_to_string")]
     issue: String,
-    #[serde(rename = "firstPage", default, deserialize_with = "null_to_string")]
+    #[serde(rename = "firstPage", default, deserialize_with = "value_to_string")]
     first_page: String,
-    #[serde(rename = "lastPage", default, deserialize_with = "null_to_string")]
+    #[serde(rename = "lastPage", default, deserialize_with = "value_to_string")]
     last_page: String,
 }
 
