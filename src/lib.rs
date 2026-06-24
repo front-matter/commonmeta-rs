@@ -41,6 +41,17 @@ pub fn write(to: &str, data: &Data) -> Result<Vec<u8>> {
     formats::write(to, data)
 }
 
+/// Like [`write`], but forwards `style` and `locale` to the citation writer.
+/// For non-`"citation"` formats both parameters are ignored.
+pub fn write_with_style(
+    to: &str,
+    data: &Data,
+    style: Option<&str>,
+    locale: Option<&str>,
+) -> Result<Vec<u8>> {
+    formats::write_citation(to, data, style, locale)
+}
+
 /// Write a ROR-derived record as raw ROR-shaped JSON (as opposed to
 /// `write("ror", data)`, which produces InvenioRDM vocabulary YAML).
 pub fn write_ror_json(data: &Data) -> Result<Vec<u8>> {

@@ -990,7 +990,7 @@ dependencies = [
 
 [[package]]
 name = "commonmeta"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ammonia",
  "arrow 59.0.0",
