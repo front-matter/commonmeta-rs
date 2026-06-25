@@ -1372,13 +1372,15 @@ pub fn fetch_latest_ror_release() -> Result<RorRelease> {
 /// was served from the local cache rather than downloaded.
 pub fn download_release(release: &RorRelease) -> Result<(Vec<Ror>, bool)> {
     let ttl = std::time::Duration::from_secs(30 * 24 * 60 * 60);
-    let (zip_bytes, from_cache) = crate::file_utils::download_file_cached(
+    let (zip_path, from_cache) = crate::file_utils::ensure_cached_path(
         &release.download_url,
         "ror",
         &release.filename,
         ttl,
     )
     .map_err(|e| Error::Http(e.to_string()))?;
+    let zip_bytes = std::fs::read(&zip_path)
+        .map_err(|e| Error::Http(format!("reading cached zip: {}", e)))?;
     let json_bytes = crate::file_utils::unzip_first_json(&zip_bytes)
         .map_err(|e| Error::Parse(e.to_string()))?;
     let list: Vec<Ror> = serde_json::from_slice(&json_bytes)

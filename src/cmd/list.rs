@@ -1276,37 +1276,27 @@ fn load_vraix_list_for_date(
     let cache_key = format!("{}-{}.sqlite3.zst", from, date);
 
     let download_start = Instant::now();
-    let (compressed, from_cache) =
-        file_utils::download_file_cached(&url, "vraix", &cache_key, VRAIX_CACHE_TTL)
+    let (zst_path, from_cache) =
+        file_utils::ensure_cached_path(&url, "vraix", &cache_key, VRAIX_CACHE_TTL)
             .map_err(|e| format!("failed to download '{}': {}", url, e))?;
     if timers {
-        if from_cache {
-            eprintln!(
-                "list: download took {:.2?} ({} bytes, from local cache)",
-                download_start.elapsed(),
-                compressed.len()
-            );
-        } else {
-            eprintln!(
-                "list: download took {:.2?} ({} bytes)",
-                download_start.elapsed(),
-                compressed.len()
-            );
-        }
+        let label = if from_cache { ", from local cache" } else { "" };
+        eprintln!(
+            "list: download took {:.2?}{}",
+            download_start.elapsed(),
+            label,
+        );
     }
 
     let convert_start = Instant::now();
-    let decompressed = file_utils::unzst_content(&compressed)
-        .map_err(|e| format!("failed to decompress '{}': {}", url, e))?;
-
     let tmp_path = temp_dir().join(format!(
         "commonmeta-vraix-{}-{}-{}.sqlite3",
         from,
         date,
         std::process::id()
     ));
-    file_utils::write_file(&tmp_path, &decompressed)
-        .map_err(|e| format!("failed to write temp file '{}': {}", tmp_path.display(), e))?;
+    file_utils::decompress_zst_file(&zst_path, &tmp_path)
+        .map_err(|e| format!("failed to decompress '{}': {}", url, e))?;
 
     let result = commonmeta::read_vraix_sqlite(tmp_path.to_str().unwrap(), from, limit, offset);
     std::fs::remove_file(&tmp_path).ok();

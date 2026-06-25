@@ -379,9 +379,8 @@ pub fn write_vraix_table_parquet(sqlite_path: &str, batch_size: usize) -> Result
 ///
 /// With `input_path`, the local SQLite file at that path is read directly
 /// via [`read_vraix_sqlite`] (e.g. an already-downloaded dump); otherwise
-/// `{from}-{date}.sqlite3.zst` is downloaded from metadata.vraix.org —
-/// cached locally for `cache_ttl` via [`file_utils::download_file_cached`]
-/// — and decompressed into a temp file first.
+/// `{from}-{date}.sqlite3.zst` is downloaded from metadata.vraix.org via
+/// [`file_utils::ensure_cached_path`] and decompressed into a temp file.
 ///
 /// `limit`/`offset` window the rows read from the dump; `limit: None` reads
 /// every row.
@@ -399,11 +398,9 @@ pub fn fetch_vraix_dump(
 
     let url = format!("https://metadata.vraix.org/{}-{}.sqlite3.zst", from, date);
     let cache_key = format!("{}-{}.sqlite3.zst", from, date);
-    let (compressed, _from_cache) =
-        file_utils::download_file_cached(&url, "vraix", &cache_key, cache_ttl)
+    let (zst_path, _from_cache) =
+        file_utils::ensure_cached_path(&url, "vraix", &cache_key, cache_ttl)
             .map_err(|e| Error::Http(format!("failed to download '{}': {}", url, e)))?;
-    let decompressed = file_utils::unzst_content(&compressed)
-        .map_err(|e| Error::Parse(format!("failed to decompress '{}': {}", url, e)))?;
 
     let tmp_path = std::env::temp_dir().join(format!(
         "commonmeta-vraix-{}-{}-{}.sqlite3",
@@ -411,13 +408,8 @@ pub fn fetch_vraix_dump(
         date,
         std::process::id()
     ));
-    file_utils::write_file(&tmp_path, &decompressed).map_err(|e| {
-        Error::Parse(format!(
-            "failed to write temp file '{}': {}",
-            tmp_path.display(),
-            e
-        ))
-    })?;
+    file_utils::decompress_zst_file(&zst_path, &tmp_path)
+        .map_err(|e| Error::Parse(format!("failed to decompress '{}': {}", url, e)))?;
 
     let result = read_vraix_sqlite(tmp_path.to_str().unwrap(), from, limit, offset);
     std::fs::remove_file(&tmp_path).ok();
