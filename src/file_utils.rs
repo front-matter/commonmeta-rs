@@ -606,6 +606,14 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
                     MAX_RETRIES,
                     fmt_duration_short(wait)
                 );
+                // Without Range support a new request always delivers the full
+                // body from byte 0, so we must reset the write position to 0
+                // before retrying to avoid corrupting the file.
+                if !effective_supports_range {
+                    offset = 0;
+                    file.seek(io::SeekFrom::Start(0))?;
+                    file.set_len(0)?;
+                }
                 std::thread::sleep(wait);
                 continue;
             }
@@ -648,10 +656,14 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
             total.unwrap_or(u64::MAX)
         };
         let mut buf = vec![0u8; READ_BUF];
+        let mut reached_eof = false;
 
         loop {
             let n = match resp.read(&mut buf) {
-                Ok(0) => break,
+                Ok(0) => {
+                    reached_eof = true;
+                    break;
+                }
                 Ok(n) => n,
                 Err(e) => {
                     retries += 1;
@@ -675,6 +687,13 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
                         MAX_RETRIES,
                         fmt_duration_short(wait)
                     );
+                    // Without Range support a new request delivers the full body
+                    // from byte 0, so the file must be reset before retrying.
+                    if !effective_supports_range {
+                        offset = 0;
+                        file.seek(io::SeekFrom::Start(0))?;
+                        file.set_len(0)?;
+                    }
                     std::thread::sleep(wait);
                     continue 'outer;
                 }
@@ -720,6 +739,14 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
             if chunk_remaining == 0 {
                 break; // fetch next chunk
             }
+        }
+
+        // When streaming without Range, the server always sends from byte 0.
+        // EOF means we received everything it will send, regardless of `total`.
+        // Looping back would restart from byte 0 while writing at `offset`,
+        // corrupting the file.
+        if !effective_supports_range && reached_eof {
+            break;
         }
     }
 

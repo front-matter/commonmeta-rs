@@ -9,7 +9,7 @@ default-members = ["."]
 
 [package]
 name = "commonmeta"
-version = "0.6.5"
+version = "0.6.6"
 edition = "2024"
 authors = ["Front Matter <info@front-matter.de>"]
 description = "Library for conversions to/from the Commonmeta scholarly metadata format"
