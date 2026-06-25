@@ -1,9 +1,12 @@
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use reqwest::blocking::Client;
+use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 
@@ -478,10 +481,13 @@ pub fn ensure_cached_path(
 // ---------- resumable downloader ----------
 
 const CHUNK: u64 = 128 * 1024 * 1024; // 128 MiB per HTTP Range request
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
-const PROGRESS_INTERVAL: Duration = Duration::from_secs(30);
-const MAX_RETRIES: u32 = 20;
+const PARALLEL_TRANSFERS: usize = 4; // rclone --transfers
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(60); // rclone --contimeout
+const CHUNK_TIMEOUT: Duration = Duration::from_secs(5 * 60); // rclone --timeout (idle/stall)
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30); // TCP keepalive probe interval
+const KEEPALIVE_RETRIES: u32 = 5; // probes before the OS declares the connection dead
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(30); // rclone --stats
+const MAX_RETRIES: u32 = 20; // rclone --low-level-retries
 const READ_BUF: usize = 256 * 1024; // 256 KiB read buffer
 
 fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
@@ -490,20 +496,32 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
     }
 
     let part = part_path(dest);
-    let mut offset: u64 = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
 
     let client = Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .tcp_keepalive(KEEPALIVE_INTERVAL)
+        .tcp_keepalive_interval(KEEPALIVE_INTERVAL)
+        .tcp_keepalive_retries(KEEPALIVE_RETRIES)
         .build()
         .map_err(FileError::Http)?;
 
     let (total, supports_range) = head_content_length(&client, url);
 
+    // Fast path: server supports Range + known Content-Length → parallel multi-connection.
+    // Any previous .part is discarded because we can't verify which parallel chunks
+    // completed; starting fresh is always correct.
+    if supports_range {
+        if let Some(t) = total {
+            fs::remove_file(&part).ok();
+            return download_parallel(&client, url, dest, &part, t);
+        }
+    }
+
+    // Sequential fallback: no Range support or unknown Content-Length.
+    let mut offset: u64 = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+
     if !supports_range {
         eprintln!("download: server does not support Range requests — streaming without resume");
-        // Discard any partial file; we can't resume, so starting from the
-        // beginning is the only correct thing to do.
         offset = 0;
         fs::remove_file(&part).ok();
     }
@@ -542,7 +560,7 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
             }
         }
 
-        let mut req = client.get(url);
+        let mut req = client.get(url).timeout(CHUNK_TIMEOUT);
         if supports_range {
             let end = match total {
                 Some(t) => (offset + CHUNK - 1).min(t - 1),
@@ -703,6 +721,246 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
 
     fs::rename(&part, dest)?;
     Ok(final_bytes)
+}
+
+/// Parallel multi-connection download. Pre-allocates `dest.part`, splits the
+/// file into 128 MiB chunks, and fetches them with PARALLEL_TRANSFERS workers.
+/// Each worker has its own `Client` clone (shared pool) and `File` handle;
+/// writes to non-overlapping byte ranges are safe without locking.
+/// A failed chunk is retried from its start offset — writes are idempotent since
+/// the target region in the pre-allocated file is simply overwritten.
+fn download_parallel(
+    client: &Client,
+    url: &str,
+    dest: &Path,
+    part: &Path,
+    total: u64,
+) -> Result<u64> {
+    // Pre-allocate so every worker can seek-and-write without extending the file.
+    {
+        let f = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(part)?;
+        f.set_len(total)?;
+    }
+
+    // Build the chunk work queue.
+    let mut queue: VecDeque<(u64, u64)> = VecDeque::new(); // (start, end) inclusive
+    let mut off = 0u64;
+    while off < total {
+        let end = (off + CHUNK - 1).min(total - 1);
+        queue.push_back((off, end));
+        off = end + 1;
+    }
+    let n_chunks = queue.len();
+    let n_workers = PARALLEL_TRANSFERS.min(n_chunks);
+
+    eprintln!(
+        "download: {} / {} chunks, {} parallel connections",
+        n_chunks,
+        fmt_bytes(total),
+        n_workers,
+    );
+
+    let queue = Arc::new(Mutex::new(queue));
+    let abort = Arc::new(AtomicBool::new(false));
+    let (prog_tx, prog_rx) = mpsc::channel::<u64>(); // bytes written per write call
+
+    let url_arc = Arc::new(url.to_string());
+    let part_arc = Arc::new(part.to_path_buf());
+
+    let mut handles: Vec<std::thread::JoinHandle<Result<()>>> =
+        Vec::with_capacity(n_workers);
+
+    for _ in 0..n_workers {
+        let queue = Arc::clone(&queue);
+        let abort = Arc::clone(&abort);
+        let prog_tx = prog_tx.clone();
+        let url = Arc::clone(&url_arc);
+        let part = Arc::clone(&part_arc);
+        let client = client.clone(); // shares the connection pool
+
+        handles.push(std::thread::spawn(move || -> Result<()> {
+            let mut file = fs::OpenOptions::new().write(true).open(part.as_ref())?;
+            let mut buf = vec![0u8; READ_BUF];
+
+            loop {
+                if abort.load(Ordering::Relaxed) {
+                    break;
+                }
+                let chunk = { queue.lock().unwrap().pop_front() };
+                let (start, end) = match chunk {
+                    None => break,
+                    Some(c) => c,
+                };
+
+                let mut retries = 0u32;
+                'chunk: loop {
+                    if abort.load(Ordering::Relaxed) {
+                        return Ok(());
+                    }
+
+                    let resp = client
+                        .get(url.as_str())
+                        .timeout(CHUNK_TIMEOUT)
+                        .header("Range", format!("bytes={start}-{end}"))
+                        .send();
+
+                    let mut resp = match resp {
+                        Ok(r) if r.status().as_u16() == 206 => r,
+                        Ok(r) => {
+                            abort.store(true, Ordering::Relaxed);
+                            return Err(FileError::StatusCode {
+                                status: r.status().as_u16(),
+                                text: r.status().to_string(),
+                            });
+                        }
+                        Err(e) => {
+                            retries += 1;
+                            if retries > MAX_RETRIES {
+                                abort.store(true, Ordering::Relaxed);
+                                return Err(FileError::Download {
+                                    url: url.to_string(),
+                                    message: format!(
+                                        "chunk @{}: too many connect errors: {}",
+                                        fmt_bytes(start),
+                                        error_chain(&e)
+                                    ),
+                                });
+                            }
+                            let wait = retry_backoff(retries - 1);
+                            eprintln!(
+                                "download: chunk @{} connect error ({}) — retry {}/{} in {}",
+                                fmt_bytes(start),
+                                error_chain(&e),
+                                retries,
+                                MAX_RETRIES,
+                                fmt_duration_short(wait),
+                            );
+                            std::thread::sleep(wait);
+                            continue 'chunk;
+                        }
+                    };
+
+                    file.seek(io::SeekFrom::Start(start))?;
+
+                    loop {
+                        match resp.read(&mut buf) {
+                            Ok(0) => break 'chunk, // chunk complete, move to next
+                            Ok(n) => {
+                                file.write_all(&buf[..n])?;
+                                prog_tx.send(n as u64).ok();
+                            }
+                            Err(e) => {
+                                retries += 1;
+                                let detail = error_chain(&e);
+                                if retries > MAX_RETRIES {
+                                    abort.store(true, Ordering::Relaxed);
+                                    return Err(FileError::Download {
+                                        url: url.to_string(),
+                                        message: format!(
+                                            "chunk @{}: too many read errors: {}",
+                                            fmt_bytes(start),
+                                            detail
+                                        ),
+                                    });
+                                }
+                                let wait = retry_backoff(retries - 1);
+                                eprintln!(
+                                    "download: read error in chunk @{} ({}) — retry {}/{} in {}",
+                                    fmt_bytes(start),
+                                    detail,
+                                    retries,
+                                    MAX_RETRIES,
+                                    fmt_duration_short(wait),
+                                );
+                                std::thread::sleep(wait);
+                                continue 'chunk; // re-request entire chunk from start
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }));
+    }
+    drop(prog_tx); // close our sender so the channel closes when all workers finish
+
+    // Aggregate progress on the main thread while workers run.
+    let overall_start = Instant::now();
+    let mut progress_mark = Instant::now();
+    let mut progress_bytes = 0u64;
+    let mut total_written = 0u64;
+
+    for bytes in &prog_rx {
+        total_written += bytes;
+        progress_bytes += bytes;
+
+        if progress_mark.elapsed() >= PROGRESS_INTERVAL {
+            let speed = progress_bytes as f64 / progress_mark.elapsed().as_secs_f64();
+            let pct = total_written as f64 / total as f64 * 100.0;
+            let eta = if speed > 0.0 && total_written < total {
+                format!(
+                    ", ETA {}",
+                    fmt_duration_short(Duration::from_secs_f64(
+                        (total - total_written) as f64 / speed
+                    ))
+                )
+            } else {
+                String::new()
+            };
+            let ts = chrono::Local::now().format("%H:%M:%S");
+            eprintln!(
+                "[{ts}] download: {} / {} ({:.1}%) @ {}/s elapsed {}{}",
+                fmt_bytes(total_written),
+                fmt_bytes(total),
+                pct,
+                fmt_bytes(speed as u64),
+                fmt_duration_short(overall_start.elapsed()),
+                eta,
+            );
+            progress_mark = Instant::now();
+            progress_bytes = 0;
+        }
+    }
+
+    // Join all workers and collect the first error (if any).
+    let mut first_err: Option<FileError> = None;
+    for h in handles {
+        match h.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+            Err(_) => {
+                if first_err.is_none() {
+                    first_err = Some(FileError::Download {
+                        url: url.to_string(),
+                        message: "worker thread panicked".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    if let Some(e) = first_err {
+        fs::remove_file(part).ok();
+        return Err(e);
+    }
+
+    let ts = chrono::Local::now().format("%H:%M:%S");
+    eprintln!(
+        "[{ts}] download: complete — {} in {} ({} parallel connections)",
+        fmt_bytes(total),
+        fmt_duration_short(overall_start.elapsed()),
+        n_workers,
+    );
+
+    fs::rename(part, dest)?;
+    Ok(total)
 }
 
 /// `dest` + `.part` suffix, used as the in-progress scratch file.
