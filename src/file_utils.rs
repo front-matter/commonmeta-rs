@@ -28,6 +28,11 @@ pub enum FileError {
 
     #[error("download of '{url}' failed: {message}")]
     Download { url: String, message: String },
+
+    /// The server advertised Range support but returned 200 instead of 206.
+    /// The caller should retry with the sequential (non-Range) path.
+    #[error("server ignored Range header (got 200 instead of 206); falling back to sequential download")]
+    RangeNotHonored,
 }
 
 pub type Result<T> = std::result::Result<T, FileError>;
@@ -510,17 +515,26 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
     // Fast path: server supports Range + known Content-Length → parallel multi-connection.
     // Any previous .part is discarded because we can't verify which parallel chunks
     // completed; starting fresh is always correct.
+    let mut effective_supports_range = supports_range;
     if supports_range {
         if let Some(t) = total {
             fs::remove_file(&part).ok();
-            return download_parallel(&client, url, dest, &part, t);
+            match download_parallel(&client, url, dest, &part, t) {
+                Ok(n) => return Ok(n),
+                Err(FileError::RangeNotHonored) => {
+                    eprintln!("download: server ignored Range header — retrying sequentially");
+                    effective_supports_range = false;
+                    fs::remove_file(&part).ok();
+                }
+                Err(e) => return Err(e),
+            }
         }
     }
 
     // Sequential fallback: no Range support or unknown Content-Length.
     let mut offset: u64 = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
 
-    if !supports_range {
+    if !effective_supports_range {
         eprintln!("download: server does not support Range requests — streaming without resume");
         offset = 0;
         fs::remove_file(&part).ok();
@@ -561,7 +575,7 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
         }
 
         let mut req = client.get(url).timeout(CHUNK_TIMEOUT);
-        if supports_range {
+        if effective_supports_range {
             let end = match total {
                 Some(t) => (offset + CHUNK - 1).min(t - 1),
                 None => offset + CHUNK - 1,
@@ -614,8 +628,9 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
         // When we sent a Range header but got 200, the server ignored it.
         // We can't use the partial .part bytes — restart from 0 and remember
         // that this server doesn't support Range for future chunks.
-        if supports_range && status.as_u16() == 200 && offset > 0 {
+        if effective_supports_range && status.as_u16() == 200 && offset > 0 {
             eprintln!("download: server ignores Range header, restarting from 0");
+            effective_supports_range = false;
             offset = 0;
             file.seek(io::SeekFrom::Start(0))?;
             file.set_len(0)?;
@@ -623,7 +638,7 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
 
         // For non-Range requests the full body is one chunk; use content-length
         // as the bound (or u64::MAX to stream until EOF).
-        let mut chunk_remaining: u64 = if supports_range {
+        let mut chunk_remaining: u64 = if effective_supports_range {
             let end = match total {
                 Some(t) => (offset + CHUNK - 1).min(t - 1),
                 None => offset + CHUNK - 1,
@@ -809,6 +824,12 @@ fn download_parallel(
 
                     let mut resp = match resp {
                         Ok(r) if r.status().as_u16() == 206 => r,
+                        Ok(r) if r.status().as_u16() == 200 => {
+                            // Server advertised Range support but returned the full
+                            // body — signal the caller to retry sequentially.
+                            abort.store(true, Ordering::Relaxed);
+                            return Err(FileError::RangeNotHonored);
+                        }
                         Ok(r) => {
                             abort.store(true, Ordering::Relaxed);
                             return Err(FileError::StatusCode {
