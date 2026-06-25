@@ -46,7 +46,7 @@ pub fn read_sqlite<P: AsRef<Path>>(sqlite_path: P, pid: &str) -> Result<Data> {
         .build()
         .map_err(|e| Error::Parse(e.to_string()))?
         .block_on(async {
-            let db = libsql::Builder::new_local(&path)
+            let db = turso::Builder::new_local(&path.to_string_lossy())
                 .build()
                 .await
                 .map_err(|e| Error::Parse(e.to_string()))?;
@@ -64,7 +64,7 @@ pub fn read_sqlite<P: AsRef<Path>>(sqlite_path: P, pid: &str) -> Result<Data> {
         })
 }
 
-async fn find_transport_table(connection: &libsql::Connection) -> crate::error::Result<Option<String>> {
+async fn find_transport_table(connection: &turso::Connection) -> crate::error::Result<Option<String>> {
     let mut rows = connection
         .query(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -84,7 +84,7 @@ async fn find_transport_table(connection: &libsql::Connection) -> crate::error::
 }
 
 async fn table_has_transport_columns(
-    connection: &libsql::Connection,
+    connection: &turso::Connection,
     table_name: &str,
 ) -> crate::error::Result<bool> {
     let pragma_query = format!("PRAGMA table_info({})", quote_identifier(table_name));
@@ -114,7 +114,7 @@ async fn table_has_transport_columns(
 }
 
 async fn read_transport_row(
-    connection: &libsql::Connection,
+    connection: &turso::Connection,
     table_name: &str,
     pid: &str,
 ) -> crate::error::Result<Option<TransportRow>> {
@@ -123,7 +123,7 @@ async fn read_transport_row(
         quote_identifier(table_name)
     );
     let mut rows = connection
-        .query(&query, libsql::params![pid])
+        .query(&query, turso::params![pid])
         .await
         .map_err(|e| crate::error::Error::Parse(e.to_string()))?;
 
@@ -206,7 +206,7 @@ pub fn read_dump<P: AsRef<Path>>(
         .build()
         .map_err(|e| Error::Parse(e.to_string()))?
         .block_on(async {
-            let db = libsql::Builder::new_local(&path)
+            let db = turso::Builder::new_local(&path.to_string_lossy())
                 .build()
                 .await
                 .map_err(|e| Error::Parse(e.to_string()))?;
@@ -256,7 +256,7 @@ pub fn read_dump<P: AsRef<Path>>(
             let mut row_iter = match limit {
                 Some(n) => {
                     connection
-                        .query(&query, libsql::params![n as i64, offset as i64])
+                        .query(&query, turso::params![n as i64, offset as i64])
                         .await
                         .map_err(|e| Error::Parse(e.to_string()))?
                 }
@@ -368,7 +368,7 @@ pub fn stream_dump_to_sqlite(
         .build()
         .map_err(|e| Error::Parse(e.to_string()))?
         .block_on(async {
-            let in_db = libsql::Builder::new_local(&input_path)
+            let in_db = turso::Builder::new_local(&input_path.to_string_lossy())
                 .build()
                 .await
                 .map_err(|e| Error::Parse(format!("failed to open '{}': {}", input_path.display(), e)))?;
@@ -427,7 +427,7 @@ pub fn stream_dump_to_sqlite(
                 let batch_size = STREAM_BATCH_SIZE.min(remaining);
 
                 let mut row_iter = in_conn
-                    .query(&cursor_sql, libsql::params![last_rowid, batch_size as i64])
+                    .query(&cursor_sql, turso::params![last_rowid, batch_size as i64])
                     .await
                     .map_err(|e| Error::Parse(e.to_string()))?;
 
@@ -527,7 +527,7 @@ pub fn stream_pidbox_to_sqlite(
         .build()
         .map_err(|e| Error::Parse(e.to_string()))?
         .block_on(async {
-            let in_db = libsql::Builder::new_local(&input_path)
+            let in_db = turso::Builder::new_local(&input_path.to_string_lossy())
                 .build()
                 .await
                 .map_err(|e| Error::Parse(format!("failed to open '{}': {}", input_path.display(), e)))?;
@@ -588,7 +588,7 @@ pub fn stream_pidbox_to_sqlite(
                 let batch_size = STREAM_BATCH_SIZE.min(remaining);
 
                 let mut row_iter = in_conn
-                    .query(&cursor_sql, libsql::params![last_rowid, batch_size as i64])
+                    .query(&cursor_sql, turso::params![last_rowid, batch_size as i64])
                     .await
                     .map_err(|e| Error::Parse(e.to_string()))?;
 
@@ -687,7 +687,7 @@ pub fn read_table_arrow<P: AsRef<Path>>(
         .build()
         .map_err(|e| Error::Parse(e.to_string()))?
         .block_on(async {
-            let db = libsql::Builder::new_local(&path)
+            let db = turso::Builder::new_local(&path.to_string_lossy())
                 .build()
                 .await
                 .map_err(|e| Error::Parse(e.to_string()))?;
@@ -815,7 +815,7 @@ fn parse_timestamp_micros(s: &str) -> Option<i64> {
         .map(|dt| dt.timestamp_micros())
 }
 
-async fn table_columns(connection: &libsql::Connection, table_name: &str) -> crate::error::Result<Vec<String>> {
+async fn table_columns(connection: &turso::Connection, table_name: &str) -> crate::error::Result<Vec<String>> {
     let pragma = format!("PRAGMA table_info({})", quote_identifier(table_name));
     let mut rows = connection
         .query(&pragma, ())
@@ -923,7 +923,7 @@ mod tests {
             .build()
             .unwrap()
             .block_on(async {
-                let db = libsql::Builder::new_local(path).build().await.unwrap();
+                let db = turso::Builder::new_local(&path.to_string_lossy()).build().await.unwrap();
                 let conn = db.connect().unwrap();
                 conn.execute_batch(
                     "CREATE TABLE works (pid TEXT, source_id INTEGER, raw_metadata TEXT);",
@@ -933,7 +933,7 @@ mod tests {
                 for (i, raw_metadata) in rows.iter().enumerate() {
                     conn.execute(
                         "INSERT INTO works (pid, source_id, raw_metadata) VALUES (?1, ?2, ?3)",
-                        libsql::params![format!("pid-{i}"), 1i64, *raw_metadata],
+                        turso::params![format!("pid-{i}"), 1i64, *raw_metadata],
                     )
                     .await
                     .unwrap();
@@ -1020,7 +1020,7 @@ mod tests {
             .build()
             .unwrap()
             .block_on(async {
-                let db = libsql::Builder::new_local(path).build().await.unwrap();
+                let db = turso::Builder::new_local(&path.to_string_lossy()).build().await.unwrap();
                 let conn = db.connect().unwrap();
                 conn.execute_batch(
                     "CREATE TABLE pid_records (
@@ -1052,7 +1052,7 @@ mod tests {
                         "INSERT INTO pid_records
                             (pid, pid_type, source_id, resource_url, last_modified, last_fetched, raw_metadata, raw_metadata_type)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                        libsql::params![
+                        turso::params![
                             *pid, *pid_type, *source_id, *resource_url,
                             *last_modified, *last_fetched, *raw_metadata, *raw_metadata_type
                         ],

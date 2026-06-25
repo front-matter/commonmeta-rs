@@ -146,6 +146,7 @@ fn from_csl(content: CslContent) -> Data {
         data.relations.push(Relation {
             id: issn_as_url(&issn),
             type_: "IsPartOf".to_string(),
+            ..Default::default()
         });
         (issn, "ISSN".to_string())
     } else {

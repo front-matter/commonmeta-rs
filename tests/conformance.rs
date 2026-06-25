@@ -85,6 +85,31 @@ fn crossref_to_commonmeta_golden() {
     }
 }
 
+/// Golden test: commonmeta → Crossref JSON writer.
+/// Convention:
+///   tests/fixtures/commonmeta/<name>.json    -> input in commonmeta format
+///   tests/fixtures/crossref_out/<name>.json  -> expected Crossref REST API output
+#[test]
+fn commonmeta_to_crossref_golden() {
+    let input_dir = fixtures_dir().join("commonmeta");
+    for input_path in collect_json(&input_dir) {
+        let name = input_path.file_name().unwrap();
+        let expected_path = fixtures_dir().join("crossref_out").join(name);
+        if !expected_path.exists() {
+            continue;
+        }
+
+        let input = fs::read_to_string(&input_path).unwrap();
+        let expected: Value =
+            serde_json::from_str(&fs::read_to_string(&expected_path).unwrap()).unwrap();
+        let out = commonmeta::convert("commonmeta", "crossref", &input).unwrap();
+        let actual: Value = serde_json::from_slice(&out).unwrap();
+
+        let diffs = diff(&expected, &actual);
+        assert!(diffs.is_empty(), "{}: {:#?}", input_path.display(), diffs);
+    }
+}
+
 /// Golden test: commonmeta → DataCite JSON writer.
 /// Convention:
 ///   tests/fixtures/commonmeta/<name>.json -> input in commonmeta format

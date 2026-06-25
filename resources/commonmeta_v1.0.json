@@ -217,7 +217,8 @@
               "funder_name": { "type": "string" },
               "award_id": { "$ref": "#/definitions/id" },
               "award_title": { "type": "string" },
-              "award_number": { "type": "string" }
+              "award_number": { "type": "string" },
+              "asserted_by": { "$ref": "#/definitions/provider" }
             },
             "required": ["funder_name"]
           }
@@ -272,6 +273,7 @@
               "id": { "$ref": "#/definitions/id" },
               "type": { "$ref": "#/definitions/type" },
               "reference": { "description": "The reference formatted as string.", "type": "string" },
+              "title": { "description": "The title of the referenced article.", "type": "string" },
               "asserted_by": { "$ref": "#/definitions/provider" }
             }
           }
@@ -468,7 +470,8 @@
       "properties": {
         "id": { "type": "string" },
         "title": { "type": "string" },
-        "url": { "type": "string", "format": "uri" }
+        "url": { "type": "string", "format": "uri" },
+        "asserted_by": { "$ref": "#/definitions/provider" }
       }
     },
     "longitude": {
@@ -535,6 +538,7 @@
         "mEDRA",
         "OP",
         "Author",
+        "Commonmeta",
         "GitHub",
         "OpenAIRE",
         "OpenAlex",

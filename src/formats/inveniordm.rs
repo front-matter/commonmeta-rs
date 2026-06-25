@@ -936,6 +936,7 @@ fn from_content(content: Content) -> Data {
                 award_number,
                 award_title,
                 award_id: award_uri,
+                ..Default::default()
             });
         }
     } else if !content.metadata.grants.is_empty() {
@@ -948,6 +949,7 @@ fn from_content(content: Content) -> Data {
                 award_number: v.code.clone(),
                 award_title: v.title.clone(),
                 award_id: award_uri,
+                ..Default::default()
             });
         }
     }
@@ -1091,7 +1093,7 @@ fn from_content(content: Content) -> Data {
         }
         let type_ = map_relation_type(&relation_id);
         if !type_.is_empty() && is_valid_relation_type(&type_) {
-            let rel = Relation { id, type_ };
+            let rel = Relation { id, type_, ..Default::default() };
             if !data.relations.contains(&rel) {
                 data.relations.push(rel);
             }
@@ -1105,6 +1107,7 @@ fn from_content(content: Content) -> Data {
             data.relations.push(Relation {
                 id,
                 type_: "IsVersionOf".to_string(),
+                ..Default::default()
             });
         }
     } else if data.id.contains("10.59350") && !content.parent.communities.default.is_empty() {
@@ -1114,6 +1117,7 @@ fn from_content(content: Content) -> Data {
             data.relations.push(Relation {
                 id,
                 type_: "IsVersionOf".to_string(),
+                ..Default::default()
             });
         }
     }
@@ -1124,6 +1128,7 @@ fn from_content(content: Content) -> Data {
         let rel = Relation {
             id: issn_url,
             type_: "IsPartOf".to_string(),
+            ..Default::default()
         };
         if !data.relations.contains(&rel) {
             data.relations.push(rel);

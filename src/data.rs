@@ -403,6 +403,8 @@ pub struct FundingReference {
     pub award_title: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub award_number: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub asserted_by: String,
 }
 
 /// Flattened to match the v1.0 schema's `geo_locations` shape directly
@@ -423,6 +425,8 @@ pub struct GeoLocation {
     pub geo_location_box_south_latitude: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geo_location_box_north_latitude: Option<f64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub geo_location_polygon: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -439,11 +443,16 @@ pub struct License {
     pub title: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub asserted_by: String,
 }
 
 impl License {
     pub fn is_empty(&self) -> bool {
-        self.id.is_empty() && self.title.is_empty() && self.url.is_empty()
+        self.id.is_empty()
+            && self.title.is_empty()
+            && self.url.is_empty()
+            && self.asserted_by.is_empty()
     }
 }
 
@@ -478,6 +487,8 @@ pub struct Reference {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reference: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub publisher: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub publication_year: String,
@@ -500,6 +511,8 @@ pub struct Relation {
     pub id: String,
     #[serde(rename = "type")]
     pub type_: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub asserted_by: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

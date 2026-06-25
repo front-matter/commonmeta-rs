@@ -53,7 +53,9 @@
     {
       "key": "ref1",
       "id": "https://doi.org/10.1000/xyz",
-      "reference": "Author, A. (2020). Prior Work. Journal, 10(1), 1–9. https://doi.org/10.1000/xyz."
+      "reference": "Author, A. (2020). Prior Work. Journal, 10(1), 1–9. https://doi.org/10.1000/xyz.",
+      "title": "Prior Work",
+      "asserted_by": "Publisher"
     }
   ],
   "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",

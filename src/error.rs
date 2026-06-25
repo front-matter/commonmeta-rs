@@ -20,14 +20,13 @@ pub enum Error {
     DiskFull(String),
 }
 
-/// Convert a libsql / SQLite error into the appropriate [`Error`] variant.
-/// Distinguishes disk-full (SQLITE_FULL) from other SQLite failures so callers
-/// receive an actionable message instead of a raw "parse error".
-pub(crate) fn sqlite_err(e: impl std::fmt::Display, context: &str) -> Error {
-    let msg = e.to_string();
-    if msg.contains("disk is full") || msg.contains("SQLITE_FULL") {
+/// Convert a turso SQLite error into the appropriate [`Error`] variant.
+/// Distinguishes disk-full from other SQLite failures so callers receive an
+/// actionable message instead of a raw "parse error".
+pub(crate) fn sqlite_err(e: turso::Error, context: &str) -> Error {
+    if matches!(e, turso::Error::DatabaseFull(_)) {
         Error::DiskFull(context.to_string())
     } else {
-        Error::Parse(format!("{}: {}", context, msg))
+        Error::Parse(format!("{}: {}", context, e))
     }
 }

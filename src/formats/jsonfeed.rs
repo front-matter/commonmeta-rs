@@ -326,12 +326,14 @@ pub fn read(content: &Content) -> Result<Data> {
         data.relations.push(Relation {
             id: community_slug_as_url(&content.blog_slug),
             type_: "IsPartOf".to_string(),
+            ..Default::default()
         });
     }
     if !content.blog.issn.is_empty() {
         data.relations.push(Relation {
             id: issn_as_url(&content.blog.issn),
             type_: "IsPartOf".to_string(),
+            ..Default::default()
         });
     }
 
@@ -485,6 +487,7 @@ pub fn read(content: &Content) -> Result<Data> {
                 data.relations.push(Relation {
                     id: normalized,
                     type_: rel.type_.clone(),
+                    ..Default::default()
                 });
             }
         }

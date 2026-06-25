@@ -128,6 +128,7 @@ pub fn write_citation(
 ) -> Result<Vec<u8>> {
     match format {
         "commonmeta" => commonmeta::write(data),
+        "crossref" => crossref::write(data),
         "crossref_xml" => crossref_xml::write(data),
         "ris" => ris::write(data),
         "csl" => csl::write(data),
@@ -149,6 +150,7 @@ pub fn write_all_citation(
 ) -> Result<Vec<u8>> {
     match format {
         "commonmeta" => commonmeta::write_all(list),
+        "crossref" => crossref::write_all(list),
         "csl" => csl::write_all(list),
         "datacite" => datacite::write_all(list),
         "inveniordm" => inveniordm::write_all(list),

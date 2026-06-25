@@ -500,7 +500,7 @@ mod tests {
             .build()
             .unwrap()
             .block_on(async {
-                let db = libsql::Builder::new_local(&path).build().await.unwrap();
+                let db = turso::Builder::new_local(&path.to_string_lossy()).build().await.unwrap();
                 let conn = db.connect().unwrap();
                 conn.execute_batch(
                     "CREATE TABLE works (pid TEXT, source_id INTEGER, raw_metadata TEXT);",
@@ -509,7 +509,7 @@ mod tests {
                 .unwrap();
                 conn.execute(
                     "INSERT INTO works (pid, source_id, raw_metadata) VALUES (?1, ?2, ?3)",
-                    libsql::params![
+                    turso::params![
                         "pid-0",
                         1i64,
                         r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#

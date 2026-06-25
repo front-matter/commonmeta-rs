@@ -1,0 +1,73 @@
+{
+  "status": "ok",
+  "message-type": "work",
+  "message-version": "1.0.0",
+  "message": {
+    "DOI": "10.5555/12345678",
+    "type": "journal-article",
+    "title": [
+      "A Study of Things"
+    ],
+    "author": [
+      {
+        "ORCID": "https://orcid.org/0000-0000-0000-0000",
+        "authenticated-orcid": false,
+        "given": "Ada",
+        "family": "Lovelace",
+        "sequence": "first",
+        "affiliation": [
+          {
+            "name": "Example University",
+            "id": [
+              {
+                "id": "https://ror.org/05dxps055",
+                "id-type": "ROR",
+                "asserted-by": "publisher"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "publisher": "Example Publisher",
+    "container-title": [
+      "Journal of Examples"
+    ],
+    "volume": "12",
+    "issue": "3",
+    "page": "100-110",
+    "ISSN": [
+      "1234-5678"
+    ],
+    "language": "en",
+    "license": [
+      {
+        "URL": "https://creativecommons.org/licenses/by/4.0/legalcode",
+        "content-version": "vor"
+      }
+    ],
+    "reference": [
+      {
+        "key": "ref1",
+        "DOI": "10.1000/xyz",
+        "doi-asserted-by": "publisher",
+        "article-title": "Prior Work"
+      }
+    ],
+    "issued": {
+      "date-parts": [
+        [
+          2024,
+          3,
+          15
+        ]
+      ]
+    },
+    "URL": "https://doi.org/10.5555/12345678",
+    "resource": {
+      "primary": {
+        "URL": "https://example.com/articles/a-study-of-things"
+      }
+    }
+  }
+}

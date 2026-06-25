@@ -650,6 +650,7 @@ fn from_xml_resource(r: XmlResource) -> Data {
             award_number,
             award_title: f.award_title.trim().to_string(),
             award_id,
+            ..Default::default()
         });
     }
 
@@ -681,6 +682,7 @@ fn from_xml_resource(r: XmlResource) -> Data {
                 .geo_location_box
                 .as_ref()
                 .and_then(|b| b.north_bound_latitude.trim().parse().ok()),
+            ..Default::default()
         });
     }
 
@@ -755,7 +757,7 @@ fn from_xml_resource(r: XmlResource) -> Data {
             } else {
                 mapped.to_string()
             };
-            let relation = Relation { id, type_ };
+            let relation = Relation { id, type_, ..Default::default() };
             if !data.relations.contains(&relation) {
                 data.relations.push(relation);
             }

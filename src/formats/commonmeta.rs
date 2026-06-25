@@ -29,7 +29,7 @@ pub fn read(json: &str) -> Result<Data> {
 fn prepare(data: &Data) -> Data {
     let mut out = data.clone();
     out.schema_version = COMMONMETA_V1_SCHEMA_URL.to_string();
-    // v1.0 references schema only defines: key, id, type, reference
+    // strip fields not in the v1.0 references schema (key/id/type/reference/asserted_by)
     for r in &mut out.references {
         r.publisher.clear();
         r.publication_year.clear();
@@ -38,7 +38,6 @@ fn prepare(data: &Data) -> Data {
         r.first_page.clear();
         r.last_page.clear();
         r.unstructured.clear();
-        r.asserted_by.clear();
     }
     // organization.id must be a ROR URL per the v1.0 schema
     if !out.publisher.id.is_empty() && normalize_ror(&out.publisher.id).is_empty() {
@@ -367,85 +366,56 @@ fn unflatten_row_lossy(row: &CommonmetaRow) -> Data {
     }
 }
 
-const SQLITE_DDL: &str = r#"PRAGMA journal_mode=WAL;
-PRAGMA synchronous=NORMAL;
+const SQLITE_DDL: &str = r#"PRAGMA synchronous=NORMAL;
 CREATE TABLE IF NOT EXISTS works (
-    "id"               TEXT PRIMARY KEY NOT NULL,
-    "type"             TEXT NOT NULL DEFAULT '',
-    "url"              TEXT NOT NULL DEFAULT '',
-    "title"            TEXT NOT NULL DEFAULT '',
-    "additional_titles" TEXT NOT NULL DEFAULT '[]',
-    "contributors"     TEXT NOT NULL DEFAULT '[]',
-    "date_published"   TEXT NOT NULL DEFAULT '',
-    "date_updated"     TEXT NOT NULL DEFAULT '',
-    "dates"            TEXT NOT NULL DEFAULT '{}',
-    "publisher"        TEXT NOT NULL DEFAULT '{}',
-    "container"        TEXT NOT NULL DEFAULT '{}',
-    "description"      TEXT NOT NULL DEFAULT '',
-    "license"          TEXT NOT NULL DEFAULT '{}',
-    "version"          TEXT NOT NULL DEFAULT '',
-    "language"         TEXT NOT NULL DEFAULT '',
-    "subjects"         TEXT NOT NULL DEFAULT '[]',
-    "identifiers"      TEXT NOT NULL DEFAULT '[]',
-    "relations"        TEXT NOT NULL DEFAULT '[]',
-    "references"       TEXT NOT NULL DEFAULT '[]',
-    "funding_references" TEXT NOT NULL DEFAULT '[]',
-    "geo_locations"    TEXT NOT NULL DEFAULT '[]',
-    "files"            TEXT NOT NULL DEFAULT '[]',
-    "archive_locations" TEXT NOT NULL DEFAULT '[]',
-    "provider"         TEXT NOT NULL DEFAULT ''
-);"#;
+    "id"             TEXT PRIMARY KEY NOT NULL,
+    "type"           TEXT NOT NULL DEFAULT '',
+    "url"            TEXT NOT NULL DEFAULT '',
+    "title"          TEXT NOT NULL DEFAULT '',
+    "subjects"       TEXT NOT NULL DEFAULT '[]',
+    "language"       TEXT NOT NULL DEFAULT '',
+    "date_published" TEXT NOT NULL DEFAULT '',
+    "date_updated"   TEXT NOT NULL DEFAULT '',
+    "provider"       TEXT NOT NULL DEFAULT '',
+    "metadata"       BLOB NOT NULL DEFAULT x''
+);
+CREATE INDEX IF NOT EXISTS works_type ON works("type");
+CREATE INDEX IF NOT EXISTS works_date_published ON works("date_published");
+CREATE INDEX IF NOT EXISTS works_date_updated ON works("date_updated");
+CREATE INDEX IF NOT EXISTS works_provider ON works("provider");"#;
+// "title", "subjects", and "language" are plain columns to support a future
+// FTS5 content-table for BM25 full-text search:
+//   CREATE VIRTUAL TABLE works_fts USING fts5(
+//       title, subjects, content="works", content_rowid="rowid", tokenize="unicode61"
+//   );
+// All other fields live in the zstd-compressed "metadata" BLOB.
 
 const SQLITE_INSERT: &str = r#"INSERT OR REPLACE INTO works (
-    "id", "type", "url", "title", "additional_titles",
-    "contributors", "date_published", "date_updated", "dates", "publisher",
-    "container", "description", "license",
-    "version", "language", "subjects", "identifiers", "relations", "references",
-    "funding_references", "geo_locations", "files",
-    "archive_locations", "provider"
-) VALUES (
-    ?1, ?2, ?3, ?4, ?5,
-    ?6, ?7, ?8, ?9, ?10,
-    ?11, ?12, ?13,
-    ?14, ?15, ?16, ?17, ?18, ?19,
-    ?20, ?21, ?22,
-    ?23, ?24
-)"#;
+    "id", "type", "url", "title", "subjects",
+    "language", "date_published", "date_updated", "provider", "metadata"
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#;
 
 // ── Streaming-optimised write path ────────────────────────────────────────────
 
-/// A single record fully prepared and JSON-serialized, ready to bind directly
-/// to the SQLite INSERT statement without any further allocation.
+/// A single record prepared and ready to bind to the SQLite INSERT statement.
+/// The lookup columns are denormalized copies of key scalar fields; everything
+/// else is in `metadata` (zstd-compressed JSON of the full `Data` record).
 pub struct PreparedRow {
     pub id: String,
     pub type_: String,
     pub url: String,
     pub title: String,
-    pub additional_titles: String,
-    pub contributors: String,
+    pub subjects: String,
+    pub language: String,
     pub date_published: String,
     pub date_updated: String,
-    pub dates: String,
-    pub publisher: String,
-    pub container: String,
-    pub description: String,
-    pub license: String,
-    pub version: String,
-    pub language: String,
-    pub subjects: String,
-    pub identifiers: String,
-    pub relations: String,
-    pub references: String,
-    pub funding_references: String,
-    pub geo_locations: String,
-    pub files: String,
-    pub archive_locations: String,
     pub provider: String,
+    pub metadata: Vec<u8>,
 }
 
-/// Apply v1.0 preparation (schema_version stamp, reference field stripping,
-/// funder-ID validation) and serialize all complex fields to JSON strings,
-/// consuming `data` so no clone is required.
+/// Apply v1.0 preparation (reference field stripping), then serialize `data`
+/// into a `PreparedRow`: lookup columns are copied out, the complete record is
+/// compressed into the `metadata` BLOB.
 pub fn serialize_to_row(mut data: Data) -> PreparedRow {
     for r in &mut data.references {
         r.publisher.clear();
@@ -455,38 +425,22 @@ pub fn serialize_to_row(mut data: Data) -> PreparedRow {
         r.first_page.clear();
         r.last_page.clear();
         r.unstructured.clear();
-        r.asserted_by.clear();
     }
-    macro_rules! js {
-        ($v:expr) => {
-            serde_json::to_string(&$v).unwrap_or_default()
-        };
-    }
+    // Denormalized columns extracted before consuming `data`.
+    let subjects = serde_json::to_string(&data.subjects).unwrap_or_default();
+    let json = serde_json::to_string(&data).unwrap_or_default();
+    let metadata = zstd::encode_all(json.as_bytes(), 0).unwrap_or_else(|_| json.into_bytes());
     PreparedRow {
         id: data.id,
         type_: data.type_,
         url: data.url,
         title: data.title,
-        additional_titles: js!(data.additional_titles),
-        contributors: js!(data.contributors),
+        subjects,
+        language: data.language,
         date_published: data.date_published,
         date_updated: data.date_updated,
-        dates: js!(data.dates),
-        publisher: js!(data.publisher),
-        container: js!(data.container),
-        description: data.description,
-        license: js!(data.license),
-        version: data.version,
-        language: data.language,
-        subjects: js!(data.subjects),
-        identifiers: js!(data.identifiers),
-        relations: js!(data.relations),
-        references: js!(data.references),
-        funding_references: js!(data.funding_references),
-        geo_locations: js!(data.geo_locations),
-        files: js!(data.files),
-        archive_locations: js!(data.archive_locations),
         provider: data.provider,
+        metadata,
     }
 }
 
@@ -495,18 +449,22 @@ pub fn serialize_to_row(mut data: Data) -> PreparedRow {
 /// DB). When false the existing file is kept and the table is created only if
 /// it does not exist yet — callers use `INSERT OR REPLACE` so rows with the
 /// same `id` are updated in place.
-pub(crate) async fn init_sqlite_writer_async(path: &Path, overwrite: bool) -> Result<libsql::Connection> {
+pub(crate) async fn init_sqlite_writer_async(path: &Path, overwrite: bool) -> Result<turso::Connection> {
     if overwrite && path.exists() {
         std::fs::remove_file(path)
             .map_err(|e| Error::Parse(format!("failed to remove '{}': {}", path.display(), e)))?;
     }
-    let db = libsql::Builder::new_local(path)
+    let db = turso::Builder::new_local(&path.to_string_lossy())
         .build()
         .await
         .map_err(|e| Error::Parse(format!("failed to open sqlite '{}': {}", path.display(), e)))?;
     let conn = db
         .connect()
         .map_err(|e| Error::Parse(format!("failed to connect sqlite '{}': {}", path.display(), e)))?;
+    // WAL pragma returns a result row so use query() to consume it
+    conn.query("PRAGMA journal_mode=WAL", ())
+        .await
+        .map_err(|e| Error::Parse(format!("failed to set WAL mode: {}", e)))?;
     conn.execute_batch(SQLITE_DDL)
         .await
         .map_err(|e| Error::Parse(format!("failed to create works table: {}", e)))?;
@@ -517,29 +475,24 @@ pub(crate) async fn init_sqlite_writer_async(path: &Path, overwrite: bool) -> Re
 /// cloning is needed — the caller (typically [`stream_dump_to_sqlite`]) already
 /// produced the rows in parallel via [`serialize_to_row`].
 pub(crate) async fn write_sqlite_batch_rows_async(
-    conn: &libsql::Connection,
+    conn: &turso::Connection,
     rows: Vec<PreparedRow>,
 ) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
     let tx = conn
-        .transaction()
+        .unchecked_transaction()
         .await
         .map_err(|e| Error::Parse(format!("failed to begin transaction: {}", e)))?;
     for row in rows {
         let id_for_err = row.id.clone();
         tx.execute(
             SQLITE_INSERT,
-            libsql::params![
-                row.id, row.type_, row.url, row.title,
-                row.additional_titles, row.contributors, row.date_published,
-                row.date_updated, row.dates, row.publisher, row.container,
-                row.description, row.license,
-                row.version, row.language, row.subjects, row.identifiers,
-                row.relations, row.references,
-                row.funding_references, row.geo_locations, row.files,
-                row.archive_locations, row.provider,
+            turso::params![
+                row.id, row.type_, row.url, row.title, row.subjects,
+                row.language, row.date_published, row.date_updated, row.provider,
+                row.metadata,
             ],
         )
         .await
@@ -593,7 +546,7 @@ pub fn count_sqlite_works(path: &Path) -> Result<usize> {
         .build()
         .map_err(|e| Error::Parse(e.to_string()))?
         .block_on(async {
-            let db = libsql::Builder::new_local(&path)
+            let db = turso::Builder::new_local(&path.to_string_lossy())
                 .build()
                 .await
                 .map_err(|e| Error::Parse(e.to_string()))?;
@@ -613,18 +566,12 @@ pub fn count_sqlite_works(path: &Path) -> Result<usize> {
         })
 }
 
-const SQLITE_SELECT: &str = r#"SELECT
-    "id", "type", "url", "title", "additional_titles",
-    "contributors", "date_published", "date_updated", "dates", "publisher",
-    "container", "description", "license",
-    "version", "language", "subjects", "identifiers", "relations", "references",
-    "funding_references", "geo_locations", "files",
-    "archive_locations", "provider"
-FROM works ORDER BY rowid"#;
+const SQLITE_SELECT: &str = r#"SELECT "metadata" FROM works ORDER BY rowid"#;
 
-/// Inverse of `serialize_to_row`: deserialises all columns back to `Data`.
+/// Reads back `Data` records by decompressing and deserialising the `metadata`
+/// BLOB written by `serialize_to_row`.
 async fn read_sqlite_rows_async(
-    conn: &libsql::Connection,
+    conn: &turso::Connection,
     limit: Option<usize>,
     offset: usize,
 ) -> Result<Vec<Data>> {
@@ -639,49 +586,15 @@ async fn read_sqlite_rows_async(
         .await
         .map_err(|e| Error::Parse(e.to_string()))?;
 
-    // Helper: parse JSON TEXT column; returns Default if the string is empty or unparseable.
-    fn col_json<T: serde::de::DeserializeOwned + Default>(s: String) -> T {
-        if s.is_empty() {
-            T::default()
-        } else {
-            serde_json::from_str(&s).unwrap_or_default()
-        }
-    }
-
     let mut results = Vec::new();
     while let Some(row) = rows.next().await.map_err(|e| Error::Parse(e.to_string()))? {
-        macro_rules! s {
-            ($i:literal) => {
-                row.get::<String>($i).unwrap_or_default()
-            };
-        }
-        let data = Data {
-            id: s!(0),
-            type_: s!(1),
-            url: s!(2),
-            title: s!(3),
-            additional_titles: col_json(s!(4)),
-            contributors: col_json(s!(5)),
-            date_published: s!(6),
-            date_updated: s!(7),
-            dates: col_json(s!(8)),
-            publisher: col_json(s!(9)),
-            container: col_json(s!(10)),
-            description: s!(11),
-            license: col_json(s!(12)),
-            version: s!(13),
-            language: s!(14),
-            subjects: col_json(s!(15)),
-            identifiers: col_json(s!(16)),
-            relations: col_json(s!(17)),
-            references: col_json(s!(18)),
-            funding_references: col_json(s!(19)),
-            geo_locations: col_json(s!(20)),
-            files: col_json(s!(21)),
-            archive_locations: col_json(s!(22)),
-            provider: s!(23),
-            ..Data::default()
-        };
+        let blob = row
+            .get::<Vec<u8>>(0)
+            .map_err(|e| Error::Parse(format!("failed to read metadata blob: {}", e)))?;
+        let decompressed = zstd::decode_all(std::io::Cursor::new(&blob))
+            .map_err(|e| Error::Parse(format!("failed to decompress metadata: {}", e)))?;
+        let data: Data = serde_json::from_slice(&decompressed)
+            .map_err(|e| Error::Parse(format!("failed to deserialize metadata: {}", e)))?;
         results.push(data);
     }
     Ok(results)
@@ -695,7 +608,7 @@ pub fn read_sqlite_commonmeta(path: &Path, limit: Option<usize>, offset: usize) 
         .build()
         .map_err(|e| Error::Parse(e.to_string()))?
         .block_on(async {
-            let db = libsql::Builder::new_local(path)
+            let db = turso::Builder::new_local(&path.to_string_lossy())
                 .build()
                 .await
                 .map_err(|e| Error::Parse(format!("failed to open '{}': {}", path.display(), e)))?;
@@ -930,7 +843,7 @@ mod tests {
             .build()
             .unwrap()
             .block_on(async {
-                let db = libsql::Builder::new_local(&path).build().await.unwrap();
+                let db = turso::Builder::new_local(&path.to_string_lossy()).build().await.unwrap();
                 let conn = db.connect().unwrap();
 
                 let mut rows = conn.query("SELECT COUNT(*) FROM works", ()).await.unwrap();
@@ -949,16 +862,13 @@ mod tests {
                 assert_eq!(title, "A Sample Title");
                 assert_eq!(type_, "JournalArticle");
 
-                let mut rows = conn
-                    .query("SELECT contributors FROM works", ())
-                    .await
-                    .unwrap();
-                let contributors: String =
-                    rows.next().await.unwrap().unwrap().get(0).unwrap();
-                let parsed: serde_json::Value =
-                    serde_json::from_str(&contributors).unwrap();
-                assert!(parsed.is_array());
-                assert_eq!(parsed.as_array().unwrap().len(), 1);
+                // metadata BLOB round-trips the full record including contributors
+                let mut rows = conn.query("SELECT metadata FROM works", ()).await.unwrap();
+                let blob: Vec<u8> = rows.next().await.unwrap().unwrap().get(0).unwrap();
+                let decompressed = zstd::decode_all(std::io::Cursor::new(&blob)).unwrap();
+                let parsed: serde_json::Value = serde_json::from_slice(&decompressed).unwrap();
+                let contributors = parsed["contributors"].as_array().unwrap();
+                assert_eq!(contributors.len(), 1);
             });
 
         std::fs::remove_dir_all(&dir).ok();
@@ -977,7 +887,7 @@ mod tests {
             .build()
             .unwrap()
             .block_on(async {
-                let db = libsql::Builder::new_local(&path).build().await.unwrap();
+                let db = turso::Builder::new_local(&path.to_string_lossy()).build().await.unwrap();
                 let conn = db.connect().unwrap();
                 let mut rows = conn
                     .query("SELECT provider FROM works", ())
@@ -1005,7 +915,7 @@ mod tests {
             .build()
             .unwrap()
             .block_on(async {
-                let db = libsql::Builder::new_local(&path).build().await.unwrap();
+                let db = turso::Builder::new_local(&path.to_string_lossy()).build().await.unwrap();
                 let conn = db.connect().unwrap();
                 let mut rows = conn.query("SELECT COUNT(*) FROM works", ()).await.unwrap();
                 let count: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();

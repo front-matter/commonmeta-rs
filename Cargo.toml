@@ -9,7 +9,7 @@ default-members = ["."]
 
 [package]
 name = "commonmeta"
-version = "0.5.5"
+version = "0.6.0"
 edition = "2024"
 authors = ["Front Matter <info@front-matter.de>"]
 description = "Library for conversions to/from the Commonmeta scholarly metadata format"
@@ -52,7 +52,7 @@ quick-xml = { version = "0.40.1", features = ["serialize", "overlapped-lists"] }
 unicode-normalization = "0.1"
 ammonia = "4"
 scraper = "0.27.0"
-libsql = { version = "0.9", default-features = false, features = ["core"] }
+turso = { version = "0.6.1", default-features = false, features = ["fts"] }
 flate2 = "1.1.9"
 tar = "0.4"
 zstd = "0.13"

@@ -205,6 +205,7 @@ fn from_ror(ror: Ror) -> Data {
             Relation {
                 id: normalize_ror(&r.id),
                 type_: rel_type.to_string(),
+                ..Default::default()
             }
         })
         .collect();

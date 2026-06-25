@@ -625,6 +625,7 @@ fn from_attributes(attr: DcAttributes) -> Data {
             award_number: f.award_number,
             award_title: f.award_title,
             award_id: f.award_uri,
+            ..Default::default()
         });
     }
 
@@ -638,6 +639,7 @@ fn from_attributes(attr: DcAttributes) -> Data {
             geo_location_box_east_longitude: g.geo_location_box.as_ref().and_then(|b| parse_geo_coord(&b.east_bound_longitude)),
             geo_location_box_south_latitude: g.geo_location_box.as_ref().and_then(|b| parse_geo_coord(&b.south_bound_latitude)),
             geo_location_box_north_latitude: g.geo_location_box.as_ref().and_then(|b| parse_geo_coord(&b.north_bound_latitude)),
+            ..Default::default()
         });
     }
 
@@ -729,7 +731,7 @@ fn from_attributes(attr: DcAttributes) -> Data {
             } else {
                 mapped.to_string()
             };
-            let relation = Relation { id, type_ };
+            let relation = Relation { id, type_, ..Default::default() };
             if !data.relations.contains(&relation) {
                 data.relations.push(relation);
             }

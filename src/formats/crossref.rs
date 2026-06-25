@@ -1,6 +1,6 @@
 use lazy_static::lazy_static;
 use regex::Regex;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 
 use crate::author_utils::{
@@ -263,6 +263,7 @@ fn published_date(issued: &Option<CrossrefDate>, created: &Option<CrossrefDate>)
 
 fn capitalize_provider(s: &str) -> String {
     match s {
+        "crossref" => "Crossref".to_string(),
         "publisher" => "Publisher".to_string(),
         "author" => "Author".to_string(),
         other => other.to_string(),
@@ -531,6 +532,7 @@ fn from_work(w: CrossrefWork) -> Data {
                 key: r.key.unwrap_or_default(),
                 id: r.doi.as_deref().map(normalize_doi_url).unwrap_or_default(),
                 reference: reference_text,
+                title: r.article_title.unwrap_or_default(),
                 publisher: r.publisher.unwrap_or_default(),
                 publication_year: r.year.unwrap_or_default(),
                 volume: r.volume.unwrap_or_default(),
@@ -538,7 +540,7 @@ fn from_work(w: CrossrefWork) -> Data {
                 first_page: r.first_page.unwrap_or_default(),
                 last_page: r.last_page.unwrap_or_default(),
                 unstructured: r.unstructured.unwrap_or_default(),
-                asserted_by: r.doi_asserted_by.unwrap_or_default(),
+                asserted_by: capitalize_provider(&r.doi_asserted_by.unwrap_or_default()),
                 ..Default::default()
             }
         })
@@ -871,9 +873,587 @@ pub(crate) fn query_url(
     url.to_string()
 }
 
+// ─── Writer ───────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct CrOutput {
+    status: &'static str,
+    #[serde(rename = "message-type")]
+    message_type: &'static str,
+    #[serde(rename = "message-version")]
+    message_version: &'static str,
+    message: CrWork,
+}
+
+#[derive(Serialize)]
+struct CrListOutput {
+    status: &'static str,
+    #[serde(rename = "message-type")]
+    message_type: &'static str,
+    #[serde(rename = "message-version")]
+    message_version: &'static str,
+    message: CrListMessage,
+}
+
+#[derive(Serialize)]
+struct CrListMessage {
+    #[serde(rename = "total-results")]
+    total_results: usize,
+    items: Vec<CrWork>,
+}
+
+#[derive(Serialize)]
+struct CrVersion {
+    version: String,
+}
+
+#[derive(Default, Serialize)]
+struct CrWork {
+    #[serde(rename = "DOI", skip_serializing_if = "String::is_empty")]
+    doi: String,
+    #[serde(rename = "type")]
+    type_: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subtype: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    title: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    subtitle: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    author: Vec<CrAuthor>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    publisher: String,
+    #[serde(rename = "container-title", skip_serializing_if = "Vec::is_empty")]
+    container_title: Vec<String>,
+    #[serde(rename = "group-title", skip_serializing_if = "Option::is_none")]
+    group_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    volume: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    issue: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page: Option<String>,
+    #[serde(rename = "ISSN", skip_serializing_if = "Vec::is_empty")]
+    issn: Vec<String>,
+    #[serde(rename = "abstract", skip_serializing_if = "String::is_empty")]
+    abstract_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    subject: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    license: Vec<CrLicense>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    funder: Vec<CrFunder>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    reference: Vec<CrReference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    posted: Option<CrDate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    issued: Option<CrDate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<CrVersion>,
+    #[serde(rename = "URL", skip_serializing_if = "String::is_empty")]
+    url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resource: Option<CrResource>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    link: Vec<CrLink>,
+}
+
+#[derive(Default, Serialize)]
+struct CrAuthor {
+    #[serde(rename = "ORCID", skip_serializing_if = "String::is_empty")]
+    orcid: String,
+    #[serde(rename = "authenticated-orcid", skip_serializing_if = "Option::is_none")]
+    authenticated_orcid: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    given: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    family: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    sequence: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    affiliation: Vec<CrAffiliation>,
+}
+
+#[derive(Default, Serialize)]
+struct CrAffiliation {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    name: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    id: Vec<CrAffiliationId>,
+}
+
+#[derive(Serialize)]
+struct CrAffiliationId {
+    id: String,
+    #[serde(rename = "id-type")]
+    id_type: String,
+    #[serde(rename = "asserted-by")]
+    asserted_by: String,
+}
+
+#[derive(Serialize)]
+struct CrDate {
+    #[serde(rename = "date-parts")]
+    date_parts: Vec<Vec<i32>>,
+}
+
+#[derive(Serialize)]
+struct CrLicense {
+    #[serde(rename = "URL")]
+    url: String,
+    #[serde(rename = "content-version")]
+    content_version: String,
+}
+
+#[derive(Serialize)]
+struct CrFunder {
+    #[serde(rename = "DOI", skip_serializing_if = "String::is_empty")]
+    doi: String,
+    name: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    award: Vec<String>,
+}
+
+#[derive(Default, Serialize)]
+struct CrReference {
+    key: String,
+    #[serde(rename = "DOI", skip_serializing_if = "String::is_empty")]
+    doi: String,
+    #[serde(rename = "doi-asserted-by", skip_serializing_if = "String::is_empty")]
+    doi_asserted_by: String,
+    #[serde(rename = "article-title", skip_serializing_if = "String::is_empty")]
+    article_title: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    unstructured: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    year: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    volume: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    issue: String,
+    #[serde(rename = "first-page", skip_serializing_if = "String::is_empty")]
+    first_page: String,
+    #[serde(rename = "last-page", skip_serializing_if = "String::is_empty")]
+    last_page: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    publisher: String,
+}
+
+#[derive(Serialize)]
+struct CrResource {
+    primary: CrPrimaryResource,
+}
+
+#[derive(Serialize)]
+struct CrPrimaryResource {
+    #[serde(rename = "URL")]
+    url: String,
+}
+
+#[derive(Serialize)]
+struct CrLink {
+    #[serde(rename = "URL")]
+    url: String,
+    #[serde(rename = "content-type")]
+    content_type: String,
+}
+
+fn cm_to_cr_json_type(cm: &str) -> &'static str {
+    match cm {
+        "Article" | "BlogPost" => "posted-content",
+        "Blog" => "journal",
+        "BookChapter" => "book-chapter",
+        "BookSeries" => "book-series",
+        "Book" => "book",
+        "Component" => "component",
+        "Dataset" => "dataset",
+        "Dissertation" => "dissertation",
+        "Grant" => "grant",
+        "JournalArticle" => "journal-article",
+        "JournalIssue" => "journal-issue",
+        "JournalVolume" => "journal-volume",
+        "Journal" => "journal",
+        "PeerReview" => "peer-review",
+        "ProceedingsArticle" => "proceedings-article",
+        "ProceedingsSeries" => "proceedings-series",
+        "Proceedings" => "proceedings",
+        "ReportComponent" => "report-component",
+        "ReportSeries" => "report-series",
+        "Report" => "report",
+        "Standard" => "standard",
+        _ => "other",
+    }
+}
+
+fn parse_date_to_cr(date: &str) -> Option<CrDate> {
+    if date.is_empty() {
+        return None;
+    }
+    let date_only = date.split('T').next().unwrap_or(date);
+    let parts: Vec<i32> = date_only
+        .split('-')
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(CrDate {
+            date_parts: vec![parts],
+        })
+    }
+}
+
+fn strip_doi_prefix(id: &str) -> String {
+    id.trim_start_matches("https://doi.org/")
+        .trim_start_matches("http://doi.org/")
+        .trim_start_matches("https://dx.doi.org/")
+        .trim_start_matches("http://dx.doi.org/")
+        .to_string()
+}
+
+fn to_cr_work(data: &Data) -> CrWork {
+    let doi = strip_doi_prefix(&data.id);
+
+    let type_ = cm_to_cr_json_type(&data.type_).to_string();
+
+    let mut title = Vec::new();
+    let mut subtitle = Vec::new();
+    if !data.title.is_empty() {
+        title.push(data.title.clone());
+    }
+    for t in &data.additional_titles {
+        if t.type_ == "Subtitle" {
+            subtitle.push(t.title.clone());
+        } else if !t.title.is_empty() {
+            title.push(t.title.clone());
+        }
+    }
+
+    let author: Vec<CrAuthor> = data
+        .contributors
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let sequence = if i == 0 { "first" } else { "additional" }.to_string();
+            if c.type_ == "Organization" {
+                let org_name = c.organization.as_ref().map(|o| o.name.clone()).unwrap_or_default();
+                CrAuthor {
+                    name: Some(org_name),
+                    sequence,
+                    ..Default::default()
+                }
+            } else if let Some(p) = &c.person {
+                let orcid = p.id.clone();
+                let authenticated_orcid = if orcid.is_empty() {
+                    None
+                } else {
+                    Some(p.asserted_by == "Author")
+                };
+                let affiliation: Vec<CrAffiliation> = p
+                    .affiliations
+                    .iter()
+                    .map(|a| {
+                        let ids = if a.id.is_empty() {
+                            Vec::new()
+                        } else {
+                            let id_type = if a.id.contains("ror.org") {
+                                "ROR"
+                            } else {
+                                "other"
+                            };
+                            vec![CrAffiliationId {
+                                id: a.id.clone(),
+                                id_type: id_type.to_string(),
+                                asserted_by: a.asserted_by.to_lowercase(),
+                            }]
+                        };
+                        CrAffiliation {
+                            name: a.name.clone(),
+                            id: ids,
+                        }
+                    })
+                    .collect();
+                CrAuthor {
+                    orcid,
+                    authenticated_orcid,
+                    given: if p.given_name.is_empty() { None } else { Some(p.given_name.clone()) },
+                    family: if p.family_name.is_empty() { None } else { Some(p.family_name.clone()) },
+                    sequence,
+                    affiliation,
+                    ..Default::default()
+                }
+            } else {
+                CrAuthor {
+                    sequence,
+                    ..Default::default()
+                }
+            }
+        })
+        .collect();
+
+    // posted-content uses group-title for the container name; all other types
+    // use the standard container-title array.
+    let is_posted_content = type_ == "posted-content";
+    let (container_title, group_title) = if data.container.title.is_empty() {
+        (Vec::new(), None)
+    } else if is_posted_content {
+        (Vec::new(), Some(data.container.title.clone()))
+    } else {
+        (vec![data.container.title.clone()], None)
+    };
+
+    let issn = if data.container.identifier_type == "ISSN" && !data.container.identifier.is_empty()
+    {
+        vec![data.container.identifier.clone()]
+    } else {
+        Vec::new()
+    };
+
+    let page = {
+        let fp = &data.container.first_page;
+        let lp = &data.container.last_page;
+        if !fp.is_empty() && !lp.is_empty() {
+            Some(format!("{}-{}", fp, lp))
+        } else if !fp.is_empty() {
+            Some(fp.clone())
+        } else {
+            None
+        }
+    };
+
+    let license = if !data.license.url.is_empty() {
+        vec![CrLicense {
+            url: data.license.url.clone(),
+            content_version: "vor".to_string(),
+        }]
+    } else {
+        Vec::new()
+    };
+
+    // Group funding references by funder_id+funder_name preserving insertion order.
+    let funder: Vec<CrFunder> = {
+        let mut seen: Vec<(String, String, Vec<String>)> = Vec::new();
+        for f in &data.funding_references {
+            let key = format!("{}|{}", f.funder_id, f.funder_name);
+            if let Some(entry) = seen.iter_mut().find(|e| format!("{}|{}", e.0, e.1) == key) {
+                if !f.award_number.is_empty() {
+                    entry.2.push(f.award_number.clone());
+                }
+            } else {
+                let awards = if f.award_number.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![f.award_number.clone()]
+                };
+                seen.push((f.funder_id.clone(), f.funder_name.clone(), awards));
+            }
+        }
+        seen.into_iter()
+            .map(|(funder_id, funder_name, award)| CrFunder {
+                doi: strip_doi_prefix(&funder_id),
+                name: funder_name,
+                award,
+            })
+            .collect()
+    };
+
+    let reference: Vec<CrReference> = data
+        .references
+        .iter()
+        .map(|r| {
+            let doi = strip_doi_prefix(&r.id);
+            let doi_asserted_by = if doi.is_empty() {
+                String::new()
+            } else {
+                r.asserted_by.to_lowercase()
+            };
+            let year = if r.publication_year.is_empty() {
+                None
+            } else {
+                Some(r.publication_year.clone())
+            };
+            // Prefer the separately preserved article_title; fall back to
+            // reference text (which may itself be an article title from sources
+            // that never had a separate unstructured field).
+            let article_title = if !r.title.is_empty() {
+                r.title.clone()
+            } else if r.unstructured.is_empty() {
+                r.reference.clone()
+            } else {
+                String::new()
+            };
+            let unstructured = r.unstructured.clone();
+            CrReference {
+                key: r.key.clone(),
+                doi,
+                doi_asserted_by,
+                article_title,
+                unstructured,
+                year,
+                volume: r.volume.clone(),
+                issue: r.issue.clone(),
+                first_page: r.first_page.clone(),
+                last_page: r.last_page.clone(),
+                publisher: r.publisher.clone(),
+            }
+        })
+        .collect();
+
+    let issued = parse_date_to_cr(&data.date_published);
+    let posted = if is_posted_content { parse_date_to_cr(&data.date_published) } else { None };
+
+    let version = if data.version.is_empty() {
+        None
+    } else {
+        Some(CrVersion { version: data.version.clone() })
+    };
+
+    let subtype = if data.additional_type.is_empty() {
+        None
+    } else {
+        Some(data.additional_type.clone())
+    };
+
+    let resource = if data.url.is_empty() {
+        None
+    } else {
+        Some(CrResource {
+            primary: CrPrimaryResource {
+                url: data.url.clone(),
+            },
+        })
+    };
+
+    let link: Vec<CrLink> = data
+        .files
+        .iter()
+        .map(|f| CrLink {
+            url: f.url.clone(),
+            content_type: f.mime_type.clone(),
+        })
+        .collect();
+
+    let doi_url = if doi.is_empty() {
+        String::new()
+    } else {
+        format!("https://doi.org/{}", doi)
+    };
+
+    CrWork {
+        doi,
+        type_,
+        subtype,
+        title,
+        subtitle,
+        author,
+        publisher: data.publisher.name.clone(),
+        container_title,
+        group_title,
+        volume: if data.container.volume.is_empty() {
+            None
+        } else {
+            Some(data.container.volume.clone())
+        },
+        issue: if data.container.issue.is_empty() {
+            None
+        } else {
+            Some(data.container.issue.clone())
+        },
+        page,
+        issn,
+        abstract_text: data.description.clone(),
+        language: if data.language.is_empty() {
+            None
+        } else {
+            Some(data.language.clone())
+        },
+        subject: data.subjects.iter().map(|s| s.subject.clone()).collect(),
+        license,
+        funder,
+        reference,
+        posted,
+        issued,
+        version,
+        url: doi_url,
+        resource,
+        link,
+    }
+}
+
+/// Serialize a `Data` record as a Crossref REST API JSON response.
+pub fn write(data: &Data) -> Result<Vec<u8>> {
+    let output = CrOutput {
+        status: "ok",
+        message_type: "work",
+        message_version: "1.0.0",
+        message: to_cr_work(data),
+    };
+    serde_json::to_vec_pretty(&output).map_err(|e| Error::Parse(e.to_string()))
+}
+
+/// Serialize a list of `Data` records as a Crossref REST API work-list response.
+pub fn write_all(list: &[Data]) -> Result<Vec<u8>> {
+    let items: Vec<CrWork> = list.iter().map(to_cr_work).collect();
+    let total = items.len();
+    let output = CrListOutput {
+        status: "ok",
+        message_type: "work-list",
+        message_version: "1.0.0",
+        message: CrListMessage {
+            total_results: total,
+            items,
+        },
+    };
+    serde_json::to_vec_pretty(&output).map_err(|e| Error::Parse(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_write_journal_article() {
+        let input = std::fs::read_to_string(
+            "tests/fixtures/commonmeta/crossref_journal_article.json",
+        )
+        .unwrap();
+        let data = crate::formats::commonmeta::read(&input).unwrap();
+        let bytes = write(&data).unwrap();
+        let out: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(out["status"], "ok");
+        assert_eq!(out["message-type"], "work");
+        assert_eq!(out["message"]["DOI"], "10.5555/12345678");
+        assert_eq!(out["message"]["type"], "journal-article");
+        assert_eq!(out["message"]["title"][0], "A Study of Things");
+        assert_eq!(out["message"]["publisher"], "Example Publisher");
+        assert_eq!(out["message"]["volume"], "12");
+        assert_eq!(out["message"]["issue"], "3");
+        assert_eq!(out["message"]["page"], "100-110");
+        assert_eq!(out["message"]["ISSN"][0], "1234-5678");
+        assert_eq!(out["message"]["language"], "en");
+        let author = &out["message"]["author"][0];
+        assert_eq!(author["given"], "Ada");
+        assert_eq!(author["family"], "Lovelace");
+        assert_eq!(author["ORCID"], "https://orcid.org/0000-0000-0000-0000");
+        assert_eq!(author["authenticated-orcid"], false);
+        assert_eq!(author["sequence"], "first");
+        assert_eq!(author["affiliation"][0]["name"], "Example University");
+        assert_eq!(author["affiliation"][0]["id"][0]["id-type"], "ROR");
+        assert_eq!(author["affiliation"][0]["id"][0]["asserted-by"], "publisher");
+        let reference = &out["message"]["reference"][0];
+        assert_eq!(reference["key"], "ref1");
+        assert_eq!(reference["DOI"], "10.1000/xyz");
+        assert_eq!(reference["doi-asserted-by"], "publisher");
+        assert_eq!(out["message"]["resource"]["primary"]["URL"], "https://example.com/articles/a-study-of-things");
+        assert_eq!(out["message"]["issued"]["date-parts"][0][0], 2024);
+        assert_eq!(out["message"]["issued"]["date-parts"][0][1], 3);
+        assert_eq!(out["message"]["issued"]["date-parts"][0][2], 15);
+    }
 
     /// Real-world VRAIX Crossref dumps use explicit JSON `null` (not a
     /// missing key) for several optional string fields, which

@@ -120,6 +120,7 @@ pub fn from_url(url: &str) -> crate::data::License {
         id: entry.map(|l| l.license_id.clone()).unwrap_or_default(),
         title: entry.map(|l| l.name.clone()).unwrap_or_default(),
         url: url.to_string(),
+        ..Default::default()
     }
 }
 
@@ -136,6 +137,7 @@ pub fn from_id(id: &str) -> crate::data::License {
         url: entry
             .and_then(|l| l.see_also.first().cloned())
             .unwrap_or_default(),
+        ..Default::default()
     }
 }
 

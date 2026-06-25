@@ -1501,7 +1501,18 @@ struct XmlPersonName {
     #[serde(default)]
     affiliations: Option<XmlAffiliations>,
     #[serde(rename = "ORCID", default)]
-    orcid: String,
+    orcid: Option<XmlOrcid>,
+}
+
+/// Captures `<ORCID authenticated="true">https://orcid.org/...</ORCID>`.
+/// `authenticated=true` means the author verified via OAuth; false/absent
+/// means the publisher supplied the ORCID without verification.
+#[derive(Deserialize, Default, Clone)]
+struct XmlOrcid {
+    #[serde(rename = "@authenticated", default)]
+    authenticated: bool,
+    #[serde(rename = "$text", default)]
+    text: String,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -1647,6 +1658,9 @@ struct XmlCitation {
 
 #[derive(Deserialize, Default, Clone)]
 struct XmlCitationDoi {
+    /// `provider="crossref"` or `provider="publisher"` in Crossref XML.
+    #[serde(rename = "@provider", default)]
+    provider: String,
     #[serde(rename = "$text", default)]
     text: String,
 }
@@ -1888,10 +1902,18 @@ fn map_abstract_type(raw: &str) -> String {
 fn convert_contributors(contrib: &XmlContributors) -> Vec<Contributor> {
     let mut out = Vec::new();
     for p in &contrib.person_name {
-        let id = if !p.orcid.is_empty() {
-            normalize_orcid(&p.orcid)
+        let id = p.orcid.as_ref()
+            .map(|o| normalize_orcid(&o.text))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default();
+        let orcid_asserted_by = if !id.is_empty() {
+            if p.orcid.as_ref().is_some_and(|o| o.authenticated) {
+                "Author"
+            } else {
+                "Publisher"
+            }
         } else {
-            String::new()
+            ""
         };
         let role = match p.contributor_role.as_str() {
             "editor" => "Editor",
@@ -1939,7 +1961,7 @@ fn convert_contributors(contrib: &XmlContributors) -> Vec<Contributor> {
                 given_name: p.given_name.clone(),
                 family_name: p.surname.clone(),
                 affiliations,
-                asserted_by: String::new(),
+                asserted_by: orcid_asserted_by.to_string(),
             },
             normalize_contributor_roles(&[role.to_string()], role),
         ));
@@ -2033,7 +2055,7 @@ fn convert_relations(programs: &[XmlProgram]) -> Vec<Relation> {
                 }
                 let id = resolve_relation_id(&iw.text, &iw.identifier_type);
                 let t = title_case(&iw.relationship_type);
-                out.push(Relation { id, type_: t });
+                out.push(Relation { id, type_: t, ..Default::default() });
             }
             if let Some(iw) = &item.intra_work_relation {
                 if iw.text.is_empty() {
@@ -2041,11 +2063,20 @@ fn convert_relations(programs: &[XmlProgram]) -> Vec<Relation> {
                 }
                 let id = resolve_relation_id(&iw.text, &iw.identifier_type);
                 let t = title_case(&iw.relationship_type);
-                out.push(Relation { id, type_: t });
+                out.push(Relation { id, type_: t, ..Default::default() });
             }
         }
     }
     out
+}
+
+fn normalize_provider(s: &str) -> String {
+    match s {
+        "crossref" => "Crossref".to_string(),
+        "publisher" => "Publisher".to_string(),
+        "author" => "Author".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn resolve_relation_id(text: &str, id_type: &str) -> String {
@@ -2079,6 +2110,10 @@ fn convert_citations(list: &XmlCitationList) -> Vec<Reference> {
         if !c.key.is_empty() && !seen_keys.insert(c.key.clone()) {
             continue;
         }
+        let asserted_by = c.doi.as_ref()
+            .map(|d| normalize_provider(&d.provider))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default();
         out.push(Reference {
             key: c.key.clone(),
             id,
@@ -2088,6 +2123,7 @@ fn convert_citations(list: &XmlCitationList) -> Vec<Reference> {
             volume: c.volume.clone(),
             first_page: c.first_page.clone(),
             unstructured: c.unstructured_citation.clone(),
+            asserted_by,
             ..Default::default()
         });
     }
@@ -2237,6 +2273,7 @@ fn from_query(query: XmlQuery) -> Data {
                     data.relations.push(Relation {
                         id: community_slug_as_url(&pc.group_title, "rogue-scholar.org"),
                         type_: "IsPartOf".to_string(),
+                        ..Default::default()
                     });
                 }
                 citation_list = pc.citation_list.clone();
@@ -2397,6 +2434,7 @@ fn from_query(query: XmlQuery) -> Data {
         data.relations.push(Relation {
             id: issn_as_url(&container_id),
             type_: "IsPartOf".to_string(),
+            ..Default::default()
         });
     }
 

@@ -2,8 +2,6 @@
 
 commonmeta-rs is a Rust library to implement Commonmeta, the common Metadata Model for Scholarly Metadata. Use commonmeta to convert scholarly metadata in a variety of formats, listed below. Commonmeta-rs is work in progress, the first release was on June 17, 2026. Implementations in other languages are also available ([Go](https://github.com/front-matter/commonmeta), [Python](https://github.com/front-matter/commonmeta-py), [Ruby](https://github.com/front-matter/commonmeta-ruby)).
 
-commonmeta uses semantic versioning. Currently, its major version number is still at 0, meaning the API is not yet stable, and breaking changes are expected in the internal API and commonmeta JSON format.
-
 ## Supported Metadata Formats
 
 Commonmeta-rs reads and/or writes these metadata formats:
@@ -12,7 +10,7 @@ Commonmeta-rs reads and/or writes these metadata formats:
 | ---------------------------------------------------------------------------------------- | ------------ | --------------------------------------- | ----- | ----- |
 | Commonmeta                                                                               | commonmeta   | application/vnd.commonmeta+json         | yes   | yes   |
 | [CrossRef XML](https://www.crossref.org/schema/documentation/unixref1.1/unixref1.1.html) | crossref_xml | application/vnd.crossref.unixref+xml    | yes   | yes   |
-| [Crossref](https://api.crossref.org)                                                     | crossref     | application/vnd.crossref+json           | yes   | n/a   |
+| [Crossref](https://api.crossref.org)                                                     | crossref     | application/vnd.crossref+json           | yes   | yes   |
 | [DataCite](https://api.datacite.org/)                                                    | datacite     | application/vnd.datacite.datacite+json  | yes   | yes   |
 | [DataCite XML](https://api.datacite.org/)                                                            | datacite_xml | application/vnd.datacite.datacite+xml | yes     | no |
 | [Schema.org (in JSON-LD)](http://schema.org/)                                            | schema_org   | application/vnd.schemaorg.ld+json       | yes   | yes   |
@@ -31,7 +29,6 @@ Commonmeta-rs reads and/or writes these metadata formats:
 | [OpenAlex](https://www.openalex.org/)                                                    | openalex     | n/a                                     | yes   | no    |
 
 _commonmeta_: the Commonmeta format is the native format for the library and used internally.
-_Planned_: we plan to implement this format for the v1.0 public release.
 _Later_: we plan to implement this format in a later release.
 
 ## Build & run
@@ -57,10 +54,10 @@ cargo run -- convert record.json --from commonmeta --to csl --file out.json
 # Render a formatted citation (CSL style + locale)
 cargo run -- convert 10.5555/12345678 --from crossref --to citation --style apa --locale en-US
 
-# Fetch a batch of records from an API and write them as a JSON array
+# Fetch a batch of records from an API and write them as a commonmeta JSON array
 cargo run -- list --from crossref --number 100 --type journal-article --file out.json
 
-# Read VRAIX metadata from a local SQLite file
+# Read metadata from a local VRAIX SQLite file
 cargo run -- list crossref-2026-06-15.sqlite3 --from vraix --number 0 --to commonmeta --file out.json.gz
 
 # Parquet output (.parquet file extension, --to commonmeta only): records are split into batches of 100,000, written in parallel, and zstd-compressed
