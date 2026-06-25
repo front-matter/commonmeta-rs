@@ -498,7 +498,15 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
         .build()
         .map_err(FileError::Http)?;
 
-    let total: Option<u64> = head_content_length(&client, url);
+    let (total, supports_range) = head_content_length(&client, url);
+
+    if !supports_range {
+        eprintln!("download: server does not support Range requests — streaming without resume");
+        // Discard any partial file; we can't resume, so starting from the
+        // beginning is the only correct thing to do.
+        offset = 0;
+        fs::remove_file(&part).ok();
+    }
 
     // If the .part file already covers the full content (interrupted rename),
     // just finish the rename.
@@ -534,15 +542,15 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
             }
         }
 
-        let end = match total {
-            Some(t) => (offset + CHUNK - 1).min(t - 1),
-            None => offset + CHUNK - 1,
-        };
-
-        let resp = client
-            .get(url)
-            .header("Range", format!("bytes={offset}-{end}"))
-            .send();
+        let mut req = client.get(url);
+        if supports_range {
+            let end = match total {
+                Some(t) => (offset + CHUNK - 1).min(t - 1),
+                None => offset + CHUNK - 1,
+            };
+            req = req.header("Range", format!("bytes={offset}-{end}"));
+        }
+        let resp = req.send();
 
         let mut resp = match resp {
             Ok(r) => r,
@@ -585,16 +593,27 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
             });
         }
 
-        // Server returned 200 instead of 206: it ignored our Range header.
-        // If we have partial bytes those would be overwritten — restart from 0.
-        if status.as_u16() == 200 && offset > 0 {
+        // When we sent a Range header but got 200, the server ignored it.
+        // We can't use the partial .part bytes — restart from 0 and remember
+        // that this server doesn't support Range for future chunks.
+        if supports_range && status.as_u16() == 200 && offset > 0 {
             eprintln!("download: server ignores Range header, restarting from 0");
             offset = 0;
             file.seek(io::SeekFrom::Start(0))?;
             file.set_len(0)?;
         }
 
-        let mut chunk_remaining: u64 = end - offset + 1;
+        // For non-Range requests the full body is one chunk; use content-length
+        // as the bound (or u64::MAX to stream until EOF).
+        let mut chunk_remaining: u64 = if supports_range {
+            let end = match total {
+                Some(t) => (offset + CHUNK - 1).min(t - 1),
+                None => offset + CHUNK - 1,
+            };
+            end - offset + 1
+        } else {
+            total.unwrap_or(u64::MAX)
+        };
         let mut buf = vec![0u8; READ_BUF];
 
         loop {
@@ -603,13 +622,14 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
                 Ok(n) => n,
                 Err(e) => {
                     retries += 1;
+                    let detail = error_chain(&e);
                     if retries > MAX_RETRIES {
                         return Err(FileError::Download {
                             url: url.to_string(),
                             message: format!(
                                 "read error after {}: {}",
                                 fmt_bytes(offset),
-                                e
+                                detail
                             ),
                         });
                     }
@@ -617,7 +637,7 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
                     eprintln!(
                         "download: read error at {} ({}) — retry {}/{} in {}",
                         fmt_bytes(offset),
-                        e,
+                        detail,
                         retries,
                         MAX_RETRIES,
                         fmt_duration_short(wait)
@@ -693,13 +713,27 @@ fn part_path(dest: &Path) -> PathBuf {
 }
 
 /// GET Content-Length via HEAD without downloading the body.
-fn head_content_length(client: &Client, url: &str) -> Option<u64> {
-    client
+/// Returns `(content_length, supports_range)`.
+/// `supports_range` is true when the server sends `Accept-Ranges: bytes`.
+/// When false, chunked Range requests won't work — stream as a single request.
+fn head_content_length(client: &Client, url: &str) -> (Option<u64>, bool) {
+    let resp = match client
         .head(url)
         .timeout(Duration::from_secs(30))
         .send()
-        .ok()?
-        .content_length()
+        .ok()
+    {
+        Some(r) => r,
+        None => return (None, true), // assume range support; will retry on failure
+    };
+    let length = resp.content_length();
+    let supports_range = resp
+        .headers()
+        .get("accept-ranges")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("bytes"))
+        .unwrap_or(false);
+    (length, supports_range)
 }
 
 /// Human-readable byte count: "304.25 GiB", "45.00 MiB", etc.
@@ -728,6 +762,25 @@ fn fmt_duration_short(d: Duration) -> String {
     } else {
         format!("{s}s")
     }
+}
+
+/// Walk the `std::error::Error::source()` chain and return a string that
+/// includes every level, colon-separated. Reqwest wraps the root OS error
+/// (e.g. "connection reset by peer (os error 104)") several levels deep
+/// behind a generic "request or response body error" Display — this makes
+/// the actual cause visible in log output.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut msg = e.to_string();
+    let mut src = e.source();
+    while let Some(cause) = src {
+        let cause_str = cause.to_string();
+        if cause_str != msg {
+            msg.push_str(": ");
+            msg.push_str(&cause_str);
+        }
+        src = cause.source();
+    }
+    msg
 }
 
 /// Exponential back-off with 300 s cap: 10 s → 30 s → 90 s → 270 s → 300 s.
