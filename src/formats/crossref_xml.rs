@@ -2196,6 +2196,7 @@ fn convert_item_number(item: &XmlItemNumber) -> Vec<Identifier> {
     vec![Identifier {
         identifier: id_text,
         identifier_type: id_type,
+        ..Default::default()
     }]
 }
 
@@ -2465,6 +2466,7 @@ fn from_query(query: XmlQuery) -> Data {
     data.identifiers.push(Identifier {
         identifier: data.id.clone(),
         identifier_type: "DOI".to_string(),
+        ..Default::default()
     });
     data.identifiers.extend(convert_item_number(&item_number));
 
@@ -2595,6 +2597,7 @@ mod tests {
         data.identifiers.push(Identifier {
             identifier: "https://doi.org/10.5555/12345678".to_string(),
             identifier_type: "DOI".to_string(),
+            ..Default::default()
         });
 
         let doi_data = build_doi_data(&data);

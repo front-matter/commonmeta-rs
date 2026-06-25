@@ -34,12 +34,6 @@
   "date_published": "2023-03-20",
   "date_updated": "2023-03-20T14:26:48+00:00",
   "description": "Ruby gem and command-line utility for conversion of DOI metadata from and to different metadata formats, including schema.org. Fork of version 1.19.12 of the bolognese gem.",
-  "identifiers": [
-    {
-      "identifier": "https://doi.org/10.5281/zenodo.7752775",
-      "identifier_type": "DOI"
-    }
-  ],
   "license": {
     "id": "MIT",
     "title": "MIT License",

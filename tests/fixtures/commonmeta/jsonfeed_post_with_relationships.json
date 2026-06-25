@@ -44,12 +44,6 @@
       "award_number": "777523"
     }
   ],
-  "identifiers": [
-    {
-      "identifier": "https://doi.org/10.53731/ewrv712-2k7rx6d",
-      "identifier_type": "DOI"
-    }
-  ],
   "image": "https://storage.ghost.io/c/c5/33/c533c955-b5f3-4ff1-ae2d-6b52a212e602/content/images/2022/08/pid_graph_image-1.webp",
   "language": "en",
   "license": {

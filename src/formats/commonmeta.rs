@@ -29,6 +29,9 @@ pub fn read(json: &str) -> Result<Data> {
 fn prepare(data: &Data) -> Data {
     let mut out = data.clone();
     out.schema_version = COMMONMETA_V1_SCHEMA_URL.to_string();
+    // The top-level id field already captures the canonical identifier;
+    // keeping it in identifiers too is redundant.
+    out.identifiers.retain(|i| i.identifier != out.id);
     // strip fields not in the v1.0 references schema (key/id/type/reference/asserted_by)
     for r in &mut out.references {
         r.publisher.clear();
@@ -313,6 +316,7 @@ fn unflatten_row_lossy(row: &CommonmetaRow) -> Data {
             vec![crate::data::Identifier {
                 identifier: row.doi.clone(),
                 identifier_type: "DOI".to_string(),
+                ..Default::default()
             }]
         },
         publisher: crate::data::Publisher {
@@ -367,6 +371,10 @@ fn unflatten_row_lossy(row: &CommonmetaRow) -> Data {
 }
 
 const SQLITE_DDL: &str = r#"PRAGMA synchronous=NORMAL;
+CREATE TABLE IF NOT EXISTS settings (
+    "key"   TEXT PRIMARY KEY NOT NULL,
+    "value" TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS works (
     "id"             TEXT PRIMARY KEY NOT NULL,
     "type"           TEXT NOT NULL DEFAULT '',
@@ -384,10 +392,8 @@ CREATE INDEX IF NOT EXISTS works_date_published ON works("date_published");
 CREATE INDEX IF NOT EXISTS works_date_updated ON works("date_updated");
 CREATE INDEX IF NOT EXISTS works_provider ON works("provider");"#;
 // "title", "subjects", and "language" are plain columns to support a future
-// FTS5 content-table for BM25 full-text search:
-//   CREATE VIRTUAL TABLE works_fts USING fts5(
-//       title, subjects, content="works", content_rowid="rowid", tokenize="unicode61"
-//   );
+// Tantivy FTS index for BM25 full-text search:
+//   CREATE INDEX works_fts ON works(title, subjects) USING fts WITH (tokenizer='default');
 // All other fields live in the zstd-compressed "metadata" BLOB.
 
 const SQLITE_INSERT: &str = r#"INSERT OR REPLACE INTO works (
@@ -449,33 +455,25 @@ pub fn serialize_to_row(mut data: Data) -> PreparedRow {
 /// DB). When false the existing file is kept and the table is created only if
 /// it does not exist yet — callers use `INSERT OR REPLACE` so rows with the
 /// same `id` are updated in place.
-pub(crate) async fn init_sqlite_writer_async(path: &Path, overwrite: bool) -> Result<turso::Connection> {
+pub(crate) fn init_sqlite_writer(path: &Path, overwrite: bool) -> Result<rusqlite::Connection> {
     if overwrite && path.exists() {
         std::fs::remove_file(path)
             .map_err(|e| Error::Parse(format!("failed to remove '{}': {}", path.display(), e)))?;
     }
-    let db = turso::Builder::new_local(&path.to_string_lossy())
-        .build()
-        .await
+    let conn = rusqlite::Connection::open(path)
         .map_err(|e| Error::Parse(format!("failed to open sqlite '{}': {}", path.display(), e)))?;
-    let conn = db
-        .connect()
-        .map_err(|e| Error::Parse(format!("failed to connect sqlite '{}': {}", path.display(), e)))?;
-    // WAL pragma returns a result row so use query() to consume it
-    conn.query("PRAGMA journal_mode=WAL", ())
-        .await
+    let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))
         .map_err(|e| Error::Parse(format!("failed to set WAL mode: {}", e)))?;
     conn.execute_batch(SQLITE_DDL)
-        .await
         .map_err(|e| Error::Parse(format!("failed to create works table: {}", e)))?;
     Ok(conn)
 }
 
-/// Write pre-serialized rows in a single transaction. Takes ownership so no
-/// cloning is needed — the caller (typically [`stream_dump_to_sqlite`]) already
-/// produced the rows in parallel via [`serialize_to_row`].
-pub(crate) async fn write_sqlite_batch_rows_async(
-    conn: &turso::Connection,
+/// Write pre-serialized rows in a single transaction with a prepared statement.
+/// The statement is compiled once and reused for every row — avoids the
+/// per-row parse+compile overhead of calling `execute()` directly in a loop.
+pub(crate) fn write_sqlite_batch_rows(
+    conn: &rusqlite::Connection,
     rows: Vec<PreparedRow>,
 ) -> Result<()> {
     if rows.is_empty() {
@@ -483,30 +481,27 @@ pub(crate) async fn write_sqlite_batch_rows_async(
     }
     let tx = conn
         .unchecked_transaction()
-        .await
-        .map_err(|e| Error::Parse(format!("failed to begin transaction: {}", e)))?;
-    for row in rows {
-        let id_for_err = row.id.clone();
-        tx.execute(
-            SQLITE_INSERT,
-            turso::params![
+        .map_err(|e| sqlite_err(e, "failed to begin transaction"))?;
+    {
+        let mut stmt = tx
+            .prepare(SQLITE_INSERT)
+            .map_err(|e| sqlite_err(e, "failed to prepare insert"))?;
+        for row in &rows {
+            let id_for_err = row.id.clone();
+            stmt.execute(rusqlite::params![
                 row.id, row.type_, row.url, row.title, row.subjects,
                 row.language, row.date_published, row.date_updated, row.provider,
                 row.metadata,
-            ],
-        )
-        .await
-        .map_err(|e| sqlite_err(e, &format!("failed to insert '{}'", id_for_err)))?;
+            ])
+            .map_err(|e| sqlite_err(e, &format!("failed to insert '{}'", id_for_err)))?;
+        }
     }
     tx.commit()
-        .await
         .map_err(|e| sqlite_err(e, "failed to commit transaction"))?;
     // Flush WAL frames back to the main database file when no readers are
     // blocking. Prevents unbounded WAL growth (and SQLITE_FULL) when a
     // concurrent reader holds an open transaction across multiple batches.
-    conn.execute("PRAGMA wal_checkpoint(PASSIVE)", ())
-        .await
-        .ok();
+    let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
     Ok(())
 }
 
@@ -527,51 +522,25 @@ pub fn upsert_sqlite(data: &[Data], path: &Path) -> Result<()> {
 
 fn write_sqlite_impl(data: &[Data], path: &Path, overwrite: bool) -> Result<()> {
     let rows: Vec<PreparedRow> = data.iter().map(|d| serialize_to_row(d.clone())).collect();
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| Error::Parse(e.to_string()))?
-        .block_on(async {
-            let conn = init_sqlite_writer_async(path, overwrite).await?;
-            write_sqlite_batch_rows_async(&conn, rows).await
-        })
+    let conn = init_sqlite_writer(path, overwrite)?;
+    write_sqlite_batch_rows(&conn, rows)
 }
 
 /// Return the total number of rows in the `works` table of a commonmeta SQLite
 /// database. Used to report the cumulative count after an upsert.
 pub fn count_sqlite_works(path: &Path) -> Result<usize> {
-    let path = path.to_path_buf();
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| Error::Parse(e.to_string()))?
-        .block_on(async {
-            let db = turso::Builder::new_local(&path.to_string_lossy())
-                .build()
-                .await
-                .map_err(|e| Error::Parse(e.to_string()))?;
-            let conn = db.connect().map_err(|e| Error::Parse(e.to_string()))?;
-            let mut rows = conn
-                .query("SELECT COUNT(*) FROM works", ())
-                .await
-                .map_err(|e| Error::Parse(e.to_string()))?;
-            let n: i64 = rows
-                .next()
-                .await
-                .map_err(|e| Error::Parse(e.to_string()))?
-                .ok_or_else(|| Error::Parse("empty COUNT result".into()))?
-                .get(0)
-                .map_err(|e| Error::Parse(e.to_string()))?;
-            Ok(n.max(0) as usize)
-        })
+    let conn = rusqlite::Connection::open(path)
+        .map_err(|e| Error::Parse(e.to_string()))?;
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM works", [], |row| row.get(0))
+        .map_err(|e| Error::Parse(e.to_string()))?;
+    Ok(n.max(0) as usize)
 }
 
 const SQLITE_SELECT: &str = r#"SELECT "metadata" FROM works ORDER BY rowid"#;
 
-/// Reads back `Data` records by decompressing and deserialising the `metadata`
-/// BLOB written by `serialize_to_row`.
-async fn read_sqlite_rows_async(
-    conn: &turso::Connection,
+fn read_sqlite_rows(
+    conn: &rusqlite::Connection,
     limit: Option<usize>,
     offset: usize,
 ) -> Result<Vec<Data>> {
@@ -581,15 +550,12 @@ async fn read_sqlite_rows_async(
         _ => SQLITE_SELECT.to_string(),
     };
 
-    let mut rows = conn
-        .query(&sql, ())
-        .await
-        .map_err(|e| Error::Parse(e.to_string()))?;
-
+    let mut stmt = conn.prepare(&sql).map_err(|e| Error::Parse(e.to_string()))?;
+    let mut rows = stmt.query([]).map_err(|e| Error::Parse(e.to_string()))?;
     let mut results = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| Error::Parse(e.to_string()))? {
-        let blob = row
-            .get::<Vec<u8>>(0)
+    while let Some(row) = rows.next().map_err(|e| Error::Parse(e.to_string()))? {
+        let blob: Vec<u8> = row
+            .get(0)
             .map_err(|e| Error::Parse(format!("failed to read metadata blob: {}", e)))?;
         let decompressed = zstd::decode_all(std::io::Cursor::new(&blob))
             .map_err(|e| Error::Parse(format!("failed to decompress metadata: {}", e)))?;
@@ -603,20 +569,9 @@ async fn read_sqlite_rows_async(
 /// Read records from a commonmeta SQLite database written by [`write_sqlite`].
 /// Pass `limit = None` to load all rows; `offset` can be used for pagination.
 pub fn read_sqlite_commonmeta(path: &Path, limit: Option<usize>, offset: usize) -> Result<Vec<Data>> {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| Error::Parse(e.to_string()))?
-        .block_on(async {
-            let db = turso::Builder::new_local(&path.to_string_lossy())
-                .build()
-                .await
-                .map_err(|e| Error::Parse(format!("failed to open '{}': {}", path.display(), e)))?;
-            let conn = db
-                .connect()
-                .map_err(|e| Error::Parse(format!("failed to connect '{}': {}", path.display(), e)))?;
-            read_sqlite_rows_async(&conn, limit, offset).await
-        })
+    let conn = rusqlite::Connection::open(path)
+        .map_err(|e| Error::Parse(format!("failed to open '{}': {}", path.display(), e)))?;
+    read_sqlite_rows(&conn, limit, offset)
 }
 
 /// Read a list of commonmeta records back from the `CommonmetaRow` Parquet
@@ -655,6 +610,7 @@ mod tests {
             identifiers: vec![Identifier {
                 identifier: "10.1234/abc".to_string(),
                 identifier_type: "DOI".to_string(),
+                ..Default::default()
             }],
             contributors: vec![Contributor::person(
                 Person {
@@ -789,6 +745,7 @@ mod tests {
         data.identifiers.push(Identifier {
             identifier: "1234-5678".to_string(),
             identifier_type: "ISSN".to_string(),
+            ..Default::default()
         });
         data.additional_descriptions.push(Description {
             description: "A second description".to_string(),
@@ -838,38 +795,26 @@ mod tests {
         let list = vec![sample_data()];
         write_sqlite(&list, &path).unwrap();
 
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                let db = turso::Builder::new_local(&path.to_string_lossy()).build().await.unwrap();
-                let conn = db.connect().unwrap();
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM works", [], |r| r.get(0)).unwrap();
+            assert_eq!(count, 1);
 
-                let mut rows = conn.query("SELECT COUNT(*) FROM works", ()).await.unwrap();
-                let count: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
-                assert_eq!(count, 1);
+            let (id, title, type_): (String, String, String) = conn.query_row(
+                r#"SELECT "id", "title", "type" FROM works"#, [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            ).unwrap();
+            assert_eq!(id, "https://doi.org/10.1234/abc");
+            assert_eq!(title, "A Sample Title");
+            assert_eq!(type_, "JournalArticle");
 
-                let mut rows = conn
-                    .query(r#"SELECT "id", "title", "type" FROM works"#, ())
-                    .await
-                    .unwrap();
-                let row = rows.next().await.unwrap().unwrap();
-                let id: String = row.get(0).unwrap();
-                let title: String = row.get(1).unwrap();
-                let type_: String = row.get(2).unwrap();
-                assert_eq!(id, "https://doi.org/10.1234/abc");
-                assert_eq!(title, "A Sample Title");
-                assert_eq!(type_, "JournalArticle");
-
-                // metadata BLOB round-trips the full record including contributors
-                let mut rows = conn.query("SELECT metadata FROM works", ()).await.unwrap();
-                let blob: Vec<u8> = rows.next().await.unwrap().unwrap().get(0).unwrap();
-                let decompressed = zstd::decode_all(std::io::Cursor::new(&blob)).unwrap();
-                let parsed: serde_json::Value = serde_json::from_slice(&decompressed).unwrap();
-                let contributors = parsed["contributors"].as_array().unwrap();
-                assert_eq!(contributors.len(), 1);
-            });
+            // metadata BLOB round-trips the full record including contributors
+            let blob: Vec<u8> = conn.query_row("SELECT metadata FROM works", [], |r| r.get(0)).unwrap();
+            let decompressed = zstd::decode_all(std::io::Cursor::new(&blob)).unwrap();
+            let parsed: serde_json::Value = serde_json::from_slice(&decompressed).unwrap();
+            let contributors = parsed["contributors"].as_array().unwrap();
+            assert_eq!(contributors.len(), 1);
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -882,20 +827,11 @@ mod tests {
 
         write_sqlite(&[sample_data()], &path).unwrap();
 
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                let db = turso::Builder::new_local(&path.to_string_lossy()).build().await.unwrap();
-                let conn = db.connect().unwrap();
-                let mut rows = conn
-                    .query("SELECT provider FROM works", ())
-                    .await
-                    .unwrap();
-                let provider: String = rows.next().await.unwrap().unwrap().get(0).unwrap();
-                assert_eq!(provider, sample_data().provider);
-            });
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let provider: String = conn.query_row("SELECT provider FROM works", [], |r| r.get(0)).unwrap();
+            assert_eq!(provider, sample_data().provider);
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -910,17 +846,11 @@ mod tests {
         write_sqlite(&[sample_data()], &path).unwrap();
         write_sqlite(&[sample_data()], &path).unwrap();
 
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                let db = turso::Builder::new_local(&path.to_string_lossy()).build().await.unwrap();
-                let conn = db.connect().unwrap();
-                let mut rows = conn.query("SELECT COUNT(*) FROM works", ()).await.unwrap();
-                let count: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
-                assert_eq!(count, 1);
-            });
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM works", [], |r| r.get(0)).unwrap();
+            assert_eq!(count, 1);
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }

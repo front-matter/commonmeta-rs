@@ -262,6 +262,7 @@ fn from_csl(content: CslContent) -> Data {
             data.identifiers.push(Identifier {
                 identifier: id_val,
                 identifier_type: id_type.to_string(),
+                ..Default::default()
             });
         }
     }
@@ -271,6 +272,7 @@ fn from_csl(content: CslContent) -> Data {
         data.identifiers.push(Identifier {
             identifier: content.pmid.clone(),
             identifier_type: "PMID".to_string(),
+            ..Default::default()
         });
     }
 
@@ -658,6 +660,7 @@ mod tests {
         data.identifiers.push(Identifier {
             identifier: "https://doi.org/10.1234/identifier".to_string(),
             identifier_type: "DOI".to_string(),
+            ..Default::default()
         });
 
         let out = write(&data).unwrap();

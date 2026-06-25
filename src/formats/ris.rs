@@ -115,6 +115,7 @@ pub fn read(input: &str) -> Result<Data> {
         identifiers.push(Identifier {
             identifier: id.clone(),
             identifier_type: "DOI".to_string(),
+            ..Default::default()
         });
     }
 
@@ -454,6 +455,7 @@ ER  - \
             identifiers: vec![Identifier {
                 identifier: "https://doi.org/10.5555/from-identifiers".to_string(),
                 identifier_type: "DOI".to_string(),
+                ..Default::default()
             }],
             ..Data::default()
         };

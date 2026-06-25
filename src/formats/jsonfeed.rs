@@ -438,6 +438,7 @@ pub fn read(content: &Content) -> Result<Data> {
         data.identifiers.push(Identifier {
             identifier: normalize_doi(&id),
             identifier_type: "DOI".to_string(),
+            ..Default::default()
         });
     }
     if !content.guid.is_empty() {
@@ -451,12 +452,14 @@ pub fn read(content: &Content) -> Result<Data> {
                 data.identifiers.push(Identifier {
                     identifier: doi,
                     identifier_type: "DOI".to_string(),
+                    ..Default::default()
                 });
             }
         } else {
             data.identifiers.push(Identifier {
                 identifier: content.guid.clone(),
                 identifier_type: "GUID".to_string(),
+                ..Default::default()
             });
         }
     }

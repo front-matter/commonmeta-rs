@@ -139,6 +139,7 @@ fn from_entry(entry: &Entry) -> Result<Data> {
         data.identifiers.push(crate::data::Identifier {
             identifier: normalized,
             identifier_type: "DOI".to_string(),
+            ..Default::default()
         });
     } else {
         let url_str = entry.url().unwrap_or_default();

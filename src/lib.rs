@@ -22,6 +22,7 @@ pub use error::{Error, Result};
 pub use formats::crossref;
 pub use formats::inveniordm::PushResult;
 pub use formats::ror::AffiliationMatch;
+pub use formats::ror::RorRelease;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -58,10 +59,89 @@ pub fn write_ror_json(data: &Data) -> Result<Vec<u8>> {
     formats::ror::write_json(data)
 }
 
+/// Fetch a ROR organization by its ROR URL or other organization identifier
+/// from the ROR API. Returns the record converted to the commonmeta `Data` model.
+pub fn fetch_ror(id: &str) -> Result<Data> {
+    formats::ror::fetch(id)
+}
+
+/// Fetch metadata for the latest ROR data release from Zenodo (InvenioRDM)
+/// without downloading the full archive. Returns the version tag, release date,
+/// Zenodo record ID, zip filename, and direct download URL.
+pub fn fetch_latest_ror_release() -> Result<RorRelease> {
+    formats::ror::fetch_latest_ror_release()
+}
+
+/// Download and parse the zip archive described by `release`. The zip is
+/// cached locally for 30 days so repeat installs of the same version skip the
+/// network round-trip. Returns `(records, from_cache)`.
+pub fn download_ror_release(release: &RorRelease) -> Result<(Vec<formats::ror::Ror>, bool)> {
+    formats::ror::download_release(release)
+}
+
+/// Convenience: fetch the latest release metadata then immediately download
+/// and parse the dump. Returns `(RorRelease, Vec<Ror>, from_cache)`.
+pub fn download_ror_all() -> Result<(RorRelease, Vec<formats::ror::Ror>, bool)> {
+    formats::ror::download_all()
+}
+
+/// Look up a ROR organization by its full URL (e.g. `https://ror.org/012xzy7a9`)
+/// from a local SQLite database written by [`write_ror_sqlite`]. Returns the
+/// record converted to the commonmeta `Data` model, or an error when not found.
+pub fn fetch_ror_sqlite(
+    id: &str,
+    db_path: &std::path::Path,
+) -> Result<Data> {
+    formats::ror::fetch_sqlite(id, db_path)
+}
+
+/// Write a list of ROR records to a SQLite3 database at `path` with an
+/// `organizations` table. Existing file is deleted first. JSON array columns
+/// (`types`, `locations`, `names`, `external_ids`) are queryable via SQLite's
+/// `json_each()`. The `metadata` column stores the full ROR JSON as a
+/// zstd-compressed BLOB for lossless round-trips.
+///
+/// Pass `version` and `date` (e.g. `"v2.9"`, `"2026-06-23"`) to record the
+/// installed release in the `settings` table; pass `None` for both when writing
+/// a standalone file where version tracking is not needed.
+pub fn write_ror_sqlite(
+    list: &[formats::ror::Ror],
+    path: &std::path::Path,
+    version: Option<&str>,
+    date: Option<&str>,
+) -> Result<()> {
+    formats::ror::write_sqlite(list, path, version, date)
+}
+
+/// Return the ROR version string stored in the local database's `settings`
+/// table, or `None` when the database does not exist or no version has been
+/// recorded yet.
+pub fn fetch_installed_ror_version(db_path: &std::path::Path) -> Result<Option<String>> {
+    formats::ror::fetch_installed_ror_version(db_path)
+}
+
+/// Return the `vraix_date` (pidbox install date, `YYYY-MM-DD`) stored in the
+/// local works database's `settings` table, or `None` when the database does
+/// not exist or no date has been recorded yet.
+pub fn fetch_installed_vraix_date(db_path: &std::path::Path) -> Result<Option<String>> {
+    formats::vraix::fetch_installed_vraix_date(db_path)
+}
+
 /// Match a free-text affiliation string against ROR organizations using the
 /// ROR v2 affiliation endpoint.
 pub fn match_ror_affiliation(affiliation: &str) -> Result<Vec<AffiliationMatch>> {
     formats::ror::match_affiliation(affiliation)
+}
+
+/// Match a free-text affiliation string against a local ROR SQLite database
+/// written by [`write_ror_sqlite`]. Uses Turso's Tantivy-backed FTS index for
+/// full-text search across all organization name variants. Returns results in
+/// relevance order with `chosen` set on the top result.
+pub fn match_ror_affiliation_sqlite(
+    affiliation: &str,
+    db_path: &std::path::Path,
+) -> Result<Vec<AffiliationMatch>> {
+    formats::ror::match_affiliation_sqlite(affiliation, db_path)
 }
 
 /// Like `convert`, but passes CSL `style` and `locale` through to the citation writer.
@@ -495,29 +575,20 @@ mod tests {
         let path = dir.join("datacite.sqlite3");
         std::fs::remove_file(&path).ok();
 
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                let db = turso::Builder::new_local(&path.to_string_lossy()).build().await.unwrap();
-                let conn = db.connect().unwrap();
-                conn.execute_batch(
-                    "CREATE TABLE works (pid TEXT, source_id INTEGER, raw_metadata TEXT);",
-                )
-                .await
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE TABLE works (pid TEXT, source_id INTEGER, raw_metadata TEXT);")
                 .unwrap();
-                conn.execute(
-                    "INSERT INTO works (pid, source_id, raw_metadata) VALUES (?1, ?2, ?3)",
-                    turso::params![
-                        "pid-0",
-                        1i64,
-                        r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#
-                    ],
-                )
-                .await
-                .unwrap();
-            });
+            conn.execute(
+                "INSERT INTO works (pid, source_id, raw_metadata) VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    "pid-0",
+                    1i64,
+                    r#"{"data":{"id":"10.5678/b","attributes":{"doi":"10.5678/b"}}}"#
+                ],
+            )
+            .unwrap();
+        }
 
         let data = fetch_vraix_dump(
             "datacite",

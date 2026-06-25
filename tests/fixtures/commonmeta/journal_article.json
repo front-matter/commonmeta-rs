@@ -31,12 +31,6 @@
   ],
   "date_published": "2024-03-15",
   "description": "An abstract about things.",
-  "identifiers": [
-    {
-      "identifier": "https://doi.org/10.5555/12345678",
-      "identifier_type": "DOI"
-    }
-  ],
   "language": "en",
   "license": {
     "id": "CC-BY-4.0",

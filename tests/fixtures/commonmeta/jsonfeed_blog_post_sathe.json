@@ -32,10 +32,6 @@
   ],
   "identifiers": [
     {
-      "identifier": "https://doi.org/10.59350/kj95y-gp867",
-      "identifier_type": "DOI"
-    },
-    {
       "identifier": "642fc8cdc036c5003dc96193",
       "identifier_type": "GUID"
     }

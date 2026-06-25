@@ -3,25 +3,35 @@
  */
 
 use clap::{Arg, ArgMatches, Command};
+use std::path::Path;
+
+use crate::cmd::resolve_db_path;
 
 pub fn command() -> Command {
     Command::new("convert")
         .about("Convert scholarly metadata between formats")
         .long_about(
             "Convert scholarly metadata between formats.\n\n\
-            The input is a file path or a DOI/URL. When --from is omitted the\n\
-            format is auto-detected: DOIs are resolved via the DOI RA API;\n\
+            The input is a file path, a DOI/URL, or a ROR organization ID. \
+            When --from is omitted the format is auto-detected: DOIs are \
+            resolved via the DOI RA API; ROR URLs are detected by pattern; \
             JSON files are inspected for schema markers.\n\n\
-            Supported input formats:  crossref, commonmeta\n\
-            Supported output formats: commonmeta, csl\n\n\
+            For ROR input, a local 'commonmeta.sqlite3' in the current \
+            directory (produced by 'commonmeta list --to ror --file \
+            commonmeta.sqlite3') is queried first — faster and offline. \
+            The ROR API is used as a fallback when no local database exists.\n\n\
+            Supported input formats:  crossref, commonmeta, ror\n\
+            Supported output formats: commonmeta, csl, ror, inveniordm\n\n\
             Examples:\n\n\
             commonmeta convert 10.5555/12345678\n\
             commonmeta convert https://doi.org/10.59350/gj8re-sca95 --to csl\n\
+            commonmeta convert https://ror.org/02nr0ka47\n\
+            commonmeta convert https://ror.org/02nr0ka47 --to inveniordm\n\
             commonmeta convert record.json --from commonmeta --to csl --file out.json",
         )
         .arg(
             Arg::new("input")
-                .help("File path, DOI, or URL")
+                .help("File path, DOI, URL, or ROR ID")
                 .required(true)
                 .index(1),
         )
@@ -29,13 +39,13 @@ pub fn command() -> Command {
             Arg::new("from")
                 .long("from")
                 .short('f')
-                .help("Input format (crossref, commonmeta); auto-detected if omitted"),
+                .help("Input format (crossref, commonmeta, ror); auto-detected if omitted"),
         )
         .arg(
             Arg::new("to")
                 .long("to")
                 .short('t')
-                .help("Output format (commonmeta, csl)")
+                .help("Output format (commonmeta, csl, ror, inveniordm)")
                 .default_value("commonmeta"),
         )
         .arg(
@@ -84,6 +94,10 @@ fn ra_for_prefix(prefix: &str) -> Option<String> {
 }
 
 pub(crate) fn detect_format(input: &str) -> String {
+    // ROR URL or bare ROR ID
+    if commonmeta::utils::validate_ror(input).is_some() {
+        return "ror".to_string();
+    }
     // DOI URL or bare DOI → look up registration agency
     if let Some(prefix) = doi_prefix(input) {
         return ra_for_prefix(&prefix).unwrap_or_else(|| "crossref".to_string());
@@ -101,6 +115,15 @@ pub(crate) fn detect_format(input: &str) -> String {
         if v.get("message-type").is_some() {
             return "crossref".to_string();
         }
+        // ROR record
+        if v.get("id")
+            .and_then(|s| s.as_str())
+            .map(|s| s.starts_with("https://ror.org/"))
+            .unwrap_or(false)
+            && v.get("names").is_some()
+        {
+            return "ror".to_string();
+        }
     }
     "commonmeta".to_string()
 }
@@ -109,10 +132,9 @@ pub(crate) fn detect_format(input: &str) -> String {
 
 pub fn execute(matches: &ArgMatches) -> Result<(), String> {
     let input_arg = matches.get_one::<String>("input").expect("required");
-    let to = matches.get_one::<String>("to").expect("has default");
     let out_file = matches.get_one::<String>("file");
 
-    let input = if std::path::Path::new(input_arg).exists() {
+    let input = if Path::new(input_arg).exists() {
         std::fs::read_to_string(input_arg)
             .map_err(|e| format!("failed to read '{}': {}", input_arg, e))?
     } else {
@@ -124,27 +146,72 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         None => detect_format(&input),
     };
 
+    // For ROR input the natural default output is "ror", not "commonmeta".
+    let to_arg = matches.get_one::<String>("to").expect("has default");
+    let to = if from == "ror" && to_arg == "commonmeta" {
+        "ror"
+    } else {
+        to_arg.as_str()
+    };
+
     let style = matches.get_one::<String>("style").map(String::as_str);
     let locale = matches.get_one::<String>("locale").map(String::as_str);
 
+    // ── ROR input path ────────────────────────────────────────────────────────
+    if from == "ror" {
+        // Normalize the input to a full ROR URL for the SQLite lookup.
+        let ror_id = commonmeta::utils::normalize_ror(&input);
+        if ror_id.is_empty() {
+            return Err(format!("'{}' is not a valid ROR identifier", input));
+        }
+
+        // Prefer the local SQLite database (COMMONMETA_DB > platform default).
+        let db_path_str = resolve_db_path(None);
+        let db_path = Path::new(&db_path_str);
+        let data = if db_path.exists() {
+            commonmeta::fetch_ror_sqlite(&ror_id, db_path).map_err(|e| e.to_string())?
+        } else {
+            commonmeta::fetch_ror(&ror_id).map_err(|e| e.to_string())?
+        };
+
+        let output = match to {
+            "inveniordm" => {
+                commonmeta::write("ror", &data).map_err(|e| e.to_string())?
+            }
+            "ror" | _ => {
+                commonmeta::write_ror_json(&data).map_err(|e| e.to_string())?
+            }
+        };
+
+        return write_output(&output, to, out_file);
+    }
+
+    // ── Scholarly-work input path ─────────────────────────────────────────────
     let output = if to == "citation" {
         commonmeta::convert_citation(&from, &input, style, locale).map_err(|e| e.to_string())?
     } else {
         commonmeta::convert(&from, to, &input).map_err(|e| e.to_string())?
     };
 
-    // Pretty-print JSON output.
-    let pretty: Vec<u8> = serde_json::from_slice::<serde_json::Value>(&output)
-        .ok()
-        .and_then(|v| serde_json::to_vec_pretty(&v).ok())
-        .unwrap_or(output);
+    write_output(&output, to, out_file)
+}
+
+fn write_output(output: &[u8], to: &str, out_file: Option<&String>) -> Result<(), String> {
+    // JSON formats get pretty-printed; XML/YAML stay as-is.
+    let formatted: Vec<u8> = if matches!(to, "inveniordm") {
+        output.to_vec()
+    } else {
+        serde_json::from_slice::<serde_json::Value>(output)
+            .ok()
+            .and_then(|v| serde_json::to_vec_pretty(&v).ok())
+            .unwrap_or_else(|| output.to_vec())
+    };
 
     match out_file {
-        Some(path) => {
-            std::fs::write(path, &pretty).map_err(|e| format!("failed to write '{}': {}", path, e))
-        }
+        Some(path) => std::fs::write(path, &formatted)
+            .map_err(|e| format!("failed to write '{}': {}", path, e)),
         None => {
-            println!("{}", String::from_utf8_lossy(&pretty));
+            println!("{}", String::from_utf8_lossy(&formatted));
             Ok(())
         }
     }

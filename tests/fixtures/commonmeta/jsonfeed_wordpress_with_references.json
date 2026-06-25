@@ -59,10 +59,6 @@
   ],
   "identifiers": [
     {
-      "identifier": "https://doi.org/10.59350/hke8v-d1e66",
-      "identifier_type": "DOI"
-    },
-    {
       "identifier": "https://svpow.com/?p=20992",
       "identifier_type": "GUID"
     }

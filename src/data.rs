@@ -433,6 +433,8 @@ pub struct GeoLocation {
 pub struct Identifier {
     pub identifier: String,
     pub identifier_type: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub asserted_by: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

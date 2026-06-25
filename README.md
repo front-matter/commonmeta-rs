@@ -38,7 +38,7 @@ cargo build
 cargo test
 ```
 
-The `commonmeta` binary has seven subcommands: `convert`, `encode`, `decode`, `list`, `push`, `put`, and `match`.
+The `commonmeta` binary has eight subcommands: `convert`, `encode`, `decode`, `install`, `list`, `push`, `put`, and `match`.
 
 ```sh
 # Encode/decode a Crockford base32 identifier suffix
@@ -70,12 +70,50 @@ cargo run -- push --from crossref --number 10 --to inveniordm --host rogue-schol
 # Same as push, but for a single record (DOI, URL, or file path)
 cargo run -- put 10.5555/12345678 --from crossref --to inveniordm --host rogue-scholar.org --token TOKEN
 
-# Match a free-text affiliation string to a ROR organization
+# Download the latest ROR data release and install it as a local SQLite database
+cargo run -- install ror
+
+# Match a free-text affiliation string to a ROR organization (uses local DB when available)
 cargo run -- match "Leibniz Universität Hannover"
 cargo run -- match "Leibniz Universität Hannover" --to inveniordm
+
+# Look up a ROR organization (uses local DB when available)
+cargo run -- convert https://ror.org/02nr0ka47
+cargo run -- convert https://ror.org/02nr0ka47 --to inveniordm
 ```
 
 Use `cargo run -- <subcommand> --help` for the full list of options for each subcommand.
+
+## Local database
+
+The `install`, `match`, and `convert` subcommands can use a local SQLite database
+of ROR organizations for faster, offline lookups instead of querying the ROR API.
+
+Install with:
+
+```sh
+commonmeta install ror
+```
+
+The database path is resolved in this order:
+
+1. `--file` flag (on `install` and `match`)
+2. `COMMONMETA_DB` environment variable
+3. Platform default:
+
+| Platform | Default path                                                   |
+| -------- | -------------------------------------------------------------- |
+| macOS    | `~/Library/Application Support/commonmeta/commonmeta.sqlite3` |
+| Linux    | `/var/lib/commonmeta/commonmeta.sqlite3`                       |
+
+```sh
+# Use a custom path via environment variable
+COMMONMETA_DB=/data/ror.sqlite3 commonmeta match "MIT"
+
+# Use a custom path via flag
+commonmeta install ror --file /data/ror.sqlite3
+commonmeta match "MIT" --file /data/ror.sqlite3
+```
 
 ## Documentation
 

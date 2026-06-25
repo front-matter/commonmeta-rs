@@ -693,6 +693,7 @@ fn from_xml_resource(r: XmlResource) -> Data {
             data.identifiers.push(Identifier {
                 identifier: v.to_string(),
                 identifier_type: ai.identifier_type,
+                ..Default::default()
             });
         }
     }
@@ -700,6 +701,7 @@ fn from_xml_resource(r: XmlResource) -> Data {
         data.identifiers.push(Identifier {
             identifier: doi_id.clone(),
             identifier_type: "DOI".to_string(),
+            ..Default::default()
         });
     }
 

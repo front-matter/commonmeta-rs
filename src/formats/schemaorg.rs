@@ -360,6 +360,7 @@ fn from_content(content: SoContent) -> Data {
         data.identifiers.push(Identifier {
             identifier: normalize_doi(&doi),
             identifier_type: "DOI".to_string(),
+            ..Default::default()
         });
     }
     for id_str in &idents {
@@ -378,6 +379,7 @@ fn from_content(content: SoContent) -> Data {
                 data.identifiers.push(Identifier {
                     identifier,
                     identifier_type: identifier_type.to_string(),
+                    ..Default::default()
                 });
             }
         }

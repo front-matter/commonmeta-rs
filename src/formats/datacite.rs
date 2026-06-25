@@ -651,12 +651,14 @@ fn from_attributes(attr: DcAttributes) -> Data {
         data.identifiers.push(Identifier {
             identifier: id.alternate_identifier,
             identifier_type: id.alternate_identifier_type,
+            ..Default::default()
         });
     }
     if !data.identifiers.iter().any(|i| i.identifier == doi_id) {
         data.identifiers.push(Identifier {
             identifier: doi_id.clone(),
             identifier_type: "DOI".to_string(),
+            ..Default::default()
         });
     }
 
@@ -1460,6 +1462,7 @@ mod tests {
         data.identifiers.push(Identifier {
             identifier: "https://doi.org/10.1234/identifier".to_string(),
             identifier_type: "DOI".to_string(),
+            ..Default::default()
         });
 
         let out = write(&data).unwrap();

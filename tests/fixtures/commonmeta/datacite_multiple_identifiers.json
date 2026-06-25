@@ -1,54 +1,48 @@
 {
-    "id": "https://doi.org/10.5281/zenodo.48440",
-    "type": "Software",
-    "contributors": [
-        {
-            "type": "Person",
-            "person": {
-                "given_name": "Kristian",
-                "family_name": "Garza"
-            },
-            "roles": [
-                "Author"
-            ]
-        }
-    ],
-    "date_published": "2016-03-27",
-    "description": "This tools are used to analyse the data produced by the Crosssover Experiment I designed to test Choice Architecture techniques as UI interventions in a SEEk4Science data catalogue. It contains: - Data structures for the experimental data.<br> - Visualisation functions<br> - Analysis functions ## Installation - R<br> - python<br> - ipython 4 Clone and use. ## Usage <br> ```python<br> source('parallel_plot.r')<br> with(z, parallelset(trt,response, freq=count, alpha=0.2))<br> ``` <br> ## Contributing 1. Fork it!<br> 2. Create your feature branch: `git checkout -b my-new-feature`<br> 3. Commit your changes: `git commit -am 'Add some feature'`<br> 4. Push to the branch: `git push origin my-new-feature`<br> 5. Submit a pull request :D <br> ## License This work supports my PhD Thesis at University of Manchester.",
-    "identifiers": [
-        {
-            "identifier": "https://doi.org/10.5281/zenodo.48440",
-            "identifier_type": "DOI"
-        }
-    ],
-    "license": {
-        "id": "CC-BY-NC-SA-4.0",
-        "title": "Creative Commons Attribution Non Commercial Share Alike 4.0 International",
-        "url": "https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode"
+  "id": "https://doi.org/10.5281/zenodo.48440",
+  "type": "Software",
+  "contributors": [
+    {
+      "type": "Person",
+      "person": {
+        "given_name": "Kristian",
+        "family_name": "Garza"
+      },
+      "roles": [
+        "Author"
+      ]
+    }
+  ],
+  "date_published": "2016-03-27",
+  "description": "This tools are used to analyse the data produced by the Crosssover Experiment I designed to test Choice Architecture techniques as UI interventions in a SEEk4Science data catalogue. It contains: - Data structures for the experimental data.<br> - Visualisation functions<br> - Analysis functions ## Installation - R<br> - python<br> - ipython 4 Clone and use. ## Usage <br> ```python<br> source('parallel_plot.r')<br> with(z, parallelset(trt,response, freq=count, alpha=0.2))<br> ``` <br> ## Contributing 1. Fork it!<br> 2. Create your feature branch: `git checkout -b my-new-feature`<br> 3. Commit your changes: `git commit -am 'Add some feature'`<br> 4. Push to the branch: `git push origin my-new-feature`<br> 5. Submit a pull request :D <br> ## License This work supports my PhD Thesis at University of Manchester.",
+  "license": {
+    "id": "CC-BY-NC-SA-4.0",
+    "title": "Creative Commons Attribution Non Commercial Share Alike 4.0 International",
+    "url": "https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode"
+  },
+  "provider": "DataCite",
+  "publisher": {
+    "name": "Zenodo"
+  },
+  "relations": [
+    {
+      "id": "https://github.com/kjgarza/frame_experiment_analysis/tree/v1.0",
+      "type": "IsSupplementTo"
+    }
+  ],
+  "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+  "subjects": [
+    {
+      "subject": "choice architecture"
     },
-    "provider": "DataCite",
-    "publisher": {
-        "name": "Zenodo"
+    {
+      "subject": "crossover experiment"
     },
-    "relations": [
-        {
-            "id": "https://github.com/kjgarza/frame_experiment_analysis/tree/v1.0",
-            "type": "IsSupplementTo"
-        }
-    ],
-    "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
-    "subjects": [
-        {
-            "subject": "choice architecture"
-        },
-        {
-            "subject": "crossover experiment"
-        },
-        {
-            "subject": "hci"
-        }
-    ],
-    "title": "Analysis Tools for Crossover Experiment of UI using Choice Architecture",
-    "url": "https://zenodo.org/record/48440",
-    "version": "v1.0"
+    {
+      "subject": "hci"
+    }
+  ],
+  "title": "Analysis Tools for Crossover Experiment of UI using Choice Architecture",
+  "url": "https://zenodo.org/record/48440",
+  "version": "v1.0"
 }

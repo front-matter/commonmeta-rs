@@ -1,57 +1,51 @@
 {
-    "id": "https://doi.org/10.5438/4k3m-nyvg",
-    "type": "BlogPost",
-    "contributors": [
-        {
-            "type": "Person",
-            "person": {
-                "id": "https://orcid.org/0000-0003-1419-2405",
-                "given_name": "Martin",
-                "family_name": "Fenner"
-            },
-            "roles": [
-                "Author"
-            ]
-        }
-    ],
-    "date_published": "2016-12-20",
-    "date_updated": "2016-12-20",
-    "dates": {
-        "created": "2016-12-20"
+  "id": "https://doi.org/10.5438/4k3m-nyvg",
+  "type": "BlogPost",
+  "contributors": [
+    {
+      "type": "Person",
+      "person": {
+        "id": "https://orcid.org/0000-0003-1419-2405",
+        "given_name": "Martin",
+        "family_name": "Fenner"
+      },
+      "roles": [
+        "Author"
+      ]
+    }
+  ],
+  "date_published": "2016-12-20",
+  "date_updated": "2016-12-20",
+  "dates": {
+    "created": "2016-12-20"
+  },
+  "description": "Eating your own dog food is a slang term to describe that an organization should itself use the products and services it provides. For DataCite this means that we should use DOIs with appropriate metadata and strategies for long-term preservation for...",
+  "language": "en",
+  "license": {
+    "id": "CC-BY-4.0",
+    "title": "Creative Commons Attribution 4.0 International",
+    "url": "https://creativecommons.org/licenses/by/4.0/legalcode"
+  },
+  "provider": "DataCite",
+  "publisher": {
+    "name": "DataCite"
+  },
+  "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+  "subjects": [
+    {
+      "subject": "datacite"
     },
-    "description": "Eating your own dog food is a slang term to describe that an organization should itself use the products and services it provides. For DataCite this means that we should use DOIs with appropriate metadata and strategies for long-term preservation for...",
-    "identifiers": [
-        {
-            "identifier": "https://doi.org/10.5438/4k3m-nyvg",
-            "identifier_type": "DOI"
-        }
-    ],
-    "language": "en",
-    "license": {
-        "id": "CC-BY-4.0",
-        "title": "Creative Commons Attribution 4.0 International",
-        "url": "https://creativecommons.org/licenses/by/4.0/legalcode"
+    {
+      "subject": "doi"
     },
-    "provider": "DataCite",
-    "publisher": {
-        "name": "DataCite"
+    {
+      "subject": "metadata"
     },
-    "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
-    "subjects": [
-        {
-            "subject": "datacite"
-        },
-        {
-            "subject": "doi"
-        },
-        {
-            "subject": "metadata"
-        },
-        {
-            "subject": "featured"
-        }
-    ],
-    "title": "Eating your own Dog Food",
-    "url": "https://blog.datacite.org/eating-your-own-dog-food/",
-    "version": "1.0"
+    {
+      "subject": "featured"
+    }
+  ],
+  "title": "Eating your own Dog Food",
+  "url": "https://blog.datacite.org/eating-your-own-dog-food/",
+  "version": "1.0"
 }

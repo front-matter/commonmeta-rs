@@ -1,12 +1,19 @@
 use clap::{Arg, ArgMatches, Command};
+use std::path::Path;
+
+use crate::cmd::resolve_db_path;
 
 pub fn command() -> Command {
     Command::new("match")
         .about("Match a string to an identifier")
         .long_about(
             "Match a string to an identifier. Supports affiliation matching for ROR.\n\n\
+            When a local SQLite database exists at the default location (produced by \
+            'commonmeta install ror'), it is queried via FTS5 full-text search instead \
+            of the ROR API — faster and offline. Use --file to specify a different path.\n\n\
             Example usage:\n\n\
-            commonmeta match \"Leibniz Universität Hannover\"",
+            commonmeta match \"Leibniz Universität Hannover\"\n\
+            commonmeta match \"MIT\" --file /data/ror.sqlite3",
         )
         .arg(
             Arg::new("input")
@@ -27,6 +34,15 @@ pub fn command() -> Command {
                 .short('t')
                 .help("Output format: ror (raw ROR JSON) or inveniordm (vocabulary YAML)")
                 .default_value("ror"),
+        )
+        .arg(
+            Arg::new("file")
+                .long("file")
+                .value_name("FILE")
+                .help(
+                    "Path to a local ROR SQLite database. Overrides COMMONMETA_DB \
+                    and the platform default.",
+                ),
         )
 }
 
@@ -51,7 +67,17 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         return Ok(());
     }
 
-    let candidates = commonmeta::match_ror_affiliation(input).map_err(|e| e.to_string())?;
+    let db_path_str = resolve_db_path(matches.get_one::<String>("file"));
+    let db_path = Path::new(&db_path_str);
+    let local_db: Option<&Path> = if db_path.exists() { Some(db_path) } else { None };
+
+    let candidates = match local_db {
+        Some(db_path) => {
+            commonmeta::match_ror_affiliation_sqlite(input, db_path)
+                .map_err(|e| e.to_string())?
+        }
+        None => commonmeta::match_ror_affiliation(input).map_err(|e| e.to_string())?,
+    };
     let chosen = candidates.into_iter().find(|m| m.chosen);
 
     let organization = match chosen {

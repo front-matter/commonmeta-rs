@@ -14,10 +14,11 @@ fn main() -> Result<(), String> {
         .subcommand(cmd::decode::command())
         .subcommand(cmd::dump::command())
         .subcommand(cmd::encode::command())
+        .subcommand(cmd::install::command())
         .subcommand(cmd::list::command())
+        .subcommand(cmd::r#match::command())
         .subcommand(cmd::push::command())
         .subcommand(cmd::put::command())
-        .subcommand(cmd::r#match::command())
         .get_matches();
 
     match matches.subcommand() {
@@ -25,10 +26,11 @@ fn main() -> Result<(), String> {
         Some(("decode", sub_matches)) => cmd::decode::execute(sub_matches),
         Some(("package", sub_matches)) => cmd::dump::execute(sub_matches),
         Some(("encode", sub_matches)) => cmd::encode::execute(sub_matches),
+        Some(("install", sub_matches)) => cmd::install::execute(sub_matches),
         Some(("list", sub_matches)) => cmd::list::execute(sub_matches),
+        Some(("match", sub_matches)) => cmd::r#match::execute(sub_matches),
         Some(("push", sub_matches)) => cmd::push::execute(sub_matches),
         Some(("put", sub_matches)) => cmd::put::execute(sub_matches),
-        Some(("match", sub_matches)) => cmd::r#match::execute(sub_matches),
         _ => Ok(()),
     }
 }

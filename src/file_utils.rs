@@ -2,9 +2,9 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use reqwest::blocking::Client;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 
 // ---------- error handling ----------
@@ -62,6 +62,26 @@ pub fn unzip_content(input: &[u8], filename: &str) -> Result<Vec<u8>> {
     }
 
     Ok(output)
+}
+
+/// Extract the first file ending in `.json` from a zip archive in memory,
+/// skipping directory entries. Useful when the JSON filename inside a zip is
+/// derived from the version string and not known ahead of time.
+pub fn unzip_first_json(input: &[u8]) -> Result<Vec<u8>> {
+    let reader = io::Cursor::new(input);
+    let mut archive = zip::ZipArchive::new(reader)?;
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        if !file.is_dir() && file.name().ends_with(".json") {
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf)?;
+            return Ok(buf);
+        }
+    }
+    Err(FileError::Io(io::Error::new(
+        io::ErrorKind::NotFound,
+        "no .json file found in zip archive",
+    )))
 }
 
 /// Opens a ZIP file and extracts the content of a specific file.
@@ -333,17 +353,36 @@ fn read_cache(path: &Path, ttl: Duration) -> Option<Vec<u8>> {
 }
 
 fn write_cache(path: &Path, bytes: &[u8]) {
-    if let Err(e) = write_file(path, bytes) {
-        eprintln!("warning: failed to cache '{}': {}", path.display(), e);
+    // Write to a sibling .tmp file then rename atomically so a crash or kill
+    // between create and write_all never leaves a partial file that looks valid.
+    let Some(parent) = path.parent() else { return };
+    if let Err(e) = fs::create_dir_all(parent) {
+        eprintln!("warning: failed to create cache dir '{}': {}", parent.display(), e);
+        return;
+    }
+    let tmp = path.with_extension("tmp");
+    if let Err(e) = fs::write(&tmp, bytes) {
+        eprintln!("warning: failed to write cache '{}': {}", tmp.display(), e);
+        fs::remove_file(&tmp).ok();
+        return;
+    }
+    if let Err(e) = fs::rename(&tmp, path) {
+        eprintln!("warning: failed to rename cache '{}': {}", tmp.display(), e);
+        fs::remove_file(&tmp).ok();
     }
 }
 
 /// Remove cached files older than `ttl` from `cache_dir(namespace)`.
+/// Skips `.part` files — those belong to in-progress downloads and must not
+/// be pruned independently of their final destination.
 fn prune_cache(namespace: &str, ttl: Duration) {
     let Ok(entries) = fs::read_dir(cache_dir(namespace)) else {
         return;
     };
     for entry in entries.flatten() {
+        if entry.path().extension().is_some_and(|e| e == "part") {
+            continue;
+        }
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
@@ -380,60 +419,33 @@ impl Write for ProgressWriter<'_> {
     }
 }
 
-/// Stream-download `url` directly into a file at `path`, bypassing an
-/// in-memory buffer. Suitable for files that are too large to hold in RAM
-/// (e.g. the pidbox dump). Parent directories are created if needed.
-/// Returns the number of bytes written.
+/// Stream-download `url` into a file at `path` with HTTP Range resumption and
+/// automatic retry-on-failure. Suitable for files that are too large to hold
+/// in RAM. Parent directories are created if needed.
+///
+/// The download is broken into 128 MiB chunks, each fetched as a separate
+/// `Range: bytes=START-END` request. This bounds the per-request lifetime so
+/// stalls are detected within the per-chunk timeout. TCP keepalive (30 s probe
+/// interval) detects dead connections at the OS level; they surface as read
+/// errors that trigger a retry from the current byte offset.
+///
+/// A `.part` sibling file stores in-progress bytes so a killed process can
+/// resume from where it left off. Progress is written to stderr every 30 s
+/// with wall-clock timestamps — suitable for tmux/screen/nohup logs.
+///
+/// Returns the total bytes written (including any bytes already in .part on
+/// a resumed run).
 pub fn download_file_to_path(url: &str, path: &Path) -> Result<u64> {
-    let client = Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(6 * 60 * 60)) // 6 h for very large files
-        .build()
-        .map_err(FileError::Http)?;
-
-    let mut resp = client.get(url).send().map_err(|e| FileError::Download {
-        url: url.to_string(),
-        message: describe_reqwest_error(&e),
-    })?;
-
-    if !resp.status().is_success() {
-        return Err(FileError::StatusCode {
-            status: resp.status().as_u16(),
-            text: resp.status().to_string(),
-        });
-    }
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let total_bytes = resp.content_length().unwrap_or(0);
-    let bar = crate::progress::bytes_bar("downloading", total_bytes);
-
-    let file = File::create(path)?;
-    let mut written: u64 = 0;
-    let mut buf = vec![0u8; 256 * 1024];
-    let src = resp.by_ref();
-    loop {
-        let n = src.read(&mut buf).map_err(|e| FileError::Download {
-            url: url.to_string(),
-            message: format!("read error after {} bytes: {}", written, e),
-        })?;
-        if n == 0 {
-            break;
-        }
-        (&file).write_all(&buf[..n])?;
-        written += n as u64;
-        bar.inc(n as u64);
-    }
-    bar.finish_and_clear();
-    Ok(written)
+    download_to_path_resumable(url, path)
 }
 
-/// Like [`download_file_cached`] but the cached copy is a file on disk rather
+/// Like [`download_file_to_path`] but the cached copy is a file on disk rather
 /// than a `Vec<u8>` in memory, making it suitable for very large downloads.
-/// Returns `(path, was_cache_hit)`. The file at `path` is always valid on
-/// `Ok`; a partial write from a previous interrupted download is replaced.
+/// Returns `(path, was_cache_hit)`. The file at `path` is always valid on `Ok`.
+///
+/// A `.part` sibling preserves in-progress state across process restarts.
+/// On a TTL miss both the stale file and any `.part` are deleted so the next
+/// download starts fresh (rather than resuming a possibly-stale partial file).
 pub fn ensure_cached_path(
     url: &str,
     namespace: &str,
@@ -453,12 +465,274 @@ pub fn ensure_cached_path(
                 return Ok((path, true));
             }
         }
+        // File exists but is stale: remove it and any in-progress .part so the
+        // next download starts clean rather than resuming outdated bytes.
+        fs::remove_file(&path).ok();
+        fs::remove_file(&part_path(&path)).ok();
     }
 
-    // Remove a stale or partial file before writing.
-    fs::remove_file(&path).ok();
-    download_file_to_path(url, &path)?;
+    download_to_path_resumable(url, &path)?;
     Ok((path, false))
+}
+
+// ---------- resumable downloader ----------
+
+const CHUNK: u64 = 128 * 1024 * 1024; // 128 MiB per HTTP Range request
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(30);
+const MAX_RETRIES: u32 = 20;
+const READ_BUF: usize = 256 * 1024; // 256 KiB read buffer
+
+fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let part = part_path(dest);
+    let mut offset: u64 = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+
+    let client = Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .tcp_keepalive(KEEPALIVE_INTERVAL)
+        .build()
+        .map_err(FileError::Http)?;
+
+    let total: Option<u64> = head_content_length(&client, url);
+
+    // If the .part file already covers the full content (interrupted rename),
+    // just finish the rename.
+    if let Some(t) = total {
+        if offset >= t && offset > 0 {
+            fs::rename(&part, dest)?;
+            return Ok(offset);
+        }
+    }
+
+    if offset > 0 {
+        let of = total
+            .map(|t| format!(" / {} ({:.1}%)", fmt_bytes(t), offset as f64 / t as f64 * 100.0))
+            .unwrap_or_default();
+        eprintln!("download: resuming at {}{}", fmt_bytes(offset), of);
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&part)?;
+    file.seek(io::SeekFrom::Start(offset))?;
+
+    let overall_start = Instant::now();
+    let mut progress_mark = Instant::now();
+    let mut progress_bytes: u64 = 0;
+    let mut retries: u32 = 0;
+
+    'outer: loop {
+        if let Some(t) = total {
+            if offset >= t {
+                break;
+            }
+        }
+
+        let end = match total {
+            Some(t) => (offset + CHUNK - 1).min(t - 1),
+            None => offset + CHUNK - 1,
+        };
+
+        let resp = client
+            .get(url)
+            .header("Range", format!("bytes={offset}-{end}"))
+            .send();
+
+        let mut resp = match resp {
+            Ok(r) => r,
+            Err(e) => {
+                retries += 1;
+                if retries > MAX_RETRIES {
+                    return Err(FileError::Download {
+                        url: url.to_string(),
+                        message: format!(
+                            "too many errors after {}; last: {}",
+                            fmt_bytes(offset),
+                            describe_reqwest_error(&e)
+                        ),
+                    });
+                }
+                let wait = retry_backoff(retries - 1);
+                eprintln!(
+                    "download: connect failed ({}) — retry {}/{} in {}",
+                    describe_reqwest_error(&e),
+                    retries,
+                    MAX_RETRIES,
+                    fmt_duration_short(wait)
+                );
+                std::thread::sleep(wait);
+                continue;
+            }
+        };
+
+        let status = resp.status();
+
+        if status.as_u16() == 416 {
+            // Range Not Satisfiable — we are already at or past EOF.
+            break;
+        }
+
+        if !status.is_success() {
+            return Err(FileError::StatusCode {
+                status: status.as_u16(),
+                text: status.to_string(),
+            });
+        }
+
+        // Server returned 200 instead of 206: it ignored our Range header.
+        // If we have partial bytes those would be overwritten — restart from 0.
+        if status.as_u16() == 200 && offset > 0 {
+            eprintln!("download: server ignores Range header, restarting from 0");
+            offset = 0;
+            file.seek(io::SeekFrom::Start(0))?;
+            file.set_len(0)?;
+        }
+
+        let mut chunk_remaining: u64 = end - offset + 1;
+        let mut buf = vec![0u8; READ_BUF];
+
+        loop {
+            let n = match resp.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => {
+                    retries += 1;
+                    if retries > MAX_RETRIES {
+                        return Err(FileError::Download {
+                            url: url.to_string(),
+                            message: format!(
+                                "read error after {}: {}",
+                                fmt_bytes(offset),
+                                e
+                            ),
+                        });
+                    }
+                    let wait = retry_backoff(retries - 1);
+                    eprintln!(
+                        "download: read error at {} ({}) — retry {}/{} in {}",
+                        fmt_bytes(offset),
+                        e,
+                        retries,
+                        MAX_RETRIES,
+                        fmt_duration_short(wait)
+                    );
+                    std::thread::sleep(wait);
+                    continue 'outer;
+                }
+            };
+
+            file.write_all(&buf[..n])?;
+            let n64 = n as u64;
+            offset += n64;
+            progress_bytes += n64;
+            chunk_remaining = chunk_remaining.saturating_sub(n64);
+            retries = 0;
+
+            if progress_mark.elapsed() >= PROGRESS_INTERVAL {
+                let speed = progress_bytes as f64 / progress_mark.elapsed().as_secs_f64();
+                let of_total = total
+                    .map(|t| format!(" / {}", fmt_bytes(t)))
+                    .unwrap_or_default();
+                let pct = total
+                    .filter(|&t| t > 0)
+                    .map(|t| format!(" ({:.1}%)", offset as f64 / t as f64 * 100.0))
+                    .unwrap_or_default();
+                let eta = total
+                    .filter(|&t| t > offset && speed > 0.0)
+                    .map(|t| {
+                        let secs = (t - offset) as f64 / speed;
+                        format!(", ETA {}", fmt_duration_short(Duration::from_secs_f64(secs)))
+                    })
+                    .unwrap_or_default();
+                let ts = chrono::Local::now().format("%H:%M:%S");
+                eprintln!(
+                    "[{ts}] download: {}{}{} @ {}/s elapsed {}{}",
+                    fmt_bytes(offset),
+                    of_total,
+                    pct,
+                    fmt_bytes(speed as u64),
+                    fmt_duration_short(overall_start.elapsed()),
+                    eta,
+                );
+                progress_mark = Instant::now();
+                progress_bytes = 0;
+            }
+
+            if chunk_remaining == 0 {
+                break; // fetch next chunk
+            }
+        }
+    }
+
+    file.flush()?;
+    drop(file);
+
+    let ts = chrono::Local::now().format("%H:%M:%S");
+    let final_bytes = total.unwrap_or(offset);
+    eprintln!(
+        "[{ts}] download: complete — {} in {}",
+        fmt_bytes(final_bytes),
+        fmt_duration_short(overall_start.elapsed())
+    );
+
+    fs::rename(&part, dest)?;
+    Ok(final_bytes)
+}
+
+/// `dest` + `.part` suffix, used as the in-progress scratch file.
+fn part_path(dest: &Path) -> PathBuf {
+    let mut s = dest.as_os_str().to_os_string();
+    s.push(".part");
+    PathBuf::from(s)
+}
+
+/// GET Content-Length via HEAD without downloading the body.
+fn head_content_length(client: &Client, url: &str) -> Option<u64> {
+    client
+        .head(url)
+        .timeout(Duration::from_secs(30))
+        .send()
+        .ok()?
+        .content_length()
+}
+
+/// Human-readable byte count: "304.25 GiB", "45.00 MiB", etc.
+fn fmt_bytes(n: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut val = n as f64;
+    let mut unit = 0usize;
+    while val >= 1024.0 && unit + 1 < UNITS.len() {
+        val /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{n} B")
+    } else {
+        format!("{val:.2} {}", UNITS[unit])
+    }
+}
+
+/// Human-readable duration: "3h 47m", "12m 30s", "45s".
+fn fmt_duration_short(d: Duration) -> String {
+    let s = d.as_secs();
+    if s >= 3600 {
+        format!("{}h {:02}m", s / 3600, (s % 3600) / 60)
+    } else if s >= 60 {
+        format!("{}m {:02}s", s / 60, s % 60)
+    } else {
+        format!("{s}s")
+    }
+}
+
+/// Exponential back-off with 300 s cap: 10 s → 30 s → 90 s → 270 s → 300 s.
+fn retry_backoff(attempt: u32) -> Duration {
+    Duration::from_secs(10u64.saturating_mul(3u64.pow(attempt.min(4))).min(300))
 }
 
 /// Stream-decompress the zstd file at `src` into `dest`, creating `dest`

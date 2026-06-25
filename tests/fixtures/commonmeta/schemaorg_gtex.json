@@ -1,48 +1,42 @@
 {
-    "id": "https://doi.org/10.25491/d50j-3083",
-    "type": "Dataset",
-    "additional_type": "Gene expression matrices",
-    "contributors": [
-        {
-            "type": "Organization",
-            "organization": {
-                "name": "The GTEx Consortium"
-            },
-            "roles": [
-                "Author"
-            ]
-        }
-    ],
-    "date_published": "2017",
-    "identifiers": [
-        {
-            "identifier": "https://doi.org/10.25491/d50j-3083",
-            "identifier_type": "DOI"
-        }
-    ],
-    "provider": "DataCite",
-    "publisher": {
-        "name": "GTEx"
+  "id": "https://doi.org/10.25491/d50j-3083",
+  "type": "Dataset",
+  "additional_type": "Gene expression matrices",
+  "contributors": [
+    {
+      "type": "Organization",
+      "organization": {
+        "name": "The GTEx Consortium"
+      },
+      "roles": [
+        "Author"
+      ]
+    }
+  ],
+  "date_published": "2017",
+  "provider": "DataCite",
+  "publisher": {
+    "name": "GTEx"
+  },
+  "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
+  "subjects": [
+    {
+      "subject": "gtex"
     },
-    "schema_version": "https://commonmeta.org/commonmeta_v1.0.json",
-    "subjects": [
-        {
-            "subject": "gtex"
-        },
-        {
-            "subject": "annotation"
-        },
-        {
-            "subject": "phenotype"
-        },
-        {
-            "subject": "gene regulation"
-        },
-        {
-            "subject": "transcriptomics"
-        }
-    ],
-    "title": "Fully processed, filtered and normalized gene expression matrices (in BED format) for each tissue, which were used as input into FastQTL for eQTL discovery",
-    "url": "https://ors.datacite.org/doi:/10.25491/d50j-3083",
-    "version": "v7"
+    {
+      "subject": "annotation"
+    },
+    {
+      "subject": "phenotype"
+    },
+    {
+      "subject": "gene regulation"
+    },
+    {
+      "subject": "transcriptomics"
+    }
+  ],
+  "title": "Fully processed, filtered and normalized gene expression matrices (in BED format) for each tissue, which were used as input into FastQTL for eQTL discovery",
+  "url": "https://ors.datacite.org/doi:/10.25491/d50j-3083",
+  "version": "v7"
 }

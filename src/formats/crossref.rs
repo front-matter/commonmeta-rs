@@ -551,6 +551,7 @@ fn from_work(w: CrossrefWork) -> Data {
         vec![Identifier {
             identifier: id.clone(),
             identifier_type: "DOI".to_string(),
+            ..Default::default()
         }]
     } else {
         Vec::new()

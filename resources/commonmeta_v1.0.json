@@ -250,7 +250,8 @@
             "type": "object",
             "properties": {
               "identifier": { "type": "string" },
-              "identifier_type": { "$ref": "#/definitions/identifier_type" }
+              "identifier_type": { "$ref": "#/definitions/identifier_type" },
+              "asserted_by": { "$ref": "#/definitions/provider" }
             },
             "required": ["identifier", "identifier_type"]
           }

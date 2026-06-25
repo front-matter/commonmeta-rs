@@ -202,6 +202,7 @@ fn build_identifiers(work: &Work, id: &str) -> Vec<Identifier> {
         identifiers.push(Identifier {
             identifier: id.to_string(),
             identifier_type: "DOI".to_string(),
+            ..Default::default()
         });
     }
 
@@ -210,6 +211,7 @@ fn build_identifiers(work: &Work, id: &str) -> Vec<Identifier> {
         identifiers.push(Identifier {
             identifier: format!("https://openalex.org/{}", oa_id),
             identifier_type: "OpenAlex".to_string(),
+            ..Default::default()
         });
     }
 
@@ -239,6 +241,7 @@ fn build_identifiers(work: &Work, id: &str) -> Vec<Identifier> {
             identifiers.push(Identifier {
                 identifier: normalized,
                 identifier_type: id_type.to_string(),
+                ..Default::default()
             });
         }
     }

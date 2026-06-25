@@ -959,6 +959,7 @@ fn from_content(content: Content) -> Data {
         data.identifiers.push(Identifier {
             identifier: data.id.clone(),
             identifier_type: "DOI".to_string(),
+            ..Default::default()
         });
     }
     for v in &content.metadata.identifiers {
@@ -975,6 +976,7 @@ fn from_content(content: Content) -> Data {
         data.identifiers.push(Identifier {
             identifier: v.identifier.clone(),
             identifier_type: identifier_type.to_string(),
+            ..Default::default()
         });
     }
     // RID from record id field
@@ -985,6 +987,7 @@ fn from_content(content: Content) -> Data {
         data.identifiers.push(Identifier {
             identifier: s.to_string(),
             identifier_type: "RID".to_string(),
+            ..Default::default()
         });
     }
 
@@ -2030,6 +2033,7 @@ mod tests {
             identifiers: vec![Identifier {
                 identifier: "https://doi.org/10.5555/identifier-doi".to_string(),
                 identifier_type: "DOI".to_string(),
+                ..Default::default()
             }],
             title: "Example".to_string(),
             ..Data::default()

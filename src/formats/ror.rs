@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use crate::data::{Data, Identifier, Relation};
 use crate::error::{Error, Result};
@@ -22,7 +23,25 @@ where
 // ── ROR API structs ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Default, Serialize, Deserialize)]
+pub struct AdminEntry {
+    #[serde(default, deserialize_with = "null_as_empty")]
+    pub date: String,
+    #[serde(default, deserialize_with = "null_as_empty")]
+    pub schema_version: String,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Admin {
+    #[serde(default)]
+    pub created: AdminEntry,
+    #[serde(default)]
+    pub last_modified: AdminEntry,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Ror {
+    #[serde(default)]
+    pub admin: Option<Admin>,
     #[serde(default, deserialize_with = "null_as_empty")]
     pub id: String,
     #[serde(default)]
@@ -186,6 +205,7 @@ fn from_ror(ror: Ror) -> Data {
             Some(Identifier {
                 identifier: value,
                 identifier_type: id_type.to_string(),
+                ..Default::default()
             })
         })
         .collect();
@@ -592,6 +612,215 @@ pub fn write_parquet(list: &[Ror]) -> Result<Vec<u8>> {
         .map_err(|e| Error::Serialize(e.to_string()))
 }
 
+const ROR_SQLITE_DDL: &str = r#"PRAGMA synchronous=NORMAL;
+CREATE TABLE IF NOT EXISTS settings (
+    "key"   TEXT PRIMARY KEY NOT NULL,
+    "value" TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS organizations (
+    "id"           TEXT PRIMARY KEY NOT NULL,
+    "name"         TEXT NOT NULL DEFAULT '',
+    "status"       TEXT NOT NULL DEFAULT 'active',
+    "types"        TEXT NOT NULL DEFAULT '[]',
+    "locations"    TEXT NOT NULL DEFAULT '[]',
+    "names"        TEXT NOT NULL DEFAULT '[]',
+    "external_ids" TEXT NOT NULL DEFAULT '[]',
+    "date_updated" TEXT NOT NULL DEFAULT '',
+    "names_flat"   TEXT NOT NULL DEFAULT '',
+    "metadata"     BLOB NOT NULL DEFAULT x''
+);
+CREATE INDEX IF NOT EXISTS organizations_status ON organizations("status");
+CREATE INDEX IF NOT EXISTS organizations_date_updated ON organizations("date_updated");"#;
+
+// FTS5 virtual table — created as a content table so the full text lives in
+// `organizations` and FTS5 only stores the inverted index. Rebuilt in one
+// bulk pass after all rows are inserted (much faster than per-row Tantivy).
+const ROR_SQLITE_FTS5_DDL: &str =
+    "CREATE VIRTUAL TABLE organizations_fts USING fts5(\
+        name, names_flat, \
+        content=\"organizations\", \
+        content_rowid=\"rowid\", \
+        tokenize=\"unicode61 remove_diacritics 1\"\
+    )";
+
+const ROR_SQLITE_INSERT: &str = r#"INSERT OR REPLACE INTO organizations (
+    "id", "name", "status", "types", "locations", "names", "external_ids",
+    "date_updated", "names_flat", "metadata"
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#;
+
+struct RorRow {
+    id: String,
+    name: String,
+    names_flat: String,
+    status: String,
+    types: String,
+    locations: String,
+    names: String,
+    external_ids: String,
+    date_updated: String,
+    metadata: Vec<u8>,
+}
+
+fn serialize_ror_to_row(ror: &Ror) -> RorRow {
+    let name = get_display_name(ror);
+    let names_flat = ror
+        .names
+        .iter()
+        .map(|n| n.value.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let types = serde_json::to_string(&ror.types).unwrap_or_default();
+    let locations = serde_json::to_string(&ror.locations).unwrap_or_default();
+    let names = serde_json::to_string(&ror.names).unwrap_or_default();
+    let external_ids = serde_json::to_string(&ror.external_ids).unwrap_or_default();
+    let date_updated = ror
+        .admin
+        .as_ref()
+        .map(|a| a.last_modified.date.clone())
+        .unwrap_or_default();
+    let json = serde_json::to_string(ror).unwrap_or_default();
+    let metadata =
+        zstd::encode_all(json.as_bytes(), 0).unwrap_or_else(|_| json.into_bytes());
+    RorRow {
+        id: ror.id.clone(),
+        name,
+        names_flat,
+        status: ror.status.clone(),
+        types,
+        locations,
+        names,
+        external_ids,
+        date_updated,
+        metadata,
+    }
+}
+
+/// Write ROR records into the `organizations` table of the SQLite3 database at
+/// `path`. The database is created if it does not exist; if it does exist (e.g.
+/// it already contains a `works` table), only the `organizations` and
+/// `organizations_fts` tables are replaced — other tables are untouched.
+///
+/// The `metadata` column stores the complete ROR JSON as a zstd-compressed BLOB
+/// for lossless round-trips; the other columns hold denormalized lookup fields.
+pub fn write_sqlite(list: &[Ror], path: &Path, version: Option<&str>, date: Option<&str>) -> Result<()> {
+    use rusqlite::{params, Connection};
+
+    // Create the parent directory if needed (e.g. first-time install).
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                Error::Parse(format!(
+                    "failed to create directory '{}': {}",
+                    parent.display(),
+                    e
+                ))
+            })?;
+        }
+    }
+
+    let conn = Connection::open(path)
+        .map_err(|e| Error::Parse(format!("failed to open sqlite '{}': {}", path.display(), e)))?;
+    let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))
+        .map_err(|e| Error::Parse(format!("failed to set WAL mode: {}", e)))?;
+    conn.execute_batch(ROR_SQLITE_DDL)
+        .map_err(|e| Error::Parse(format!("failed to create organizations table: {}", e)))?;
+    // Migrate: add names_flat column if missing (pre-existing databases).
+    let _ = conn.execute(
+        "ALTER TABLE organizations ADD COLUMN \"names_flat\" TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    // Clear version so a crash mid-install forces a re-run.
+    let _ = conn.execute(
+        "DELETE FROM settings WHERE key IN ('ror_version', 'ror_date')",
+        [],
+    );
+    // Drop FTS5 virtual table before re-inserting (reinstall path).
+    let _ = conn.execute("DROP TABLE IF EXISTS organizations_fts", []);
+    // Plain BTree delete — no FTS active, so no per-row index overhead.
+    conn.execute("DELETE FROM organizations", [])
+        .map_err(|e| Error::Parse(format!("failed to clear organizations: {}", e)))?;
+
+    // Bulk insert all rows in a single transaction with a prepared statement.
+    // The statement is compiled once and reused for every row.
+    let rows: Vec<RorRow> = list.iter().map(serialize_ror_to_row).collect();
+    let bar = crate::progress::count_bar("writing", rows.len() as u64);
+    {
+        let tx = conn.unchecked_transaction()
+            .map_err(|e| Error::Parse(format!("failed to begin transaction: {}", e)))?;
+        {
+            let mut stmt = tx.prepare(ROR_SQLITE_INSERT)
+                .map_err(|e| Error::Parse(format!("failed to prepare insert: {}", e)))?;
+            for row in &rows {
+                stmt.execute(params![
+                    row.id,
+                    row.name,
+                    row.status,
+                    row.types,
+                    row.locations,
+                    row.names,
+                    row.external_ids,
+                    row.date_updated,
+                    row.names_flat,
+                    row.metadata,
+                ])
+                .map_err(|e| Error::Parse(format!("failed to insert organization: {}", e)))?;
+                bar.inc(1);
+            }
+        }
+        if let Some(v) = version {
+            tx.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('ror_version', ?1)",
+                params![v],
+            )
+            .map_err(|e| Error::Parse(format!("failed to store ror_version: {}", e)))?;
+        }
+        if let Some(d) = date {
+            tx.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('ror_date', ?1)",
+                params![d],
+            )
+            .map_err(|e| Error::Parse(format!("failed to store ror_date: {}", e)))?;
+        }
+        tx.commit()
+            .map_err(|e| Error::Parse(format!("failed to commit transaction: {}", e)))?;
+    }
+    bar.finish_and_clear();
+
+    // Build FTS5 index in one bulk pass over the content table.
+    eprintln!("Building FTS index...");
+    conn.execute_batch(ROR_SQLITE_FTS5_DDL)
+        .map_err(|e| Error::Parse(format!("failed to create FTS5 table: {}", e)))?;
+    conn.execute(
+        "INSERT INTO organizations_fts(organizations_fts) VALUES('rebuild')",
+        [],
+    )
+    .map_err(|e| Error::Parse(format!("failed to rebuild FTS5 index: {}", e)))?;
+    let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
+    Ok(())
+}
+
+/// Read the ROR version stored in the local database, or `None` if the
+/// database does not exist or no version has been recorded yet.
+pub fn fetch_installed_ror_version(db_path: &Path) -> Result<Option<String>> {
+    use rusqlite::{Connection, Error as SqliteError};
+
+    if !db_path.exists() {
+        return Ok(None);
+    }
+    let conn = Connection::open(db_path)
+        .map_err(|e| Error::Parse(format!("failed to open sqlite: {}", e)))?;
+    // The settings table may not exist in older databases — treat that as "no version recorded".
+    match conn.query_row(
+        "SELECT value FROM settings WHERE key = 'ror_version' LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(v) => Ok(Some(v)),
+        Err(SqliteError::QueryReturnedNoRows) => Ok(None),
+        Err(_) => Ok(None),
+    }
+}
+
 /// Write a list of ROR records, dispatching by file extension
 /// (".json", ".yaml", ".jsonl", ".csv", ".parquet"). Mirrors Go's `WriteAll`.
 pub fn write_all(list: &[Ror], extension: &str) -> Result<Vec<u8>> {
@@ -611,6 +840,15 @@ pub fn write_all(list: &[Ror], extension: &str) -> Result<Vec<u8>> {
         }
         ".csv" => write_csv(list),
         ".parquet" => write_parquet(list),
+        ".sqlite3" => {
+            let tmp = std::env::temp_dir()
+                .join(format!("ror-{}.sqlite3", std::process::id()));
+            write_sqlite(list, &tmp, None, None)?;
+            let bytes = std::fs::read(&tmp)
+                .map_err(|e| Error::Serialize(format!("failed to read temp sqlite: {}", e)))?;
+            let _ = std::fs::remove_file(&tmp);
+            Ok(bytes)
+        }
         other => Err(Error::UnsupportedFormat(other.to_string())),
     }
 }
@@ -855,6 +1093,82 @@ pub fn match_affiliation(affiliation: &str) -> Result<Vec<AffiliationMatch>> {
     Ok(resp.items)
 }
 
+/// Match a free-text affiliation string against a local ROR SQLite database
+/// (produced by [`write_sqlite`]). Uses Turso's Tantivy-backed FTS index for
+/// full-text matching across all organization name variants (`name` + `names_flat`).
+///
+/// Results are returned in relevance order (best match first) with `chosen`
+/// set on the top result.
+pub fn match_affiliation_sqlite(affiliation: &str, db_path: &Path) -> Result<Vec<AffiliationMatch>> {
+    let cleaned = clean_search_string(affiliation);
+    if cleaned.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // FTS5 implicit AND: space-separated terms all must appear in a document.
+    // Strip leading/trailing punctuation so FTS5 special chars (", *, ^) don't
+    // leak into the query string.
+    let fts_query = cleaned
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if fts_query.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let conn = rusqlite::Connection::open(db_path)
+        .map_err(|e| Error::Parse(format!("failed to open sqlite: {}", e)))?;
+
+    // FTS5 content-table JOIN: results are ranked by BM25 relevance.
+    // Only active orgs are returned; limit to 10 results.
+    let mut stmt = conn
+        .prepare(
+            "SELECT o.id, o.name, o.metadata \
+             FROM organizations_fts \
+             JOIN organizations AS o ON o.rowid = organizations_fts.rowid \
+             WHERE organizations_fts MATCH ?1 \
+               AND o.status = 'active' \
+             ORDER BY organizations_fts.rank \
+             LIMIT 10",
+        )
+        .map_err(|e| Error::Parse(format!("failed to prepare FTS query: {}", e)))?;
+
+    let mut matches: Vec<AffiliationMatch> = Vec::new();
+    let mut rows = stmt
+        .query(rusqlite::params![fts_query])
+        .map_err(|e| Error::Parse(format!("FTS query failed: {}", e)))?;
+
+    while let Some(row) = rows.next().map_err(|e| Error::Parse(e.to_string()))? {
+        let id: String = row.get(0).map_err(|e| Error::Parse(format!("read id: {}", e)))?;
+        let name: String = row.get(1).map_err(|e| Error::Parse(format!("read name: {}", e)))?;
+        let blob: Vec<u8> = row.get(2).map_err(|e| Error::Parse(format!("read metadata '{}': {}", id, e)))?;
+        let decompressed = zstd::decode_all(std::io::Cursor::new(&blob))
+            .map_err(|e| Error::Parse(format!("decompress '{}': {}", id, e)))?;
+        let ror: Ror = serde_json::from_slice(&decompressed)
+            .map_err(|e| Error::Parse(format!("deserialize '{}': {}", id, e)))?;
+        let organization = from_ror(ror);
+        matches.push(AffiliationMatch {
+            substring: name,
+            score: 0.0,
+            matching_type: "LOCAL".to_string(),
+            chosen: false,
+            organization,
+            organization_raw: Ror::default(),
+        });
+    }
+
+    let n = matches.len();
+    for (i, m) in matches.iter_mut().enumerate() {
+        m.score = if n <= 1 { 1.0 } else { 1.0 - (i as f64 / n as f64) };
+        m.chosen = i == 0;
+    }
+
+    Ok(matches)
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 pub fn read_json(input: &str) -> Result<Data> {
@@ -921,6 +1235,164 @@ pub fn fetch(input: &str) -> Result<Data> {
     };
 
     Ok(from_ror(ror))
+}
+
+/// Look up a ROR organization by its full URL (e.g. `https://ror.org/012xzy7a9`)
+/// from a local SQLite database written by [`write_sqlite`]. Returns the record
+/// converted to `Data`, or an error when the ID is not found.
+pub fn fetch_sqlite(id: &str, db_path: &Path) -> Result<Data> {
+    use rusqlite::{params, Connection};
+
+    let conn = Connection::open(db_path)
+        .map_err(|e| Error::Parse(format!("failed to open sqlite '{}': {}", db_path.display(), e)))?;
+    let blob: Vec<u8> = conn
+        .query_row(
+            "SELECT metadata FROM organizations WHERE id = ?1 LIMIT 1",
+            params![id],
+            |row| row.get(0),
+        )
+        .map_err(|e| {
+            if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+                Error::Parse(format!("organization '{}' not found in sqlite", id))
+            } else {
+                Error::Parse(format!("sqlite query failed: {}", e))
+            }
+        })?;
+    let decompressed = zstd::decode_all(std::io::Cursor::new(&blob))
+        .map_err(|e| Error::Parse(format!("decompress metadata: {}", e)))?;
+    let ror: Ror = serde_json::from_slice(&decompressed)
+        .map_err(|e| Error::Parse(format!("deserialize: {}", e)))?;
+    Ok(from_ror(ror))
+}
+
+// ── Zenodo release helpers ────────────────────────────────────────────────────
+
+/// Concept record ID for the ROR data archive on Zenodo.
+/// DOI: `10.5281/zenodo.6347574` always resolves to the latest version.
+const ROR_ZENODO_CONCEPT_ID: &str = "6347574";
+
+/// Metadata about a ROR data release published on Zenodo.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RorRelease {
+    /// ROR version tag, e.g. `"v2.9"`.
+    pub version: String,
+    /// Release date in ISO 8601 format, e.g. `"2026-06-23"`.
+    pub date: String,
+    /// Zenodo record ID for this specific version, e.g. `"20818161"`.
+    pub zenodo_id: String,
+    /// Filename of the zip archive, e.g. `"v2.9-2026-06-23-ror-data.zip"`.
+    pub filename: String,
+    /// Direct download URL for the zip archive.
+    pub download_url: String,
+}
+
+// Minimal serde structs for the Zenodo API response.
+#[derive(Deserialize)]
+struct ZenodoRecord {
+    id: u64,
+    metadata: ZenodoMeta,
+    files: Vec<ZenodoFile>,
+}
+
+#[derive(Deserialize)]
+struct ZenodoMeta {
+    version: String,
+    publication_date: String,
+}
+
+#[derive(Deserialize)]
+struct ZenodoFile {
+    key: String,
+    links: ZenodoFileLinks,
+}
+
+#[derive(Deserialize)]
+struct ZenodoFileLinks {
+    #[serde(rename = "self")]
+    self_: String,
+}
+
+/// Fetch metadata for the latest ROR data release from Zenodo without
+/// downloading the full archive. Uses the Zenodo `/versions/latest` endpoint
+/// against the ROR concept record (DOI `10.5281/zenodo.6347574`).
+///
+/// Returns a [`RorRelease`] containing the version tag, release date, Zenodo
+/// record ID, zip filename, and direct download URL.
+pub fn fetch_latest_ror_release() -> Result<RorRelease> {
+    let url = format!(
+        "https://zenodo.org/api/records/{}/versions/latest",
+        ROR_ZENODO_CONCEPT_ID
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(format!(
+            "commonmeta-rs/{} (https://github.com/front-matter/commonmeta-rs; mailto:info@front-matter.de)",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .build()
+        .map_err(|e| Error::Http(e.to_string()))?;
+
+    let text = client
+        .get(&url)
+        .send()
+        .map_err(|e| Error::Http(e.to_string()))?
+        .error_for_status()
+        .map_err(|e| Error::Http(e.to_string()))?
+        .text()
+        .map_err(|e| Error::Http(e.to_string()))?;
+
+    let record: ZenodoRecord =
+        serde_json::from_str(&text).map_err(|e| Error::Parse(e.to_string()))?;
+
+    // Pick the zip file (the only file in ROR Zenodo releases).
+    let zip = record
+        .files
+        .into_iter()
+        .find(|f| f.key.ends_with(".zip"))
+        .ok_or_else(|| Error::Parse("no zip file found in Zenodo release".into()))?;
+
+    Ok(RorRelease {
+        version: record.metadata.version,
+        date: record.metadata.publication_date,
+        zenodo_id: record.id.to_string(),
+        filename: zip.key,
+        download_url: zip.links.self_,
+    })
+}
+
+/// Download the zip archive described by `release`, extract the first `.json`
+/// file, and parse it into a list of [`Ror`] records. Use this after calling
+/// [`fetch_latest_ror_release`] so you can log the release metadata before
+/// starting the (slower) zip download.
+/// Download and parse a ROR data release zip. The zip is cached locally for
+/// 30 days under `cache_dir("ror")/{filename}` so repeat installs of the same
+/// version avoid a 33 MB network round-trip.
+///
+/// Returns `(records, from_cache)` where `from_cache` is `true` when the zip
+/// was served from the local cache rather than downloaded.
+pub fn download_release(release: &RorRelease) -> Result<(Vec<Ror>, bool)> {
+    let ttl = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+    let (zip_bytes, from_cache) = crate::file_utils::download_file_cached(
+        &release.download_url,
+        "ror",
+        &release.filename,
+        ttl,
+    )
+    .map_err(|e| Error::Http(e.to_string()))?;
+    let json_bytes = crate::file_utils::unzip_first_json(&zip_bytes)
+        .map_err(|e| Error::Parse(e.to_string()))?;
+    let list: Vec<Ror> = serde_json::from_slice(&json_bytes)
+        .map_err(|e| Error::Parse(format!("parsing ROR JSON: {}", e)))?;
+    Ok((list, from_cache))
+}
+
+/// Convenience wrapper: fetch the latest release metadata from Zenodo and
+/// immediately download and parse the data dump.
+/// Returns `(RorRelease, Vec<Ror>, from_cache)`.
+pub fn download_all() -> Result<(RorRelease, Vec<Ror>, bool)> {
+    let release = fetch_latest_ror_release()?;
+    let (list, from_cache) = download_release(&release)?;
+    Ok((release, list, from_cache))
 }
 
 #[cfg(test)]
@@ -1373,5 +1845,25 @@ mod tests {
         assert!(write_all(&list, ".json").unwrap() == b"[]");
         let csv_bytes = write_all(&list, ".csv").unwrap();
         assert!(csv_bytes.is_empty());
+    }
+
+    #[test]
+    #[ignore = "network"]
+    fn test_fetch_latest_ror_release() {
+        let release = fetch_latest_ror_release().unwrap();
+        // Version must match "vMAJOR.MINOR" pattern
+        assert!(
+            release.version.starts_with('v'),
+            "version should start with 'v': {}",
+            release.version
+        );
+        // Date must be ISO 8601
+        assert_eq!(release.date.len(), 10, "date should be YYYY-MM-DD: {}", release.date);
+        assert!(!release.zenodo_id.is_empty());
+        assert!(release.filename.ends_with(".zip"));
+        assert!(release.download_url.contains("zenodo.org"));
+        // Confirm this is genuinely the latest (v2.9 as of 2026-06-23)
+        assert_eq!(release.version, "v2.9");
+        assert_eq!(release.date, "2026-06-23");
     }
 }

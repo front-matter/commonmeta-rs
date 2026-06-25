@@ -39,95 +39,54 @@ pub fn read(input: &str) -> Result<Data> {
 /// Read one VRAIX row by `pid` from sqlite and route `raw_metadata`
 /// to the source-specific parser based on `source_id`.
 pub fn read_sqlite<P: AsRef<Path>>(sqlite_path: P, pid: &str) -> Result<Data> {
-    let pid = pid.to_string();
-    let path = sqlite_path.as_ref().to_path_buf();
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| Error::Parse(e.to_string()))?
-        .block_on(async {
-            let db = turso::Builder::new_local(&path.to_string_lossy())
-                .build()
-                .await
-                .map_err(|e| Error::Parse(e.to_string()))?;
-            let connection = db.connect().map_err(|e| Error::Parse(e.to_string()))?;
-
-            let Some(table_name) = find_transport_table(&connection).await? else {
-                return Err(Error::Parse("no VRAIX transport table found".to_string()));
-            };
-
-            let row = read_transport_row(&connection, &table_name, &pid)
-                .await?
-                .ok_or_else(|| Error::InvalidId(format!("pid not found in VRAIX snapshot: {pid}")))?;
-
-            route_raw_metadata(row.source_id, &row.raw_metadata)
-        })
+    let conn = rusqlite::Connection::open(sqlite_path.as_ref())
+        .map_err(|e| Error::Parse(e.to_string()))?;
+    let Some(table_name) = find_transport_table(&conn)? else {
+        return Err(Error::Parse("no VRAIX transport table found".to_string()));
+    };
+    let row = read_transport_row(&conn, &table_name, pid)?
+        .ok_or_else(|| Error::InvalidId(format!("pid not found in VRAIX snapshot: {pid}")))?;
+    route_raw_metadata(row.source_id, &row.raw_metadata)
 }
 
-async fn find_transport_table(connection: &turso::Connection) -> crate::error::Result<Option<String>> {
-    let mut rows = connection
-        .query(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-            (),
-        )
-        .await
+fn find_transport_table(conn: &rusqlite::Connection) -> crate::error::Result<Option<String>> {
+    let mut stmt = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .map_err(|e| crate::error::Error::Parse(e.to_string()))?;
-
-    while let Some(row) = rows.next().await.map_err(|e| crate::error::Error::Parse(e.to_string()))? {
+    let mut rows = stmt.query([]).map_err(|e| crate::error::Error::Parse(e.to_string()))?;
+    while let Some(row) = rows.next().map_err(|e| crate::error::Error::Parse(e.to_string()))? {
         let table_name: String = row.get(0).map_err(|e| crate::error::Error::Parse(e.to_string()))?;
-        if table_has_transport_columns(connection, &table_name).await? {
+        if table_has_transport_columns(conn, &table_name)? {
             return Ok(Some(table_name));
         }
     }
-
     Ok(None)
 }
 
-async fn table_has_transport_columns(
-    connection: &turso::Connection,
-    table_name: &str,
-) -> crate::error::Result<bool> {
+fn table_has_transport_columns(conn: &rusqlite::Connection, table_name: &str) -> crate::error::Result<bool> {
     let pragma_query = format!("PRAGMA table_info({})", quote_identifier(table_name));
-    let mut rows = connection
-        .query(&pragma_query, ())
-        .await
-        .map_err(|e| crate::error::Error::Parse(e.to_string()))?;
-
+    let mut stmt = conn.prepare(&pragma_query).map_err(|e| crate::error::Error::Parse(e.to_string()))?;
+    let mut rows = stmt.query([]).map_err(|e| crate::error::Error::Parse(e.to_string()))?;
     let mut has_pid = false;
     let mut has_source_id = false;
     let mut has_raw_metadata = false;
-
-    while let Some(row) = rows.next().await.map_err(|e| crate::error::Error::Parse(e.to_string()))? {
+    while let Some(row) = rows.next().map_err(|e| crate::error::Error::Parse(e.to_string()))? {
         let column_name: String = row.get(1).map_err(|e| crate::error::Error::Parse(e.to_string()))?;
-        if column_name.eq_ignore_ascii_case("pid") {
-            has_pid = true;
-        }
-        if column_name.eq_ignore_ascii_case("source_id") {
-            has_source_id = true;
-        }
-        if column_name.eq_ignore_ascii_case("raw_metadata") {
-            has_raw_metadata = true;
-        }
+        if column_name.eq_ignore_ascii_case("pid") { has_pid = true; }
+        if column_name.eq_ignore_ascii_case("source_id") { has_source_id = true; }
+        if column_name.eq_ignore_ascii_case("raw_metadata") { has_raw_metadata = true; }
     }
-
     Ok(has_pid && has_source_id && has_raw_metadata)
 }
 
-async fn read_transport_row(
-    connection: &turso::Connection,
-    table_name: &str,
-    pid: &str,
-) -> crate::error::Result<Option<TransportRow>> {
+fn read_transport_row(conn: &rusqlite::Connection, table_name: &str, pid: &str) -> crate::error::Result<Option<TransportRow>> {
     let query = format!(
         "SELECT source_id, raw_metadata FROM {} WHERE pid = ?1 LIMIT 1",
         quote_identifier(table_name)
     );
-    let mut rows = connection
-        .query(&query, turso::params![pid])
-        .await
-        .map_err(|e| crate::error::Error::Parse(e.to_string()))?;
-
-    match rows.next().await.map_err(|e| crate::error::Error::Parse(e.to_string()))? {
+    let mut stmt = conn.prepare(&query).map_err(|e| crate::error::Error::Parse(e.to_string()))?;
+    let mut rows = stmt.query(rusqlite::params![pid]).map_err(|e| crate::error::Error::Parse(e.to_string()))?;
+    match rows.next().map_err(|e| crate::error::Error::Parse(e.to_string()))? {
         Some(row) => Ok(Some(TransportRow {
             source_id: row.get(0).map_err(|e| crate::error::Error::Parse(e.to_string()))?,
             raw_metadata: row.get(1).map_err(|e| crate::error::Error::Parse(e.to_string()))?,
@@ -199,86 +158,54 @@ pub fn read_dump<P: AsRef<Path>>(
     limit: Option<usize>,
     offset: usize,
 ) -> Result<Vec<Data>> {
-    let path = sqlite_path.as_ref().to_path_buf();
-    let from = from.to_string();
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| Error::Parse(e.to_string()))?
-        .block_on(async {
-            let db = turso::Builder::new_local(&path.to_string_lossy())
-                .build()
-                .await
-                .map_err(|e| Error::Parse(e.to_string()))?;
-            let connection = db.connect().map_err(|e| Error::Parse(e.to_string()))?;
+    let conn = rusqlite::Connection::open(sqlite_path.as_ref())
+        .map_err(|e| Error::Parse(e.to_string()))?;
 
-            let Some(table_name) = find_transport_table(&connection).await? else {
-                return Err(Error::Parse(
-                    "no VRAIX table with pid/source_id/raw_metadata found".to_string(),
-                ));
-            };
+    let Some(table_name) = find_transport_table(&conn)? else {
+        return Err(Error::Parse("no VRAIX table with pid/source_id/raw_metadata found".to_string()));
+    };
 
-            let convert_row: fn(&str) -> Result<Data> = match from.as_str() {
-                "crossref" => read_crossref_row,
-                "datacite" => read_datacite_row,
-                other => {
-                    return Err(Error::UnsupportedFormat(format!(
-                        "VRAIX dump source '{}' is not supported",
-                        other
-                    )));
-                }
-            };
+    let convert_row: fn(&str) -> Result<Data> = match from {
+        "crossref" => read_crossref_row,
+        "datacite" => read_datacite_row,
+        other => {
+            return Err(Error::UnsupportedFormat(format!(
+                "VRAIX dump source '{}' is not supported",
+                other
+            )));
+        }
+    };
 
-            let quoted = quote_identifier(&table_name);
+    let quoted = quote_identifier(&table_name);
+    let total: u64 = match limit {
+        Some(n) => n as u64,
+        None => conn
+            .query_row(&format!("SELECT COUNT(*) FROM {quoted}"), [], |row| row.get::<_, i64>(0))
+            .unwrap_or(0)
+            .max(0) as u64,
+    };
+    let bar = crate::progress::count_bar("converting", total);
 
-            // Count for progress bar
-            let total: u64 = match limit {
-                Some(n) => n as u64,
-                None => {
-                    let mut rows = connection
-                        .query(&format!("SELECT COUNT(*) FROM {quoted}"), ())
-                        .await
-                        .unwrap_or_else(|_| unreachable!());
-                    if let Ok(Some(row)) = rows.next().await {
-                        row.get::<i64>(0).unwrap_or(0).max(0) as u64
-                    } else {
-                        0
-                    }
-                }
-            };
-            let bar = crate::progress::count_bar("converting", total);
+    let query = match limit {
+        Some(_) => format!("SELECT raw_metadata FROM {quoted} LIMIT ?1 OFFSET ?2"),
+        None => format!("SELECT raw_metadata FROM {quoted}"),
+    };
 
-            let query = match limit {
-                Some(_) => format!("SELECT raw_metadata FROM {quoted} LIMIT ?1 OFFSET ?2"),
-                None => format!("SELECT raw_metadata FROM {quoted}"),
-            };
+    let mut stmt = conn.prepare(&query).map_err(|e| Error::Parse(e.to_string()))?;
+    let mut row_iter = match limit {
+        Some(n) => stmt.query(rusqlite::params![n as i64, offset as i64]),
+        None => stmt.query([]),
+    }
+    .map_err(|e| Error::Parse(e.to_string()))?;
 
-            let mut row_iter = match limit {
-                Some(n) => {
-                    connection
-                        .query(&query, turso::params![n as i64, offset as i64])
-                        .await
-                        .map_err(|e| Error::Parse(e.to_string()))?
-                }
-                None => {
-                    connection
-                        .query(&query, ())
-                        .await
-                        .map_err(|e| Error::Parse(e.to_string()))?
-                }
-            };
-
-            let mut out = Vec::new();
-            while let Some(row) = row_iter.next().await.map_err(|e| Error::Parse(e.to_string()))? {
-                let raw_metadata: String =
-                    row.get(0).map_err(|e| Error::Parse(e.to_string()))?;
-                out.push(convert_row(&raw_metadata)?);
-                bar.inc(1);
-            }
-            bar.finish_and_clear();
-
-            Ok(out)
-        })
+    let mut out = Vec::new();
+    while let Some(row) = row_iter.next().map_err(|e| Error::Parse(e.to_string()))? {
+        let raw_metadata: String = row.get(0).map_err(|e| Error::Parse(e.to_string()))?;
+        out.push(convert_row(&raw_metadata)?);
+        bar.inc(1);
+    }
+    bar.finish_and_clear();
+    Ok(out)
 }
 
 // ── Streaming VRAIX → commonmeta SQLite ────────────────────────────────────
@@ -346,7 +273,7 @@ pub fn stream_dump_to_sqlite(
     limit: usize,
     overwrite: bool,
 ) -> crate::error::Result<usize> {
-    use crate::formats::commonmeta::{init_sqlite_writer_async, write_sqlite_batch_rows_async};
+    use crate::formats::commonmeta::{init_sqlite_writer, write_sqlite_batch_rows};
     use crate::error::Error;
 
     let convert: fn(&str) -> crate::error::Result<Data> = match from {
@@ -360,106 +287,66 @@ pub fn stream_dump_to_sqlite(
         }
     };
 
-    let input_path = input_path.to_path_buf();
-    let output_path = output_path.to_path_buf();
+    let in_conn = rusqlite::Connection::open(input_path)
+        .map_err(|e| Error::Parse(format!("failed to open '{}': {}", input_path.display(), e)))?;
+    // 256 MB page cache + mmap for large dump files.
+    let _ = in_conn.execute_batch("PRAGMA cache_size=-262144; PRAGMA mmap_size=17179869184;");
 
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| Error::Parse(e.to_string()))?
-        .block_on(async {
-            let in_db = turso::Builder::new_local(&input_path.to_string_lossy())
-                .build()
-                .await
-                .map_err(|e| Error::Parse(format!("failed to open '{}': {}", input_path.display(), e)))?;
-            let in_conn = in_db.connect()
-                .map_err(|e| Error::Parse(format!("failed to connect '{}': {}", input_path.display(), e)))?;
+    let Some(table_name) = find_transport_table(&in_conn)? else {
+        return Err(Error::Parse("no VRAIX table with pid/source_id/raw_metadata found".to_string()));
+    };
+    let quoted = quote_identifier(&table_name);
 
-            // 256 MB page cache + mmap — same perf pragmas as before.
-            in_conn
-                .execute_batch(
-                    "PRAGMA cache_size=-262144;\
-                     PRAGMA mmap_size=17179869184;",
-                )
-                .await
-                .ok();
+    let row_count: u64 = in_conn
+        .query_row(&format!("SELECT COUNT(*) FROM {quoted}"), [], |row| row.get::<_, i64>(0))
+        .unwrap_or(0).max(0) as u64;
+    let total = if limit == 0 { row_count } else { row_count.min(limit as u64) };
+    let bar = crate::progress::count_bar("converting", total);
 
-            let Some(table_name) = find_transport_table(&in_conn).await? else {
-                return Err(Error::Parse(
-                    "no VRAIX table with pid/source_id/raw_metadata found".to_string(),
-                ));
-            };
-            let quoted = quote_identifier(&table_name);
+    // Rowid cursor — O(N) instead of LIMIT+OFFSET O(N²).
+    let cursor_sql = format!(
+        "SELECT rowid, raw_metadata FROM {quoted} WHERE rowid > ?1 ORDER BY rowid LIMIT ?2"
+    );
 
-            // Row count for the progress bar.
-            let row_count: u64 = {
-                let mut rows = in_conn
-                    .query(&format!("SELECT COUNT(*) FROM {quoted}"), ())
-                    .await
-                    .unwrap_or_else(|_| unreachable!());
-                if let Ok(Some(row)) = rows.next().await {
-                    row.get::<i64>(0).unwrap_or(0).max(0) as u64
-                } else {
-                    0
-                }
-            };
-            let total = if limit == 0 { row_count } else { row_count.min(limit as u64) };
-            let bar = crate::progress::count_bar("converting", total);
+    let out_conn = init_sqlite_writer(output_path, overwrite)?;
+    let mut written = 0usize;
+    let mut last_rowid: i64 = 0;
+    let mut cursor_stmt = in_conn.prepare(&cursor_sql)
+        .map_err(|e| Error::Parse(e.to_string()))?;
 
-            // Rowid cursor — O(N) instead of LIMIT+OFFSET O(N²).
-            let cursor_sql = format!(
-                "SELECT rowid, raw_metadata FROM {quoted} WHERE rowid > ?1 ORDER BY rowid LIMIT ?2"
-            );
+    loop {
+        let remaining = if limit == 0 { STREAM_BATCH_SIZE } else { limit.saturating_sub(written) };
+        if remaining == 0 { break; }
+        let batch_size = STREAM_BATCH_SIZE.min(remaining);
 
-            let out_conn = init_sqlite_writer_async(&output_path, overwrite).await?;
-            let mut written = 0usize;
-            let mut last_rowid: i64 = 0;
-
-            loop {
-                let remaining = if limit == 0 {
-                    STREAM_BATCH_SIZE
-                } else {
-                    limit.saturating_sub(written)
-                };
-                if remaining == 0 {
-                    break;
-                }
-                let batch_size = STREAM_BATCH_SIZE.min(remaining);
-
-                let mut row_iter = in_conn
-                    .query(&cursor_sql, turso::params![last_rowid, batch_size as i64])
-                    .await
-                    .map_err(|e| Error::Parse(e.to_string()))?;
-
-                let mut raw_batch: Vec<(i64, String)> = Vec::with_capacity(batch_size);
-                while let Some(row) = row_iter.next().await.map_err(|e| Error::Parse(e.to_string()))? {
-                    let rowid: i64 = row.get(0).map_err(|e| Error::Parse(e.to_string()))?;
-                    let raw: String = row.get(1).map_err(|e| Error::Parse(e.to_string()))?;
-                    raw_batch.push((rowid, raw));
-                }
-
-                if raw_batch.is_empty() {
-                    break;
-                }
-                let batch_len = raw_batch.len();
-                last_rowid = raw_batch.last().unwrap().0;
-
-                let raw: Vec<String> = raw_batch.into_iter().map(|(_, s)| s).collect();
-                let rows_prepared = parallel_convert_and_prepare(&raw, convert);
-                let batch_written = rows_prepared.len();
-                write_sqlite_batch_rows_async(&out_conn, rows_prepared).await?;
-
-                bar.inc(batch_len as u64);
-                written += batch_written;
-
-                if batch_len < batch_size {
-                    break;
-                }
+        let mut raw_batch: Vec<(i64, String)> = Vec::with_capacity(batch_size);
+        {
+            let mut row_iter = cursor_stmt
+                .query(rusqlite::params![last_rowid, batch_size as i64])
+                .map_err(|e| Error::Parse(e.to_string()))?;
+            while let Some(row) = row_iter.next().map_err(|e| Error::Parse(e.to_string()))? {
+                let rowid: i64 = row.get(0).map_err(|e| Error::Parse(e.to_string()))?;
+                let raw: String = row.get(1).map_err(|e| Error::Parse(e.to_string()))?;
+                raw_batch.push((rowid, raw));
             }
-            bar.finish_and_clear();
+        }
 
-            Ok(written)
-        })
+        if raw_batch.is_empty() { break; }
+        let batch_len = raw_batch.len();
+        last_rowid = raw_batch.last().unwrap().0;
+
+        let raw: Vec<String> = raw_batch.into_iter().map(|(_, s)| s).collect();
+        let rows_prepared = parallel_convert_and_prepare(&raw, convert);
+        let batch_written = rows_prepared.len();
+        write_sqlite_batch_rows(&out_conn, rows_prepared)?;
+
+        bar.inc(batch_len as u64);
+        written += batch_written;
+
+        if batch_len < batch_size { break; }
+    }
+    bar.finish_and_clear();
+    Ok(written)
 }
 
 // ── Pidbox (mixed-source) streaming ────────────────────────────────────────
@@ -516,115 +403,105 @@ pub fn stream_pidbox_to_sqlite(
     limit: usize,
     overwrite: bool,
 ) -> crate::error::Result<usize> {
-    use crate::formats::commonmeta::{init_sqlite_writer_async, write_sqlite_batch_rows_async};
+    use crate::formats::commonmeta::{init_sqlite_writer, write_sqlite_batch_rows};
     use crate::error::Error;
 
-    let input_path = input_path.to_path_buf();
-    let output_path = output_path.to_path_buf();
+    let in_conn = rusqlite::Connection::open(input_path)
+        .map_err(|e| Error::Parse(format!("failed to open '{}': {}", input_path.display(), e)))?;
+    let _ = in_conn.execute_batch("PRAGMA cache_size=-262144; PRAGMA mmap_size=17179869184;");
 
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| Error::Parse(e.to_string()))?
-        .block_on(async {
-            let in_db = turso::Builder::new_local(&input_path.to_string_lossy())
-                .build()
-                .await
-                .map_err(|e| Error::Parse(format!("failed to open '{}': {}", input_path.display(), e)))?;
-            let in_conn = in_db.connect()
-                .map_err(|e| Error::Parse(format!("failed to connect '{}': {}", input_path.display(), e)))?;
+    let Some(table_name) = find_transport_table(&in_conn)? else {
+        return Err(Error::Parse("no VRAIX table with pid/source_id/raw_metadata found".to_string()));
+    };
+    let quoted = quote_identifier(&table_name);
 
-            in_conn
-                .execute_batch(
-                    "PRAGMA cache_size=-262144;\
-                     PRAGMA mmap_size=17179869184;",
-                )
-                .await
-                .ok();
+    let row_count: u64 = in_conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM {quoted} WHERE source_id != 3"),
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0).max(0) as u64;
+    let total = if limit == 0 { row_count } else { row_count.min(limit as u64) };
+    let bar = crate::progress::count_bar("converting", total);
 
-            let Some(table_name) = find_transport_table(&in_conn).await? else {
-                return Err(Error::Parse(
-                    "no VRAIX table with pid/source_id/raw_metadata found".to_string(),
-                ));
-            };
-            let quoted = quote_identifier(&table_name);
+    let cursor_sql = format!(
+        "SELECT rowid, source_id, raw_metadata FROM {quoted} \
+         WHERE rowid > ?1 AND source_id != 3 \
+         ORDER BY rowid LIMIT ?2"
+    );
 
-            let row_count: u64 = {
-                let mut rows = in_conn
-                    .query(
-                        &format!("SELECT COUNT(*) FROM {quoted} WHERE source_id != 3"),
-                        (),
-                    )
-                    .await
-                    .unwrap_or_else(|_| unreachable!());
-                if let Ok(Some(row)) = rows.next().await {
-                    row.get::<i64>(0).unwrap_or(0).max(0) as u64
-                } else {
-                    0
-                }
-            };
-            let total = if limit == 0 { row_count } else { row_count.min(limit as u64) };
-            let bar = crate::progress::count_bar("converting", total);
+    let out_conn = init_sqlite_writer(output_path, overwrite)?;
+    let mut written = 0usize;
+    let mut last_rowid: i64 = 0;
+    let mut cursor_stmt = in_conn.prepare(&cursor_sql)
+        .map_err(|e| Error::Parse(e.to_string()))?;
 
-            let cursor_sql = format!(
-                "SELECT rowid, source_id, raw_metadata FROM {quoted} \
-                 WHERE rowid > ?1 AND source_id != 3 \
-                 ORDER BY rowid LIMIT ?2"
-            );
+    loop {
+        let remaining = if limit == 0 { STREAM_BATCH_SIZE } else { limit.saturating_sub(written) };
+        if remaining == 0 { break; }
+        let batch_size = STREAM_BATCH_SIZE.min(remaining);
 
-            let out_conn = init_sqlite_writer_async(&output_path, overwrite).await?;
-            let mut written = 0usize;
-            let mut last_rowid: i64 = 0;
-
-            loop {
-                let remaining = if limit == 0 {
-                    STREAM_BATCH_SIZE
-                } else {
-                    limit.saturating_sub(written)
-                };
-                if remaining == 0 {
-                    break;
-                }
-                let batch_size = STREAM_BATCH_SIZE.min(remaining);
-
-                let mut row_iter = in_conn
-                    .query(&cursor_sql, turso::params![last_rowid, batch_size as i64])
-                    .await
-                    .map_err(|e| Error::Parse(e.to_string()))?;
-
-                let mut raw_batch: Vec<(i64, i64, String)> = Vec::with_capacity(batch_size);
-                while let Some(row) =
-                    row_iter.next().await.map_err(|e| Error::Parse(e.to_string()))?
-                {
-                    let rowid: i64 = row.get(0).map_err(|e| Error::Parse(e.to_string()))?;
-                    let source_id: i64 = row.get(1).map_err(|e| Error::Parse(e.to_string()))?;
-                    let raw: String = row.get(2).map_err(|e| Error::Parse(e.to_string()))?;
-                    raw_batch.push((rowid, source_id, raw));
-                }
-
-                if raw_batch.is_empty() {
-                    break;
-                }
-                let batch_len = raw_batch.len();
-                last_rowid = raw_batch.last().unwrap().0;
-
-                let pairs: Vec<(i64, String)> =
-                    raw_batch.into_iter().map(|(_, sid, s)| (sid, s)).collect();
-                let rows_prepared = parallel_convert_and_prepare_mixed(&pairs);
-                let batch_written = rows_prepared.len();
-                write_sqlite_batch_rows_async(&out_conn, rows_prepared).await?;
-
-                bar.inc(batch_len as u64);
-                written += batch_written;
-
-                if batch_len < batch_size {
-                    break;
-                }
+        let mut raw_batch: Vec<(i64, i64, String)> = Vec::with_capacity(batch_size);
+        {
+            let mut row_iter = cursor_stmt
+                .query(rusqlite::params![last_rowid, batch_size as i64])
+                .map_err(|e| Error::Parse(e.to_string()))?;
+            while let Some(row) = row_iter.next().map_err(|e| Error::Parse(e.to_string()))? {
+                let rowid: i64 = row.get(0).map_err(|e| Error::Parse(e.to_string()))?;
+                let source_id: i64 = row.get(1).map_err(|e| Error::Parse(e.to_string()))?;
+                let raw: String = row.get(2).map_err(|e| Error::Parse(e.to_string()))?;
+                raw_batch.push((rowid, source_id, raw));
             }
-            bar.finish_and_clear();
+        }
 
-            Ok(written)
-        })
+        if raw_batch.is_empty() { break; }
+        let batch_len = raw_batch.len();
+        last_rowid = raw_batch.last().unwrap().0;
+
+        let pairs: Vec<(i64, String)> = raw_batch.into_iter().map(|(_, sid, s)| (sid, s)).collect();
+        let rows_prepared = parallel_convert_and_prepare_mixed(&pairs);
+        let batch_written = rows_prepared.len();
+        write_sqlite_batch_rows(&out_conn, rows_prepared)?;
+
+        bar.inc(batch_len as u64);
+        written += batch_written;
+
+        if batch_len < batch_size { break; }
+    }
+    bar.finish_and_clear();
+
+    // Record the date the pidbox data was installed.
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    out_conn
+        .execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('vraix_date', ?1)",
+            rusqlite::params![today],
+        )
+        .map_err(|e| Error::Parse(format!("failed to store vraix_date: {}", e)))?;
+
+    Ok(written)
+}
+
+/// Read the `vraix_date` stored in the local works database, or `None` if
+/// the database does not exist or no date has been recorded yet.
+pub fn fetch_installed_vraix_date(db_path: &std::path::Path) -> crate::error::Result<Option<String>> {
+    use crate::error::Error;
+
+    if !db_path.exists() {
+        return Ok(None);
+    }
+    let conn = rusqlite::Connection::open(db_path)
+        .map_err(|e| Error::Parse(format!("failed to open sqlite: {}", e)))?;
+    // The settings table may not exist in databases written before this feature was added.
+    match conn.query_row(
+        "SELECT value FROM settings WHERE key = 'vraix_date' LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(v) => Ok(Some(v)),
+        Err(_) => Ok(None),
+    }
 }
 
 // ── Arrow ingestion ─────────────────────────────────────────────────────────
@@ -681,107 +558,73 @@ pub fn read_table_arrow<P: AsRef<Path>>(
     sqlite_path: P,
     batch_size: usize,
 ) -> Result<Vec<RecordBatch>> {
-    let path = sqlite_path.as_ref().to_path_buf();
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| Error::Parse(e.to_string()))?
-        .block_on(async {
-            let db = turso::Builder::new_local(&path.to_string_lossy())
-                .build()
-                .await
-                .map_err(|e| Error::Parse(e.to_string()))?;
-            let connection = db.connect().map_err(|e| Error::Parse(e.to_string()))?;
+    let conn = rusqlite::Connection::open(sqlite_path.as_ref())
+        .map_err(|e| Error::Parse(e.to_string()))?;
 
-            let table = find_transport_table(&connection)
-                .await?
-                .ok_or_else(|| {
-                    Error::Parse(
-                        "no VRAIX table with pid/source_id/raw_metadata found".to_string(),
-                    )
-                })?;
+    let table = find_transport_table(&conn)?
+        .ok_or_else(|| Error::Parse("no VRAIX table with pid/source_id/raw_metadata found".to_string()))?;
 
-            let existing = table_columns(&connection, &table).await?;
-            let has = |name: &str| existing.iter().any(|c| c.eq_ignore_ascii_case(name));
-            let select_expr = |name: &str| -> String {
-                if has(name) {
-                    quote_identifier(name)
-                } else {
-                    format!("NULL AS {}", quote_identifier(name))
-                }
-            };
+    let existing = table_columns(&conn, &table)?;
+    let has = |name: &str| existing.iter().any(|c| c.eq_ignore_ascii_case(name));
+    let select_expr = |name: &str| -> String {
+        if has(name) { quote_identifier(name) } else { format!("NULL AS {}", quote_identifier(name)) }
+    };
 
-            const COLUMNS: [&str; 9] = [
-                "id",
-                "pid",
-                "pid_type",
-                "source_id",
-                "resource_url",
-                "last_modified",
-                "last_fetched",
-                "raw_metadata",
-                "raw_metadata_type",
-            ];
-            let select = format!(
-                "SELECT {} FROM {}",
-                COLUMNS
-                    .iter()
-                    .map(|c| select_expr(c))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                quote_identifier(&table)
-            );
+    const COLUMNS: [&str; 9] = [
+        "id", "pid", "pid_type", "source_id", "resource_url",
+        "last_modified", "last_fetched", "raw_metadata", "raw_metadata_type",
+    ];
+    let select = format!(
+        "SELECT {} FROM {}",
+        COLUMNS.iter().map(|c| select_expr(c)).collect::<Vec<_>>().join(", "),
+        quote_identifier(&table)
+    );
 
-            // Collect all rows in a single async pass to avoid re-polling a
-            // depleted `Rows` iterator (libsql's Rows::next hangs after None).
-            type RawRow = (i64, String, Option<i32>, Option<String>, Option<String>,
-                           Option<String>, Option<String>, Option<String>, Option<String>);
+    type RawRow = (i64, String, Option<i32>, Option<String>, Option<String>,
+                   Option<String>, Option<String>, Option<String>, Option<String>);
 
-            let mut all_raw: Vec<RawRow> = Vec::new();
-            let mut row_iter = connection
-                .query(&select, ())
-                .await
-                .map_err(|e| Error::Parse(e.to_string()))?;
+    let mut all_raw: Vec<RawRow> = Vec::new();
+    let mut stmt = conn.prepare(&select).map_err(|e| Error::Parse(e.to_string()))?;
+    let mut row_iter = stmt.query([]).map_err(|e| Error::Parse(e.to_string()))?;
 
-            while let Some(row) = row_iter.next().await.map_err(|e| Error::Parse(e.to_string()))? {
-                all_raw.push((
-                    row.get::<Option<i64>>(0).map_err(|e| Error::Parse(e.to_string()))?.unwrap_or_default(),
-                    row.get::<Option<String>>(1).map_err(|e| Error::Parse(e.to_string()))?.unwrap_or_default(),
-                    row.get::<Option<i64>>(2).map_err(|e| Error::Parse(e.to_string()))?.map(|v| v as i32),
-                    row.get::<Option<i64>>(3).map_err(|e| Error::Parse(e.to_string()))?.and_then(|v| source_name_from_id(v).map(str::to_string)),
-                    row.get::<Option<String>>(4).map_err(|e| Error::Parse(e.to_string()))?,
-                    row.get::<Option<String>>(5).map_err(|e| Error::Parse(e.to_string()))?.and_then(|s| parse_timestamp_micros(&s).map(|_| s)),
-                    row.get::<Option<String>>(6).map_err(|e| Error::Parse(e.to_string()))?.and_then(|s| parse_timestamp_micros(&s).map(|_| s)),
-                    row.get::<Option<String>>(7).map_err(|e| Error::Parse(e.to_string()))?,
-                    row.get::<Option<String>>(8).map_err(|e| Error::Parse(e.to_string()))?,
-                ));
-            }
+    while let Some(row) = row_iter.next().map_err(|e| Error::Parse(e.to_string()))? {
+        all_raw.push((
+            row.get::<_, Option<i64>>(0).map_err(|e| Error::Parse(e.to_string()))?.unwrap_or_default(),
+            row.get::<_, Option<String>>(1).map_err(|e| Error::Parse(e.to_string()))?.unwrap_or_default(),
+            row.get::<_, Option<i64>>(2).map_err(|e| Error::Parse(e.to_string()))?.map(|v| v as i32),
+            row.get::<_, Option<i64>>(3).map_err(|e| Error::Parse(e.to_string()))?.and_then(|v| source_name_from_id(v).map(str::to_string)),
+            row.get::<_, Option<String>>(4).map_err(|e| Error::Parse(e.to_string()))?,
+            row.get::<_, Option<String>>(5).map_err(|e| Error::Parse(e.to_string()))?.and_then(|s| parse_timestamp_micros(&s).map(|_| s)),
+            row.get::<_, Option<String>>(6).map_err(|e| Error::Parse(e.to_string()))?.and_then(|s| parse_timestamp_micros(&s).map(|_| s)),
+            row.get::<_, Option<String>>(7).map_err(|e| Error::Parse(e.to_string()))?,
+            row.get::<_, Option<String>>(8).map_err(|e| Error::Parse(e.to_string()))?,
+        ));
+    }
 
-            let batch_size = batch_size.max(1);
-            let mut batches = Vec::new();
-            for chunk in all_raw.chunks(batch_size) {
-                let ids: Vec<i64>               = chunk.iter().map(|r| r.0).collect();
-                let pids: Vec<String>           = chunk.iter().map(|r| r.1.clone()).collect();
-                let pid_types: Vec<Option<i32>> = chunk.iter().map(|r| r.2).collect();
-                let source_ids: Vec<Option<String>> = chunk.iter().map(|r| r.3.clone()).collect();
-                let resource_urls: Vec<Option<String>> = chunk.iter().map(|r| r.4.clone()).collect();
-                let last_modifieds: Vec<Option<i64>> = chunk.iter()
-                    .map(|r| r.5.as_deref().and_then(parse_timestamp_micros))
-                    .collect();
-                let last_fetcheds: Vec<Option<i64>> = chunk.iter()
-                    .map(|r| r.6.as_deref().and_then(parse_timestamp_micros))
-                    .collect();
-                let raw_metadatas: Vec<Option<String>>      = chunk.iter().map(|r| r.7.clone()).collect();
-                let raw_metadata_types: Vec<Option<String>> = chunk.iter().map(|r| r.8.clone()).collect();
+    let batch_size = batch_size.max(1);
+    let mut batches = Vec::new();
+    for chunk in all_raw.chunks(batch_size) {
+        let ids: Vec<i64>               = chunk.iter().map(|r| r.0).collect();
+        let pids: Vec<String>           = chunk.iter().map(|r| r.1.clone()).collect();
+        let pid_types: Vec<Option<i32>> = chunk.iter().map(|r| r.2).collect();
+        let source_ids: Vec<Option<String>> = chunk.iter().map(|r| r.3.clone()).collect();
+        let resource_urls: Vec<Option<String>> = chunk.iter().map(|r| r.4.clone()).collect();
+        let last_modifieds: Vec<Option<i64>> = chunk.iter()
+            .map(|r| r.5.as_deref().and_then(parse_timestamp_micros))
+            .collect();
+        let last_fetcheds: Vec<Option<i64>> = chunk.iter()
+            .map(|r| r.6.as_deref().and_then(parse_timestamp_micros))
+            .collect();
+        let raw_metadatas: Vec<Option<String>>      = chunk.iter().map(|r| r.7.clone()).collect();
+        let raw_metadata_types: Vec<Option<String>> = chunk.iter().map(|r| r.8.clone()).collect();
 
-                batches.push(build_record_batch(
-                    ids, pids, pid_types, source_ids, resource_urls,
-                    last_modifieds, last_fetcheds, raw_metadatas, raw_metadata_types,
-                )?);
-            }
+        batches.push(build_record_batch(
+            ids, pids, pid_types, source_ids, resource_urls,
+            last_modifieds, last_fetcheds, raw_metadatas, raw_metadata_types,
+        )?);
+    }
 
-            Ok(batches)
-        })
+    Ok(batches)
 }
 
 /// Write a VRAIX transport table to a single Parquet file's bytes, using
@@ -815,15 +658,13 @@ fn parse_timestamp_micros(s: &str) -> Option<i64> {
         .map(|dt| dt.timestamp_micros())
 }
 
-async fn table_columns(connection: &turso::Connection, table_name: &str) -> crate::error::Result<Vec<String>> {
+fn table_columns(conn: &rusqlite::Connection, table_name: &str) -> crate::error::Result<Vec<String>> {
     let pragma = format!("PRAGMA table_info({})", quote_identifier(table_name));
-    let mut rows = connection
-        .query(&pragma, ())
-        .await
-        .map_err(|e| crate::error::Error::Parse(e.to_string()))?;
+    let mut stmt = conn.prepare(&pragma).map_err(|e| crate::error::Error::Parse(e.to_string()))?;
+    let mut rows = stmt.query([]).map_err(|e| crate::error::Error::Parse(e.to_string()))?;
     let mut columns = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| crate::error::Error::Parse(e.to_string()))? {
-        columns.push(row.get::<String>(1).map_err(|e| crate::error::Error::Parse(e.to_string()))?);
+    while let Some(row) = rows.next().map_err(|e| crate::error::Error::Parse(e.to_string()))? {
+        columns.push(row.get::<_, String>(1).map_err(|e| crate::error::Error::Parse(e.to_string()))?);
     }
     Ok(columns)
 }
@@ -918,27 +759,16 @@ mod tests {
     /// `source_id` column (unlike `read_sqlite`'s transport-table lookup).
     fn write_dump_sqlite(path: &Path, rows: &[&str]) {
         std::fs::remove_file(path).ok();
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                let db = turso::Builder::new_local(&path.to_string_lossy()).build().await.unwrap();
-                let conn = db.connect().unwrap();
-                conn.execute_batch(
-                    "CREATE TABLE works (pid TEXT, source_id INTEGER, raw_metadata TEXT);",
-                )
-                .await
-                .unwrap();
-                for (i, raw_metadata) in rows.iter().enumerate() {
-                    conn.execute(
-                        "INSERT INTO works (pid, source_id, raw_metadata) VALUES (?1, ?2, ?3)",
-                        turso::params![format!("pid-{i}"), 1i64, *raw_metadata],
-                    )
-                    .await
-                    .unwrap();
-                }
-            });
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch("CREATE TABLE works (pid TEXT, source_id INTEGER, raw_metadata TEXT);")
+            .unwrap();
+        for (i, raw_metadata) in rows.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO works (pid, source_id, raw_metadata) VALUES (?1, ?2, ?3)",
+                rusqlite::params![format!("pid-{i}"), 1i64, *raw_metadata],
+            )
+            .unwrap();
+        }
     }
 
     #[test]
@@ -1015,52 +845,33 @@ mod tests {
         rows: &[(&str, i64, i64, &str, &str, &str, &str, &str)],
     ) {
         std::fs::remove_file(path).ok();
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                let db = turso::Builder::new_local(&path.to_string_lossy()).build().await.unwrap();
-                let conn = db.connect().unwrap();
-                conn.execute_batch(
-                    "CREATE TABLE pid_records (
-                        id INTEGER PRIMARY KEY,
-                        pid TEXT NOT NULL,
-                        pid_type INTEGER NOT NULL,
-                        source_id INTEGER NOT NULL,
-                        resource_url TEXT,
-                        last_modified TIMESTAMP,
-                        last_fetched TIMESTAMP NOT NULL,
-                        raw_metadata TEXT,
-                        raw_metadata_type TEXT
-                    );",
-                )
-                .await
-                .unwrap();
-                for (
-                    pid,
-                    pid_type,
-                    source_id,
-                    resource_url,
-                    last_modified,
-                    last_fetched,
-                    raw_metadata,
-                    raw_metadata_type,
-                ) in rows
-                {
-                    conn.execute(
-                        "INSERT INTO pid_records
-                            (pid, pid_type, source_id, resource_url, last_modified, last_fetched, raw_metadata, raw_metadata_type)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                        turso::params![
-                            *pid, *pid_type, *source_id, *resource_url,
-                            *last_modified, *last_fetched, *raw_metadata, *raw_metadata_type
-                        ],
-                    )
-                    .await
-                    .unwrap();
-                }
-            });
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pid_records (
+                id INTEGER PRIMARY KEY,
+                pid TEXT NOT NULL,
+                pid_type INTEGER NOT NULL,
+                source_id INTEGER NOT NULL,
+                resource_url TEXT,
+                last_modified TIMESTAMP,
+                last_fetched TIMESTAMP NOT NULL,
+                raw_metadata TEXT,
+                raw_metadata_type TEXT
+            );",
+        )
+        .unwrap();
+        for (pid, pid_type, source_id, resource_url, last_modified, last_fetched, raw_metadata, raw_metadata_type) in rows {
+            conn.execute(
+                "INSERT INTO pid_records
+                    (pid, pid_type, source_id, resource_url, last_modified, last_fetched, raw_metadata, raw_metadata_type)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    *pid, *pid_type, *source_id, *resource_url,
+                    *last_modified, *last_fetched, *raw_metadata, *raw_metadata_type
+                ],
+            )
+            .unwrap();
+        }
     }
 
     #[test]

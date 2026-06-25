@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use serde_json::json;
@@ -13,8 +13,8 @@ use commonmeta::file_utils;
 const BATCH_SIZE: usize = 100_000;
 
 /// Return the directory to use for temporary files. Reads `COMMONMETA_TEMP_DIR`
-/// first so callers can redirect large intermediates (e.g. the pidbox decompress)
-/// to a mounted volume or network filesystem without changing any other config.
+/// first so callers can redirect large intermediates to a mounted volume or
+/// network filesystem without changing any other config.
 fn temp_dir() -> PathBuf {
     std::env::var_os("COMMONMETA_TEMP_DIR")
         .map(PathBuf::from)
@@ -34,18 +34,7 @@ fn fmt_wrote_sqlite(path: &str, written: usize, total: Option<usize>) -> String 
     }
 }
 
-/// How long a downloaded VRAIX dump stays valid in the local cache before
-/// it's re-downloaded. Dumps are daily snapshots that don't change once
-/// published, so this is purely a disk-space/staleness bound, not a
-/// correctness one.
-const VRAIX_CACHE_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-
-/// Sentinel date that selects the full pidbox dump instead of a per-source
-/// daily VRAIX snapshot. Using a date outside the valid range makes it
-/// impossible to collide with a real dump.
-const PIDBOX_DATE: &str = "1929-06-19";
-const PIDBOX_URL: &str = "https://metadata.vraix.org/pidbox.sqlite3.zst";
-const PIDBOX_CACHE_KEY: &str = "pidbox.sqlite3.zst";
+use crate::cmd::VRAIX_CACHE_TTL;
 
 pub fn command() -> Command {
     Command::new("list")
@@ -257,120 +246,6 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         .unwrap_or(false);
     let is_vraix_sqlite_input = is_sqlite_input && matches!(from, "crossref" | "datacite");
 
-    // Pidbox: --date 1929-06-19 triggers a full mixed-source download from
-    // metadata.vraix.org/pidbox.sqlite3.zst. The file is several hundred GB
-    // decompressed so we never buffer it in RAM — download and decompress are
-    // both file-to-file streaming operations. Only --file *.sqlite3 output is
-    // supported; the dataset is far too large for an in-memory Vec<Data>.
-    let is_pidbox = date == Some(PIDBOX_DATE)
-        && input_path.is_none()
-        && matches!(from, "crossref" | "datacite");
-
-    if is_pidbox {
-        let out_path = out_file.ok_or_else(|| {
-            "list: pidbox dump requires --file *.sqlite3 output".to_string()
-        })?;
-        let (_base, out_ext, out_compress) = file_utils::get_extension(out_path, ".json");
-        if out_ext != ".sqlite3" || !matches!(out_compress.as_str(), "" | "zst") {
-            return Err(
-                "list: pidbox dump only supports --file *.sqlite3 or *.sqlite3.zst output"
-                    .to_string(),
-            );
-        }
-        if to != "commonmeta" {
-            return Err(format!(
-                "list: pidbox dump only supports --to commonmeta (got --to {})",
-                to
-            ));
-        }
-
-        // Download compressed pidbox to the cache directory as a file — not
-        // a Vec<u8> — since the compressed file can be tens of GB.
-        let download_start = Instant::now();
-        let (cache_path, from_cache) =
-            file_utils::ensure_cached_path(PIDBOX_URL, "vraix", PIDBOX_CACHE_KEY, VRAIX_CACHE_TTL)
-                .map_err(|e| format!("failed to download pidbox: {}", e))?;
-        if timers {
-            if from_cache {
-                eprintln!(
-                    "list: pidbox download skipped (cached at {})",
-                    cache_path.display()
-                );
-            } else {
-                eprintln!("list: pidbox download took {:.2?}", download_start.elapsed());
-            }
-        }
-
-        let (base_out, _ext, _c) = file_utils::get_extension(out_path, ".sqlite3");
-        let sqlite_out = if out_compress.is_empty() {
-            base_out.clone()
-        } else {
-            base_out.with_extension("sqlite3.tmp")
-        };
-
-        // Stream-decompress .zst → temp sqlite3 next to the output file so it
-        // lands on real disk, not on a tmpfs /tmp that would exhaust RAM.
-        let decompress_start = Instant::now();
-        let tmp_sqlite = sqlite_out.with_extension(format!(
-            "sqlite3.pidbox-{}.tmp",
-            std::process::id()
-        ));
-        let decompressed_bytes = file_utils::decompress_zst_file(&cache_path, &tmp_sqlite)
-            .map_err(|e| format!("failed to decompress pidbox: {}", e))?;
-        if timers {
-            eprintln!(
-                "list: pidbox decompress took {:.2?} ({} bytes)",
-                decompress_start.elapsed(),
-                decompressed_bytes
-            );
-        }
-
-        let convert_start = Instant::now();
-        let result =
-            commonmeta::stream_pidbox_to_sqlite(&tmp_sqlite, &sqlite_out, number, update)
-                .map_err(|e| e.to_string());
-        std::fs::remove_file(&tmp_sqlite).ok();
-        let n = result?;
-        if timers {
-            eprintln!(
-                "list: pidbox convert+write took {:.2?} ({} records)",
-                convert_start.elapsed(),
-                n
-            );
-        }
-
-        // Count total before compression removes the uncompressed temp file.
-        let total = if update {
-            commonmeta::count_sqlite_works(&sqlite_out).ok()
-        } else {
-            None
-        };
-
-        if !out_compress.is_empty() {
-            let compress_start = Instant::now();
-            {
-                let out_file = std::fs::File::create(out_path)
-                    .map_err(|e| format!("failed to create '{}': {}", out_path, e))?;
-                let mut encoder = zstd::Encoder::new(out_file, 0)
-                    .map_err(|e| format!("failed to create zstd encoder: {}", e))?;
-                let mut in_file = std::fs::File::open(&sqlite_out)
-                    .map_err(|e| format!("failed to open '{}': {}", sqlite_out.display(), e))?;
-                std::io::copy(&mut in_file, &mut encoder)
-                    .map_err(|e| format!("zstd compression failed: {}", e))?;
-                encoder
-                    .finish()
-                    .map_err(|e| format!("failed to finish zstd encoder: {}", e))?;
-            }
-            std::fs::remove_file(&sqlite_out).ok();
-            if timers {
-                eprintln!("list: zstd compression took {:.2?}", compress_start.elapsed());
-            }
-        }
-
-        println!("{}", fmt_wrote_sqlite(out_path, n, total));
-        return Ok(());
-    }
-
     // Fast path: VRAIX SQLite → commonmeta SQLite (optionally compressed)
     // without a Vec<Data> intermediary. Records are streamed in batches,
     // converted in parallel, and written in one SQLite transaction per batch.
@@ -379,11 +254,11 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
     //
     // Triggers for two cases:
     //   (a) a local VRAIX .sqlite3 input is given directly (is_vraix_sqlite_input)
-    //   (b) --date is given without an explicit input path (non-pidbox download)
+    //   (b) --date is given without an explicit input path (daily dump download)
     if let Some(out_path) = out_file {
         let (_base, out_ext, out_compress) = file_utils::get_extension(out_path, ".json");
         let compress_supported = out_compress.is_empty() || out_compress == "zst";
-        let is_date_download = date.is_some() && input_path.is_none() && !is_pidbox;
+        let is_date_download = date.is_some() && input_path.is_none();
         if out_ext == ".sqlite3"
             && compress_supported
             && to == "commonmeta"
@@ -506,10 +381,6 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
             println!("{}", fmt_wrote_sqlite(out_path, n, total));
             return Ok(());
         }
-    }
-
-    if is_pidbox {
-        return Err("list: pidbox dump requires --file *.sqlite3 output".to_string());
     }
 
     let data = if date.is_some() || is_vraix_sqlite_input {
@@ -1772,30 +1643,17 @@ mod tests {
     /// (and thus `--from`) determines what every `raw_metadata` row is.
     fn write_vraix_sqlite(path: &Path, rows: &[(&str, &str)]) {
         std::fs::remove_file(path).ok();
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                let db = turso::Builder::new_local(&path.to_string_lossy()).build().await.unwrap();
-                let conn = db.connect().unwrap();
-                conn.execute_batch(
-                    "CREATE TABLE works (pid TEXT, source_id INTEGER, raw_metadata TEXT);",
-                )
-                .await
-                .unwrap();
-                for (pid, raw_metadata) in rows {
-                    conn.execute(
-                        "INSERT INTO works (pid, source_id, raw_metadata) VALUES (?1, ?2, ?3)",
-                        turso::params![*pid, 1i64, *raw_metadata],
-                    )
-                    .await
-                    .unwrap();
-                }
-                // Flush WAL to the main file so the file can be safely
-                // compressed for the zst test variants.
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", ()).await.ok();
-            });
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch("CREATE TABLE works (pid TEXT, source_id INTEGER, raw_metadata TEXT);")
+            .unwrap();
+        for (pid, raw_metadata) in rows {
+            conn.execute(
+                "INSERT INTO works (pid, source_id, raw_metadata) VALUES (?1, ?2, ?3)",
+                rusqlite::params![*pid, 1i64, *raw_metadata],
+            )
+            .unwrap();
+        }
+        let _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", []);
     }
 
     #[test]
