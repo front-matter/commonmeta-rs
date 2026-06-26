@@ -273,16 +273,25 @@ fn capitalize_provider(s: &str) -> String {
 }
 
 fn normalize_doi_url(doi: &str) -> String {
-    if doi.starts_with("https://doi.org/") {
-        doi.to_string()
-    } else {
-        let bare = doi
-            .trim_start_matches("https://dx.doi.org/")
-            .trim_start_matches("http://dx.doi.org/")
-            .trim_start_matches("http://doi.org/")
-            .trim_start_matches("https://doi.org/");
-        format!("https://doi.org/{}", bare)
-    }
+    let bare = doi
+        .trim_start_matches("https://dx.doi.org/")
+        .trim_start_matches("http://dx.doi.org/")
+        .trim_start_matches("http://doi.org/")
+        .trim_start_matches("https://doi.org/");
+    // Percent-encode characters that are not valid in URIs (RFC 3986) but
+    // can legally appear in DOI suffixes (e.g. angle brackets in old GSA DOIs).
+    let encoded = bare
+        .replace('<', "%3C")
+        .replace('>', "%3E")
+        .replace('"', "%22")
+        .replace('{', "%7B")
+        .replace('}', "%7D")
+        .replace('|', "%7C")
+        .replace('\\', "%5C")
+        .replace('^', "%5E")
+        .replace('`', "%60")
+        .replace(' ', "%20");
+    format!("https://doi.org/{}", encoded)
 }
 
 
