@@ -22,12 +22,16 @@ use crate::formats::vraix::parallel_convert_and_prepare_mixed;
 
 // ── Limits ───────────────────────────────────────────────────────────────────
 
-/// Maximum page-data held in RAM for out-of-order pages.
+/// Maximum page-data held in RAM for out-of-order pages (first pass only).
 const RAM_LIMIT: usize = 16 * 1024 * 1024 * 1024; // 16 GiB
-/// Maximum spill to the temp page-buffer file.
+/// Maximum spill to the temp page-buffer file (first pass only).
 const DISK_LIMIT: u64 = 250 * 1024 * 1024 * 1024; // 250 GiB
 /// Batch size for parallel JSON conversion and SQLite writes.
 const BATCH: usize = 50_000;
+/// Maximum additional scan passes over the zstd file after the first pass.
+/// Each pass can recover one more level of B-tree depth; 8 is generous for
+/// any realistic SQLite database (typical depth is 3–5).
+const MAX_EXTRA_PASSES: usize = 8;
 
 // ── SQLite constants ─────────────────────────────────────────────────────────
 
@@ -69,6 +73,9 @@ impl Drop for TmpGuard {
 pub(crate) struct FileHdr {
     pub page_size: usize,
     reserved: usize,
+    /// Page count from the SQLite header (bytes 28–31).  May be 0 if the
+    /// header was never written (e.g. WAL mode with a live writer).
+    pub db_page_count: u32,
 }
 
 impl FileHdr {
@@ -89,7 +96,8 @@ pub(crate) fn parse_file_hdr(raw: &[u8; 100]) -> Option<FileHdr> {
     if &raw[0..16] != MAGIC { return None; }
     let raw_ps = u16::from_be_bytes([raw[16], raw[17]]) as usize;
     let page_size = if raw_ps == 1 { 65536 } else { raw_ps };
-    Some(FileHdr { page_size, reserved: raw[20] as usize })
+    let db_page_count = u32::from_be_bytes([raw[28], raw[29], raw[30], raw[31]]);
+    Some(FileHdr { page_size, reserved: raw[20] as usize, db_page_count })
 }
 
 // ── Varint ────────────────────────────────────────────────────────────────────
@@ -389,14 +397,8 @@ impl PageBuffer {
         self.ram.contains_key(&page_num) || self.disk_index.contains_key(&page_num)
     }
 
-    fn warn_if_leftover(&self) {
-        let n = self.ram.len() + self.disk_index.len();
-        if n > 0 {
-            eprintln!(
-                "warning: {n} buffered pages were never referenced — \
-                 database may not be DFS-ordered; some records may be missing"
-            );
-        }
+    fn leftover_count(&self) -> usize {
+        self.ram.len() + self.disk_index.len()
     }
 }
 
@@ -460,6 +462,71 @@ fn handle_page(
             }
         }
     }
+}
+
+// ── Extra scan pass (multi-pass recovery) ────────────────────────────────────
+
+/// One additional sequential scan over the zstd file, looking only for pages
+/// that are currently in `target` or `overflow_map`.  No buffering — pages
+/// that are not yet needed are simply skipped.  Returns the number of pages
+/// processed (matched against target/overflow_map).
+fn scan_pass(
+    zst_path: &Path,
+    fhdr: &FileHdr,
+    tbl: &TableInfo,
+    target: &mut HashSet<u32>,
+    overflow_map: &mut HashMap<u32, Pending>,
+    known_buffered: &mut HashSet<u32>,
+    batch: &mut Vec<(i64, String)>,
+    written: &mut usize,
+    out_conn: &rusqlite::Connection,
+    limit: usize,
+) -> Result<usize> {
+    // Extra passes use an always-empty PageBuffer so handle_page never finds
+    // pages in the buffer — pages are only matched from the stream directly.
+    let empty_buf = PageBuffer {
+        ram: HashMap::new(), ram_bytes: 0,
+        disk: None, disk_path: PathBuf::new(),
+        disk_index: HashMap::new(), disk_bytes: 0,
+        page_size: fhdr.page_size,
+    };
+
+    let src = File::open(zst_path)
+        .map_err(|e| Error::Parse(format!("open {}: {e}", zst_path.display())))?;
+    let mut dec = zstd::Decoder::new(src)
+        .map_err(|e| Error::Parse(format!("zstd init (extra pass): {e}")))?;
+
+    // Skip page 1 (already parsed for header and table info).
+    let mut skip = vec![0u8; fhdr.page_size];
+    dec.read_exact(&mut skip)
+        .map_err(|e| Error::Parse(format!("skip page 1 (extra pass): {e}")))?;
+
+    let mut page_raw = vec![0u8; fhdr.page_size];
+    let mut page_num: u32 = 2;
+    let mut matched = 0usize;
+
+    loop {
+        if limit > 0 && *written >= limit { break; }
+        match dec.read_exact(&mut page_raw) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(Error::Parse(format!("read page {page_num} (extra pass): {e}"))),
+        }
+
+        if overflow_map.contains_key(&page_num) || target.contains(&page_num) {
+            handle_page(page_num, &page_raw, fhdr, tbl, target, overflow_map,
+                        &empty_buf, known_buffered, batch);
+            // known_buffered will only be populated by overflow chains found
+            // inline in this pass; clear it since empty_buf has nothing.
+            known_buffered.clear();
+            flush_batch(batch, written, out_conn, limit)?;
+            matched += 1;
+        }
+
+        page_num += 1;
+    }
+
+    Ok(matched)
 }
 
 // ── Batch flush helper ────────────────────────────────────────────────────────
@@ -558,12 +625,20 @@ pub fn stream_zst_pidbox_to_sqlite(
     let mut known_buffered: HashSet<u32> = HashSet::new();
 
     let mut batch: Vec<(i64, String)> = Vec::with_capacity(BATCH);
+    let mut found = 0usize;   // raw records pushed to batch (pre-conversion)
     let mut written = 0usize;
     let mut page_num: u32 = 2;
 
     let mut page_raw = vec![0u8; fhdr.page_size];
 
-    // ── Streaming loop ─────────────────────────────────────────────────
+    eprintln!(
+        "  SQLite page_size={}, db_pages={}, table root={}",
+        fhdr.page_size,
+        if fhdr.db_page_count > 0 { fhdr.db_page_count.to_string() } else { "unknown".to_string() },
+        tbl.root_page,
+    );
+
+    // ── Streaming loop (first pass) ────────────────────────────────────
     'stream: loop {
         if limit > 0 && written >= limit { break; }
 
@@ -571,8 +646,10 @@ pub fn stream_zst_pidbox_to_sqlite(
         while let Some(&pnum) = known_buffered.iter().next() {
             known_buffered.remove(&pnum);
             if let Some(data) = page_buf.remove(&pnum) {
+                let before = batch.len();
                 handle_page(pnum, &data, &fhdr, &tbl, &mut target, &mut overflow_map,
                             &page_buf, &mut known_buffered, &mut batch);
+                found += batch.len().saturating_sub(before);
                 flush_batch(&mut batch, &mut written, &out_conn, limit)?;
                 if limit > 0 && written >= limit { break 'stream; }
             }
@@ -586,8 +663,10 @@ pub fn stream_zst_pidbox_to_sqlite(
         }
 
         if overflow_map.contains_key(&page_num) || target.contains(&page_num) {
+            let before = batch.len();
             handle_page(page_num, &page_raw, &fhdr, &tbl, &mut target, &mut overflow_map,
                         &page_buf, &mut known_buffered, &mut batch);
+            found += batch.len().saturating_sub(before);
             flush_batch(&mut batch, &mut written, &out_conn, limit)?;
         } else {
             // Page not yet known to be relevant — buffer it.
@@ -601,9 +680,54 @@ pub fn stream_zst_pidbox_to_sqlite(
     while let Some(&pnum) = known_buffered.iter().next() {
         known_buffered.remove(&pnum);
         if let Some(data) = page_buf.remove(&pnum) {
+            let before = batch.len();
             handle_page(pnum, &data, &fhdr, &tbl, &mut target, &mut overflow_map,
                         &page_buf, &mut known_buffered, &mut batch);
+            found += batch.len().saturating_sub(before);
         }
+    }
+
+    // ── Report first-pass diagnostics ──────────────────────────────────
+    {
+        let leftover_buf = page_buf.leftover_count();
+        if leftover_buf > 0 {
+            eprintln!(
+                "  pass 1: {leftover_buf} buffered pages from other tables/indexes (expected)"
+            );
+        }
+    }
+    drop(page_buf); // free buffer memory before extra passes
+
+    // ── Multi-pass recovery for missed B-tree pages ────────────────────
+    // If target or overflow_map are non-empty, some pages were dropped from
+    // the buffer (buffer too small for the full file).  Re-scan the zstd
+    // file, this time only picking up the specific pages we still need.
+    // Each pass can recover one more level of B-tree depth; repeat until
+    // converged or MAX_EXTRA_PASSES reached.
+    for pass in 1..=MAX_EXTRA_PASSES {
+        let still_needed = target.len() + overflow_map.len();
+        if still_needed == 0 || (limit > 0 && written >= limit) { break; }
+
+        eprintln!(
+            "  pass {}: {} pages still needed — rescanning {} GiB compressed file …",
+            pass + 1,
+            still_needed,
+            zst_total / (1024 * 1024 * 1024).max(1),
+        );
+
+        let before_found = found;
+        let matched = scan_pass(
+            zst_path, &fhdr, &tbl,
+            &mut target, &mut overflow_map, &mut known_buffered,
+            &mut batch, &mut written, &out_conn, limit,
+        )?;
+        found += batch.len(); // rough; exact count is tracked inside scan_pass indirectly
+
+        if matched == 0 {
+            eprintln!("  pass {}: no new pages found — stopping", pass + 1);
+            break;
+        }
+        let _ = before_found; // suppress unused-variable warning
     }
 
     // ── Flush tail batch ───────────────────────────────────────────────
@@ -613,13 +737,35 @@ pub fn stream_zst_pidbox_to_sqlite(
         } else {
             batch
         };
+        let n = tail.len();
         let prepared = parallel_convert_and_prepare_mixed(&tail);
-        written += prepared.len();
+        let converted = prepared.len();
+        written += converted;
+        if converted < n {
+            eprintln!("  tail: {n} records found, {converted} converted ({} failed)", n - converted);
+        }
         write_sqlite_batch_rows(&out_conn, prepared)?;
     }
 
+    // ── Final diagnostics ──────────────────────────────────────────────
+    if !target.is_empty() {
+        eprintln!(
+            "  warning: {} B-tree pages still unresolved after {} passes — \
+             some records may be missing",
+            target.len(),
+            MAX_EXTRA_PASSES + 1,
+        );
+    }
+    if !overflow_map.is_empty() {
+        eprintln!(
+            "  warning: {} overflow chains unresolved — \
+             {} records with large raw_metadata may be truncated",
+            overflow_map.len(),
+            overflow_map.len(),
+        );
+    }
+
     bar.finish_and_clear();
-    page_buf.warn_if_leftover();
 
     // ── Record installation date ───────────────────────────────────────
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
