@@ -274,6 +274,7 @@ pub fn write_list_citation(
             | "ror"
             | "citation"
             | "crossref_xml"
+            | "datacite_xml"
     ) {
         let bytes = formats::write_all_citation(to, list, style, locale)?;
         bar.finish_and_clear();

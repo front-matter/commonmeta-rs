@@ -76,13 +76,15 @@ pub fn json_schema_errors(document: &[u8], schema: Option<&str>) -> Result<()> {
 
 /// Validate an XML document against a bundled XSD schema.
 ///
-/// Only `"crossref_xml"` (or aliases `"crossref"`, `"crossref-v5.4.0"`) is
-/// supported.  The compiled schema is built once and reused across calls.
+/// Supported schema names: `"crossref_xml"` (aliases `"crossref"`,
+/// `"crossref-v5.4.0"`), `"datacite_xml"` (alias `"datacite-v4.7"`).
+/// The compiled schema is built once and reused across calls.
 pub fn xml_schema_errors(xml: &[u8], schema: Option<&str>) -> Result<()> {
     let schema_name = schema.unwrap_or("crossref_xml");
 
     let compiled = match schema_name {
         "crossref_xml" | "crossref" | "crossref-v5.4.0" => crossref_xsd_schema()?,
+        "datacite_xml" | "datacite-v4.7"                => datacite_xsd_schema()?,
         other => {
             return Err(Error::UnsupportedFormat(format!(
                 "XSD schema '{other}' not supported"
@@ -147,6 +149,37 @@ fn build_crossref_schema() -> std::result::Result<Arc<Schema>, String> {
         .resolve_with(&fetcher)
         .map(Arc::new)
         .map_err(|e| format!("failed to compile Crossref XSD schema: {e}"))
+}
+
+/// Lazy-compiled DataCite 4.7 XSD schema.
+fn datacite_xsd_schema() -> Result<Arc<Schema>> {
+    static SCHEMA: OnceLock<std::result::Result<Arc<Schema>, String>> = OnceLock::new();
+    SCHEMA
+        .get_or_init(build_datacite_schema)
+        .as_ref()
+        .map(Arc::clone)
+        .map_err(|e| Error::Parse(e.clone()))
+}
+
+fn build_datacite_schema() -> std::result::Result<Arc<Schema>, String> {
+    let base_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("datacite");
+
+    let main_xsd_path = base_dir.join("datacite-v4.xsd");
+    let main_xsd = fs::read(&main_xsd_path)
+        .map_err(|e| format!("could not read datacite-v4.xsd: {e}"))?;
+
+    let fetcher = SandboxFetcher { base: FileFetcher::with_base_dir(&base_dir) };
+
+    Schema::builder()
+        .add(
+            "https://schema.datacite.org/meta/kernel-4.7/metadata.xsd",
+            main_xsd,
+        )
+        .resolve_with(&fetcher)
+        .map(Arc::new)
+        .map_err(|e| format!("failed to compile DataCite XSD schema: {e}"))
 }
 
 /// A schema fetcher that resolves imports from a local directory and returns

@@ -131,6 +131,7 @@ pub fn write_citation(
         "commonmeta" => commonmeta::write(data),
         "crossref" => crossref::write(data),
         "crossref_xml" => crossref_xml::write(data),
+        "datacite_xml" => datacite_xml::write(data),
         "ris" => ris::write(data),
         "csl" => csl::write(data),
         "datacite" => datacite::write(data),
@@ -159,6 +160,7 @@ pub fn write_all_citation(
         "ror" => ror::write_json_all(list),
         "citation" => citation::write_all(list, style, locale),
         "crossref_xml" => crossref_xml::write_all(list),
+        "datacite_xml" => datacite_xml::write_all(list),
         other => Err(Error::UnsupportedFormat(other.to_string())),
     }
 }
