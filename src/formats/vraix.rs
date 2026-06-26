@@ -354,7 +354,7 @@ pub fn stream_dump_to_sqlite(
 /// Like [`parallel_convert_and_prepare`] but routes each record by its
 /// `source_id` rather than a fixed converter. ROR rows (`source_id == 3`)
 /// and any unrecognised source are silently skipped.
-fn parallel_convert_and_prepare_mixed(
+pub(crate) fn parallel_convert_and_prepare_mixed(
     raw: &[(i64, String)],
 ) -> Vec<crate::formats::commonmeta::PreparedRow> {
     use crate::formats::commonmeta::serialize_to_row;

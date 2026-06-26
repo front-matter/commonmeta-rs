@@ -162,36 +162,15 @@ fn install_pidbox(out_path: &str, timers: bool) -> Result<(), String> {
         eprintln!("  downloaded in {:.2}s", t.elapsed().as_secs_f64());
     }
 
-    // Step 2: stream-decompress .zst → a temp sqlite3 file next to the output
-    // so it lands on real disk, not a tmpfs /tmp that could exhaust RAM.
-    // Append to the full filename rather than using with_extension, which would
-    // produce a double-dot (commonmeta..sqlite3.pidbox-N.tmp) by stripping the
-    // existing .sqlite3 extension before adding the new one.
+    // Step 2: stream-decompress and convert in one pass — the decompressed
+    // SQLite can be 1-3 TB and may exceed available disk space, so we read
+    // the zstd file page-by-page and write commonmeta records directly to the
+    // output without writing the intermediate SQLite to disk.
     let out = Path::new(out_path);
-    let tmp = {
-        let mut s = out.as_os_str().to_os_string();
-        s.push(format!(".pidbox-{}.tmp", std::process::id()));
-        std::path::PathBuf::from(s)
-    };
-    eprintln!("Decompressing to {}...", tmp.display());
+    eprintln!("Converting (streaming decompress + convert) → {}...", out_path);
     let t = Instant::now();
-    let decompressed_bytes = commonmeta::file_utils::decompress_zst_file(&cache_path, &tmp)
-        .map_err(|e| format!("failed to decompress pidbox: {}", e))?;
-    if timers {
-        eprintln!(
-            "  decompressed {} bytes in {:.2}s",
-            decompressed_bytes,
-            t.elapsed().as_secs_f64()
-        );
-    }
-
-    // Step 3: convert VRAIX pidbox schema → commonmeta works SQLite.
-    eprintln!("Writing to {}...", out_path);
-    let t = Instant::now();
-    let result = commonmeta::stream_pidbox_to_sqlite(&tmp, out, 0, false)
-        .map_err(|e| e.to_string());
-    std::fs::remove_file(&tmp).ok();
-    let n = result?;
+    let n = commonmeta::stream_zst_pidbox_to_sqlite(&cache_path, out, 0)
+        .map_err(|e| format!("failed to convert pidbox: {}", e))?;
     if timers {
         eprintln!("  converted and wrote {} records in {:.2}s", n, t.elapsed().as_secs_f64());
         eprintln!("  total: {:.2}s", total.elapsed().as_secs_f64());

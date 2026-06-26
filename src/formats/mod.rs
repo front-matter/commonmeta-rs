@@ -15,6 +15,7 @@ pub mod ris;
 pub mod ror;
 pub mod ror_countries;
 pub mod schemaorg;
+pub mod sqlite_stream;
 pub mod vraix;
 
 use crate::data::Data;

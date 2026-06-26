@@ -233,6 +233,18 @@ pub fn stream_pidbox_to_sqlite(
     formats::vraix::stream_pidbox_to_sqlite(input_path, output_path, limit, !update)
 }
 
+/// Like [`stream_pidbox_to_sqlite`] but reads directly from the
+/// zstd-compressed pidbox file without decompressing it to disk first.
+/// Requires the database to be well-organised (VACUUM'd or sequential bulk
+/// inserts) so that pages appear in DFS pre-order.
+pub fn stream_zst_pidbox_to_sqlite(
+    zst_path: &std::path::Path,
+    output_path: &std::path::Path,
+    limit: usize,
+) -> Result<usize> {
+    formats::sqlite_stream::stream_zst_pidbox_to_sqlite(zst_path, output_path, limit, true)
+}
+
 /// Render a list of records to `to` format as a single buffer: a JSON array
 /// for object-shaped formats (`commonmeta`, `csl`, `datacite`, `inveniordm`,
 /// `schemaorg`, `ror`), or newline-joined output for line/document-shaped
