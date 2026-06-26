@@ -200,6 +200,47 @@ pub fn read_sqlite_commonmeta(
     formats::commonmeta::read_sqlite_commonmeta(path, limit, offset)
 }
 
+/// Look up a single record by its `id` (DOI URL) in a commonmeta SQLite database.
+/// Returns `None` when the record is not present.
+pub fn read_sqlite_by_id(id: &str, path: &std::path::Path) -> Result<Option<Data>> {
+    formats::commonmeta::read_sqlite_by_id(id, path)
+}
+
+/// Fetch one page of Crossref works using cursor-based pagination.
+///
+/// Pass `cursor = "*"` for the first page; use the `next-cursor` value from
+/// the previous response for every subsequent page. Cursor pagination is
+/// required for result sets beyond 10,000 records (the Crossref API limit for
+/// offset pagination).
+///
+/// Returns `(records, next_cursor)`. Stop when `next_cursor` is `None` or
+/// when the records slice is shorter than `number`.
+#[allow(clippy::too_many_arguments)]
+pub fn crossref_fetch_page_with_cursor(
+    cursor: &str,
+    number: usize,
+    member: &str,
+    type_: &str,
+    year: &str,
+    orcid: &str,
+    ror: &str,
+    has_orcid: bool,
+    has_ror: bool,
+    has_references: bool,
+    has_relation: bool,
+    has_abstract: bool,
+    has_award: bool,
+    has_license: bool,
+    has_archive: bool,
+    match_ror: bool,
+) -> Result<(Vec<Data>, Option<String>)> {
+    formats::crossref::fetch_page_with_cursor(
+        cursor, number, member, type_, year, orcid, ror,
+        has_orcid, has_ror, has_references, has_relation, has_abstract, has_award, has_license, has_archive,
+        match_ror,
+    )
+}
+
 /// Stream a VRAIX daily dump at `input_path` directly to a commonmeta SQLite
 /// database at `output_path` in batches of 10 000 rows, converting with
 /// `from`-specific parser and writing each batch in a single transaction.

@@ -1,4 +1,4 @@
-use clap::{Arg, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::path::Path;
 
 use crate::cmd::resolve_db_path;
@@ -9,10 +9,13 @@ pub fn command() -> Command {
         .long_about(
             "Match a string to an identifier. Supports affiliation matching for ROR.\n\n\
             When a local SQLite database exists at the default location (produced by \
-            'commonmeta install ror'), it is queried via FTS5 full-text search instead \
-            of the ROR API — faster and offline. Use --file to specify a different path.\n\n\
+            'commonmeta import --from ror'), it is queried via FTS5 full-text search \
+            instead of the ROR API — faster and works offline.\n\n\
+            Use --no-network to require the local database and skip the API fallback. \
+            Use --file to specify a custom database path.\n\n\
             Example usage:\n\n\
             commonmeta match \"Leibniz Universität Hannover\"\n\
+            commonmeta match \"MIT\" --no-network\n\
             commonmeta match \"MIT\" --file /data/ror.sqlite3",
         )
         .arg(
@@ -44,6 +47,12 @@ pub fn command() -> Command {
                     and the platform default.",
                 ),
         )
+        .arg(
+            Arg::new("no-network")
+                .long("no-network")
+                .help("Use only the local ROR database; error if it does not exist instead of falling back to the ROR API")
+                .action(ArgAction::SetTrue),
+        )
 }
 
 pub fn execute(matches: &ArgMatches) -> Result<(), String> {
@@ -67,16 +76,21 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         return Ok(());
     }
 
+    let no_network = matches.get_flag("no-network");
     let db_path_str = resolve_db_path(matches.get_one::<String>("file"));
     let db_path = Path::new(&db_path_str);
-    let local_db: Option<&Path> = if db_path.exists() { Some(db_path) } else { None };
 
-    let candidates = match local_db {
-        Some(db_path) => {
-            commonmeta::match_ror_affiliation_sqlite(input, db_path)
-                .map_err(|e| e.to_string())?
-        }
-        None => commonmeta::match_ror_affiliation(input).map_err(|e| e.to_string())?,
+    let candidates = if db_path.exists() {
+        commonmeta::match_ror_affiliation_sqlite(input, db_path)
+            .map_err(|e| e.to_string())?
+    } else if no_network {
+        return Err(format!(
+            "local ROR database not found at '{}'; \
+            run 'commonmeta import --from ror' or remove --no-network",
+            db_path_str
+        ));
+    } else {
+        commonmeta::match_ror_affiliation(input).map_err(|e| e.to_string())?
     };
     let chosen = candidates.into_iter().find(|m| m.chosen);
 
@@ -127,5 +141,23 @@ mod tests {
         // printing "No valid input format..." rather than erroring.
         let result = execute(&matches);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_no_network_without_local_db_errors() {
+        // Point at a path that definitely doesn't exist; --no-network must error
+        // rather than falling back to the ROR API.
+        let matches = command().get_matches_from(vec![
+            "match",
+            "Leibniz Universität Hannover",
+            "--no-network",
+            "--file",
+            "/tmp/nonexistent-ror-test.sqlite3",
+        ]);
+        let err = execute(&matches).unwrap_err();
+        assert!(
+            err.contains("--no-network") || err.contains("not found"),
+            "expected network-guard error, got: {err}"
+        );
     }
 }

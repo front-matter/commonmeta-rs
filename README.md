@@ -29,7 +29,7 @@ Commonmeta-rs reads and/or writes these metadata formats:
 | [OpenAlex](https://www.openalex.org/)                                                    | openalex     | n/a                                     | yes   | no    |
 
 _commonmeta_: the Commonmeta format is the native format for the library and used internally.
-_Later_: we plan to implement this format in a later release.
+_later_: we plan to implement this format in a later release.
 
 ## Build & run
 
@@ -38,10 +38,10 @@ cargo build
 cargo test
 ```
 
-The `commonmeta` binary has eight subcommands: `convert`, `encode`, `decode`, `install`, `list`, `push`, `put`, and `match`.
+The `commonmeta` binary has eight subcommands: `convert`, `encode`, `decode`, `import`, `list`, `push`, `put`, and `match`.
 
 ```sh
-# Encode/decode a Crockford base32 identifier suffix
+# Encode/decode a Crockford base32 identifier suffix given a DOI prefix
 cargo run -- encode 10.5555
 cargo run -- decode 10.5555/nwbyp-29t86
 
@@ -57,11 +57,27 @@ cargo run -- convert 10.5555/12345678 --from crossref --to citation --style apa 
 # Fetch a batch of records from an API and write them as a commonmeta JSON array
 cargo run -- list --from crossref --number 100 --type journal-article --file out.json
 
-# Read metadata from a local VRAIX SQLite file
-cargo run -- list crossref-2026-06-15.sqlite3 --from vraix --number 0 --to commonmeta --file out.json.gz
+# Read all records from a local VRAIX SQLite file and convert to another format
+cargo run -- list crossref-2026-06-15.sqlite3 --number 0 --to commonmeta --file out.json.gz
 
 # Parquet output (.parquet file extension, --to commonmeta only): records are split into batches of 100,000, written in parallel, and zstd-compressed
-cargo run --release -- list crossref-2026-06-15.sqlite3 --from vraix --number 0 --file out.parquet
+cargo run --release -- list crossref-2026-06-15.sqlite3 --number 0 --file out.parquet
+
+# Import a single record by DOI into the local commonmeta database (source auto-detected)
+cargo run -- import 10.7554/elife.01567
+
+# Import all Crossref records for a ROR-identified institution (paginates through all results)
+cargo run -- import --from crossref --ror 00pd74e08
+
+# Import all DataCite records for an ORCID author (paginates through all results)
+cargo run -- import --from datacite --orcid 0000-0003-1419-2405
+
+# Import all records from a Crossref or DataCite VRAIX daily dump
+cargo run -- import --from crossref --date 2026-06-15
+cargo run -- import crossref-2026-06-15.sqlite3
+
+# Import all records from the VRAIX pidbox dump
+cargo run -- import --from pidbox
 
 # Register records with a live InvenioRDM instance (creates/updates and publishes
 # real records — registration is currently only supported with --to inveniordm)
@@ -70,9 +86,6 @@ cargo run -- push --from crossref --number 10 --to inveniordm --host rogue-schol
 # Same as push, but for a single record (DOI, URL, or file path)
 cargo run -- put 10.5555/12345678 --from crossref --to inveniordm --host rogue-scholar.org --token TOKEN
 
-# Download the latest ROR data release and install it as a local SQLite database
-cargo run -- install ror
-
 # Match a free-text affiliation string to a ROR organization (uses local DB when available)
 cargo run -- match "Leibniz Universität Hannover"
 cargo run -- match "Leibniz Universität Hannover" --to inveniordm
@@ -80,44 +93,70 @@ cargo run -- match "Leibniz Universität Hannover" --to inveniordm
 # Look up a ROR organization (uses local DB when available)
 cargo run -- convert https://ror.org/02nr0ka47
 cargo run -- convert https://ror.org/02nr0ka47 --to inveniordm
+
+# Work fully offline — fails fast if a network call would be required
+cargo run -- convert record.json --from commonmeta --to csl --no-network
+cargo run -- list crossref-2026-06-15.sqlite3 --no-network --file out.json
+cargo run -- import crossref-2026-06-15.sqlite3 --no-network
+cargo run -- match "Leibniz Universität Hannover" --no-network
 ```
 
 Use `cargo run -- <subcommand> --help` for the full list of options for each subcommand.
 
+### `--no-network` flag
+
+`convert`, `list`, `import`, and `match` all accept a `--no-network` flag. When set, any
+operation that would make an outbound HTTP request is rejected immediately with a clear error
+message. Operations on local files always succeed regardless of this flag. `push` and `put`
+always require network access and do not expose this flag.
+
 ## Local database
 
-The `install`, `match`, and `convert` subcommands can use a local SQLite database
-of ROR organizations for faster, offline lookups instead of querying the ROR API.
-
-Install with:
+The `import` command populates a local commonmeta SQLite database with scholarly metadata records. All imports upsert — existing records are updated rather than replaced. The database is also used by `match` and `convert` for offline lookups.
 
 ```sh
-commonmeta install ror
+# Import a single record by DOI (source auto-detected from the DOI prefix)
+commonmeta import 10.7554/elife.01567
+commonmeta import https://doi.org/10.7554/elife.01567
+
+# Import all Crossref records for an institution (ROR ID, paginates automatically)
+commonmeta import --from crossref --ror 00pd74e08
+
+# Import all DataCite records for an author (ORCID, paginates automatically)
+commonmeta import --from datacite --orcid 0000-0003-1419-2405
+
+# Import a full daily dump (downloads from metadata.vraix.org)
+commonmeta import --from crossref --date 2026-06-15
+commonmeta import --from datacite --date 2026-06-15
+
+# Import from a locally downloaded VRAIX dump (source auto-detected from filename)
+commonmeta import crossref-2026-06-15.sqlite3
+
+# Import the full VRAIX pidbox dump
+commonmeta import --from pidbox
+
+# Import latest ROR organization data
+commonmeta import --from ror
 ```
 
 The database path is resolved in this order:
 
-1. `--file` flag (on `install` and `match`)
-2. `COMMONMETA_DB` environment variable
-3. Platform default:
+1. `COMMONMETA_DB` environment variable
+2. Platform default:
 
 | Platform | Default path                                                   |
 | -------- | -------------------------------------------------------------- |
-| macOS    | `~/Library/Application Support/commonmeta/commonmeta.sqlite3` |
+| macOS    | `~/Library/Application Support/commonmeta/commonmeta.sqlite3`  |
 | Linux    | `/var/lib/commonmeta/commonmeta.sqlite3`                       |
 
 ```sh
 # Use a custom path via environment variable
-COMMONMETA_DB=/data/ror.sqlite3 commonmeta match "MIT"
-
-# Use a custom path via flag
-commonmeta install ror --file /data/ror.sqlite3
-commonmeta match "MIT" --file /data/ror.sqlite3
+COMMONMETA_DB=/data/commonmeta.sqlite3 commonmeta import --from crossref --date 2026-06-15
 ```
 
 ## Documentation
 
-Documentation (work in progress) for using the library is available at the [commonmeta-rs Documentation](https://rs.commonmeta.org/) website.
+Documentation (work in progress) for using the library is available at the [commonmeta-rs Documentation](https://rust.commonmeta.org/) website.
 
 ## Meta
 

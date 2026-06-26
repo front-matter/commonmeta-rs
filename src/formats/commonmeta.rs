@@ -574,6 +574,29 @@ pub fn read_sqlite_commonmeta(path: &Path, limit: Option<usize>, offset: usize) 
     read_sqlite_rows(&conn, limit, offset)
 }
 
+/// Look up a single record by its primary `id` (DOI URL) in a commonmeta SQLite database.
+/// Returns `None` when the record is not present.
+pub fn read_sqlite_by_id(id: &str, path: &Path) -> Result<Option<Data>> {
+    let conn = rusqlite::Connection::open(path)
+        .map_err(|e| Error::Parse(format!("failed to open '{}': {}", path.display(), e)))?;
+    let result = conn.query_row(
+        r#"SELECT "metadata" FROM works WHERE id = ?1 LIMIT 1"#,
+        rusqlite::params![id],
+        |row| row.get::<_, Vec<u8>>(0),
+    );
+    match result {
+        Ok(blob) => {
+            let decompressed = zstd::decode_all(std::io::Cursor::new(&blob))
+                .map_err(|e| Error::Parse(format!("failed to decompress metadata: {}", e)))?;
+            let data: Data = serde_json::from_slice(&decompressed)
+                .map_err(|e| Error::Parse(format!("failed to deserialize metadata: {}", e)))?;
+            Ok(Some(data))
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(Error::Parse(e.to_string())),
+    }
+}
+
 /// Read a list of commonmeta records back from the `CommonmetaRow` Parquet
 /// schema written by `write_parquet_all`. Lossless: each record is restored
 /// from its `json` column, the complete original serialization.

@@ -2,7 +2,7 @@
  * Copyright © 2026 Front Matter <info@front-matter.de>
  */
 
-use clap::{Arg, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::path::Path;
 
 use crate::cmd::resolve_db_path;
@@ -64,6 +64,12 @@ pub fn command() -> Command {
             Arg::new("file")
                 .long("file")
                 .help("Write output to this file instead of stdout"),
+        )
+        .arg(
+            Arg::new("no-network")
+                .long("no-network")
+                .help("Disable all outbound network requests; fails if the operation would require network access")
+                .action(ArgAction::SetTrue),
         )
 }
 
@@ -133,8 +139,50 @@ pub(crate) fn detect_format(input: &str) -> String {
 pub fn execute(matches: &ArgMatches) -> Result<(), String> {
     let input_arg = matches.get_one::<String>("input").expect("required");
     let out_file = matches.get_one::<String>("file");
+    let no_network = matches.get_flag("no-network");
+    let style = matches.get_one::<String>("style").map(String::as_str);
+    let locale = matches.get_one::<String>("locale").map(String::as_str);
+    let to_arg = matches.get_one::<String>("to").expect("has default");
 
-    let input = if Path::new(input_arg).exists() {
+    let is_local_file = Path::new(input_arg).exists();
+
+    // When --no-network is set and the input is a DOI/URL, look it up in the
+    // local commonmeta database instead of fetching from the API.
+    if no_network && !is_local_file && doi_prefix(input_arg).is_some() {
+        let bare = input_arg
+            .trim_start_matches("https://doi.org/")
+            .trim_start_matches("http://doi.org/")
+            .trim_start_matches("https://dx.doi.org/")
+            .trim_start_matches("http://dx.doi.org/");
+        let doi_url = format!("https://doi.org/{}", bare);
+        let db_path_str = resolve_db_path(None);
+        let db_path = Path::new(&db_path_str);
+        if !db_path.exists() {
+            return Err(format!(
+                "local database not found at '{}'; \
+                run 'commonmeta import {}' or remove --no-network",
+                db_path_str, input_arg
+            ));
+        }
+        let data = commonmeta::read_sqlite_by_id(&doi_url, db_path)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!(
+                "'{}' not found in local database '{}'; \
+                run 'commonmeta import {}' or remove --no-network",
+                input_arg, db_path_str, input_arg
+            ))?;
+        let json = serde_json::to_string(&data).map_err(|e| e.to_string())?;
+        let to_arg = to_arg.as_str();
+        let output = if to_arg == "citation" {
+            commonmeta::convert_citation("commonmeta", &json, style, locale)
+                .map_err(|e| e.to_string())?
+        } else {
+            commonmeta::convert("commonmeta", to_arg, &json).map_err(|e| e.to_string())?
+        };
+        return write_output(&output, to_arg, out_file);
+    }
+
+    let input = if is_local_file {
         std::fs::read_to_string(input_arg)
             .map_err(|e| format!("failed to read '{}': {}", input_arg, e))?
     } else {
@@ -147,15 +195,12 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
     };
 
     // For ROR input the natural default output is "ror", not "commonmeta".
-    let to_arg = matches.get_one::<String>("to").expect("has default");
+    let to_arg = to_arg.as_str();
     let to = if from == "ror" && to_arg == "commonmeta" {
         "ror"
     } else {
-        to_arg.as_str()
+        to_arg
     };
-
-    let style = matches.get_one::<String>("style").map(String::as_str);
-    let locale = matches.get_one::<String>("locale").map(String::as_str);
 
     // ── ROR input path ────────────────────────────────────────────────────────
     if from == "ror" {
@@ -165,22 +210,25 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
             return Err(format!("'{}' is not a valid ROR identifier", input));
         }
 
-        // Prefer the local SQLite database (COMMONMETA_DB > platform default).
+        // Prefer the local SQLite database (COMMONMETA_DB > platform default);
+        // fall back to the ROR API unless --no-network was requested.
         let db_path_str = resolve_db_path(None);
         let db_path = Path::new(&db_path_str);
         let data = if db_path.exists() {
             commonmeta::fetch_ror_sqlite(&ror_id, db_path).map_err(|e| e.to_string())?
+        } else if no_network {
+            return Err(format!(
+                "ROR lookup requires network access (local database not found at '{}'); \
+                run 'commonmeta import --from ror' or remove --no-network",
+                db_path_str
+            ));
         } else {
             commonmeta::fetch_ror(&ror_id).map_err(|e| e.to_string())?
         };
 
         let output = match to {
-            "inveniordm" => {
-                commonmeta::write("ror", &data).map_err(|e| e.to_string())?
-            }
-            "ror" | _ => {
-                commonmeta::write_ror_json(&data).map_err(|e| e.to_string())?
-            }
+            "inveniordm" => commonmeta::write("ror", &data).map_err(|e| e.to_string())?,
+            _ => commonmeta::write_ror_json(&data).map_err(|e| e.to_string())?,
         };
 
         return write_output(&output, to, out_file);
@@ -214,5 +262,55 @@ fn write_output(output: &[u8], to: &str, out_file: Option<&String>) -> Result<()
             println!("{}", String::from_utf8_lossy(&formatted));
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_args(args: &[&str]) -> clap::ArgMatches {
+        command().try_get_matches_from(args).expect("arg parse failed")
+    }
+
+    #[test]
+    fn test_no_network_with_doi_uses_local_db() {
+        // With --no-network and a DOI, convert must look up the local database
+        // instead of calling the API. Either the record is found and returned
+        // (Ok), or the DB/record is absent and a "not found" error is returned.
+        // In neither case should the error be an API-fetch refusal.
+        let m = parse_args(&["convert", "--no-network", "10.7554/elife.01567"]);
+        match execute(&m) {
+            Ok(()) => {}
+            Err(e) => assert!(
+                e.contains("not found") || e.contains("--no-network"),
+                "expected local-db error, got: {e}"
+            ),
+        }
+    }
+
+    #[test]
+    fn test_no_network_with_doi_url_uses_local_db() {
+        let m = parse_args(&["convert", "--no-network", "https://doi.org/10.7554/elife.01567"]);
+        match execute(&m) {
+            Ok(()) => {}
+            Err(e) => assert!(
+                e.contains("not found") || e.contains("--no-network"),
+                "expected local-db error, got: {e}"
+            ),
+        }
+    }
+
+    #[test]
+    fn test_no_network_with_local_json_passes_guard() {
+        // Non-DOI non-file input (inline JSON) is not blocked by the network guard.
+        // Fails at parse time because the JSON is not valid commonmeta — but NOT
+        // with a --no-network error.
+        let m = parse_args(&["convert", "--no-network", r#"{"type":"JournalArticle"}"#]);
+        let err = execute(&m).unwrap_err();
+        assert!(
+            !err.contains("--no-network"),
+            "should not fail at network guard for inline JSON, got: {err}"
+        );
     }
 }

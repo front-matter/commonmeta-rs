@@ -111,7 +111,7 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         if via == "commonmeta" {
             load_commonmeta_file(input_path)?
         } else {
-            load_list_from_file(input_path, via)?
+            load_list_from_file(input_path, via, None, 0)?
         }
     } else {
         return Err("push: an input file path is required".to_string());
@@ -155,7 +155,7 @@ fn push_to_inveniordm(data: &[Data], matches: &ArgMatches) -> Result<(), String>
 /// or a Parquet dump written by `list --file *.parquet`.
 fn load_commonmeta_file(path: &str) -> Result<Vec<Data>, String> {
     if path.ends_with(".parquet") || path.ends_with(".parquet.zst") {
-        return load_list_from_file(path, "commonmeta");
+        return load_list_from_file(path, "commonmeta", None, 0);
     }
 
     let content =

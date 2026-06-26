@@ -14,6 +14,7 @@ fn main() -> Result<(), String> {
         .subcommand(cmd::decode::command())
         .subcommand(cmd::dump::command())
         .subcommand(cmd::encode::command())
+        .subcommand(cmd::import::command())
         .subcommand(cmd::install::command())
         .subcommand(cmd::list::command())
         .subcommand(cmd::r#match::command())
@@ -26,6 +27,7 @@ fn main() -> Result<(), String> {
         Some(("decode", sub_matches)) => cmd::decode::execute(sub_matches),
         Some(("package", sub_matches)) => cmd::dump::execute(sub_matches),
         Some(("encode", sub_matches)) => cmd::encode::execute(sub_matches),
+        Some(("import", sub_matches)) => cmd::import::execute(sub_matches),
         Some(("install", sub_matches)) => cmd::install::execute(sub_matches),
         Some(("list", sub_matches)) => cmd::list::execute(sub_matches),
         Some(("match", sub_matches)) => cmd::r#match::execute(sub_matches),

@@ -50,6 +50,8 @@ struct CrossrefListResponse {
 struct CrossrefListMessage {
     #[serde(default)]
     items: Vec<CrossrefWork>,
+    #[serde(rename = "next-cursor")]
+    next_cursor: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -651,6 +653,7 @@ pub fn fetch_all(
     has_award: bool,
     has_license: bool,
     has_archive: bool,
+    _match_ror: bool,
 ) -> Result<Vec<Data>> {
     let works = get_all(
         number,
@@ -872,6 +875,101 @@ pub(crate) fn query_url(
     }
 
     url.to_string()
+}
+
+/// Build a Crossref `/works` query URL using cursor-based pagination.
+/// Pass `cursor = "*"` for the first page; use the `next-cursor` value from
+/// the response for every subsequent page. Cursor pagination is required for
+/// deep result sets beyond 10,000 records.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cursor_url(
+    cursor: &str,
+    number: usize,
+    member: &str,
+    type_: &str,
+    year: &str,
+    orcid: &str,
+    ror: &str,
+    has_orcid: bool,
+    has_ror: bool,
+    has_references: bool,
+    has_relation: bool,
+    has_abstract: bool,
+    has_award: bool,
+    has_license: bool,
+    has_archive: bool,
+) -> String {
+    // Re-use query_url for filter building but strip its offset and inject cursor.
+    // We pass page=1 so that offset=0, then replace the pagination params.
+    let base = query_url(
+        number, 1, member, type_, false, year, orcid, ror,
+        has_orcid, has_ror, has_references, has_relation, has_abstract, has_award, has_license, has_archive,
+    );
+    let mut url = Url::parse(&base).expect("base url is valid");
+    // Remove offset and sort/order params (cursor pagination uses its own ordering).
+    let pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(k, _)| k != "offset" && k != "sort" && k != "order")
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    url.query_pairs_mut()
+        .clear()
+        .extend_pairs(pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    url.query_pairs_mut().append_pair("cursor", cursor);
+    url.to_string()
+}
+
+/// Fetch one page of Crossref works using cursor-based pagination.
+/// Returns `(items, next_cursor)`. When `next_cursor` is `None` or the
+/// items list is shorter than `number`, iteration should stop.
+#[allow(clippy::too_many_arguments)]
+pub fn fetch_page_with_cursor(
+    cursor: &str,
+    number: usize,
+    member: &str,
+    type_: &str,
+    year: &str,
+    orcid: &str,
+    ror: &str,
+    has_orcid: bool,
+    has_ror: bool,
+    has_references: bool,
+    has_relation: bool,
+    has_abstract: bool,
+    has_award: bool,
+    has_license: bool,
+    has_archive: bool,
+    _match_ror: bool,
+) -> Result<(Vec<Data>, Option<String>)> {
+    let url = cursor_url(
+        cursor, number, member, type_, year, orcid, ror,
+        has_orcid, has_ror, has_references, has_relation, has_abstract, has_award, has_license, has_archive,
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent(format!(
+            "commonmeta-rs/{} (https://github.com/front-matter/commonmeta-rs; mailto:info@front-matter.de)",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .build()
+        .map_err(|e| Error::Http(e.to_string()))?;
+
+    let json = client
+        .get(&url)
+        .header("Cache-Control", "private")
+        .send()
+        .map_err(|e| Error::Http(e.to_string()))?
+        .error_for_status()
+        .map_err(|e| Error::Http(e.to_string()))?
+        .text()
+        .map_err(|e| Error::Http(e.to_string()))?;
+
+    let response: CrossrefListResponse =
+        serde_json::from_str(&json).map_err(|e| Error::Parse(e.to_string()))?;
+    let next_cursor = response.message.next_cursor;
+    let data = read_all(response.message.items)?;
+    Ok((data, next_cursor))
 }
 
 // ─── Writer ───────────────────────────────────────────────────────────────────

@@ -9,7 +9,7 @@
 //! [`RAM_LIMIT`], then spilled to a temp file up to [`DISK_LIMIT`].
 //! On a VACUUM'd database the buffer stays empty.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -29,9 +29,16 @@ const DISK_LIMIT: u64 = 250 * 1024 * 1024 * 1024; // 250 GiB
 /// Batch size for parallel JSON conversion and SQLite writes.
 const BATCH: usize = 50_000;
 /// Maximum additional scan passes over the zstd file after the first pass.
-/// Each pass can recover one more level of B-tree depth; 8 is generous for
-/// any realistic SQLite database (typical depth is 3–5).
-const MAX_EXTRA_PASSES: usize = 8;
+const MAX_EXTRA_PASSES: usize = 20;
+/// Stop extra passes when fewer than this many pages were matched in the last pass.
+const CONVERGENCE_THRESHOLD: usize = 10;
+/// Fallback sliding-window RAM size (in GiB) when RAM cannot be auto-detected.
+/// Auto-detection maps: ≥128 GiB→96, ≥64→32, ≥32→16, ≥16→8.
+/// Override at runtime with COMMONMETA_SCAN_WINDOW_GIB.
+const SCAN_WINDOW_DEFAULT_GIB: usize = 8;
+/// Default disk-backed extension for the sliding window (in GiB).
+/// Override with COMMONMETA_SCAN_DISK_GIB.
+const SCAN_DISK_DEFAULT_GIB: u64 = 500;
 
 // ── SQLite constants ─────────────────────────────────────────────────────────
 
@@ -409,19 +416,191 @@ impl Drop for PageBuffer {
     }
 }
 
+// ── Page-lookup abstraction ───────────────────────────────────────────────────
+
+/// Returns total installed RAM in GiB (0 if detection fails).
+fn total_ram_gib() -> usize {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
+            for line in content.lines() {
+                if line.starts_with("MemTotal:") {
+                    if let Some(kb) = line.split_whitespace().nth(1)
+                        .and_then(|s| s.parse::<u64>().ok())
+                    {
+                        return (kb / (1024 * 1024)) as usize;
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(out) = std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+        {
+            if let Ok(s) = std::str::from_utf8(&out.stdout) {
+                if let Ok(bytes) = s.trim().parse::<u64>() {
+                    return (bytes / (1024 * 1024 * 1024)) as usize;
+                }
+            }
+        }
+    }
+    0
+}
+
+/// Choose a scan-window size based on detected RAM, leaving headroom for the OS.
+/// Override at runtime with COMMONMETA_SCAN_WINDOW_GIB.
+fn auto_window_gib() -> usize {
+    match total_ram_gib() {
+        n if n >= 128 => 96,
+        n if n >= 64  => 32,
+        n if n >= 32  => 16,
+        n if n >= 16  => 8,
+        _             => SCAN_WINDOW_DEFAULT_GIB,
+    }
+}
+
+/// Minimal interface needed by [`handle_page`] to check whether a page is
+/// already held in some buffer so it can be added to `known_buffered` for
+/// immediate retroactive processing.
+trait PageLookup {
+    fn contains(&self, page_num: u32) -> bool;
+}
+
+impl PageLookup for PageBuffer {
+    fn contains(&self, page_num: u32) -> bool { self.contains(page_num) }
+}
+
+/// Two-tier sliding-window (LRU) buffer used during extra scan passes.
+///
+/// Keeps the most-recently-seen `max_ram_pages` non-target pages in RAM.
+/// When RAM is full, the oldest pages spill to a disk temp file up to
+/// `max_disk_bytes`.  When disk is also full, the oldest disk entries are
+/// evicted (data dropped but further lookups simply miss).
+///
+/// This lets backward overflow-chain links within the window be resolved
+/// within the same scan pass instead of requiring another 300 GiB re-scan.
+struct SlidingBuf {
+    // RAM tier
+    ram: HashMap<u32, Vec<u8>>,
+    ram_order: BTreeSet<u32>,
+    max_ram_pages: usize,
+    // Disk tier
+    disk: Option<File>,
+    disk_path: PathBuf,
+    disk_index: HashMap<u32, u64>, // page_num → byte offset
+    disk_order: BTreeSet<u32>,
+    disk_bytes: u64,
+    max_disk_bytes: u64,
+    page_size: usize,
+}
+
+impl SlidingBuf {
+    fn new(max_ram_pages: usize, max_disk_bytes: u64, page_size: usize, disk_path: PathBuf) -> Self {
+        Self {
+            ram: HashMap::new(), ram_order: BTreeSet::new(), max_ram_pages,
+            disk: None, disk_path,
+            disk_index: HashMap::new(), disk_order: BTreeSet::new(),
+            disk_bytes: 0, max_disk_bytes,
+            page_size,
+        }
+    }
+
+    fn store(&mut self, page_num: u32, data: Vec<u8>) {
+        if self.max_ram_pages == 0 && self.max_disk_bytes == 0 { return; }
+
+        // Make room in RAM (evict oldest to disk if possible, else drop).
+        while self.ram.len() >= self.max_ram_pages.max(1) {
+            let Some(&oldest) = self.ram_order.iter().next() else { break };
+            self.ram_order.remove(&oldest);
+            if let Some(evicted) = self.ram.remove(&oldest) {
+                self.spill_to_disk(oldest, evicted);
+            }
+        }
+
+        if self.max_ram_pages > 0 {
+            self.ram.insert(page_num, data);
+            self.ram_order.insert(page_num);
+        } else {
+            self.spill_to_disk(page_num, data);
+        }
+    }
+
+    fn spill_to_disk(&mut self, page_num: u32, data: Vec<u8>) {
+        if self.max_disk_bytes == 0 { return; }
+
+        // Evict oldest disk entries until we have room.
+        while self.disk_bytes + data.len() as u64 > self.max_disk_bytes {
+            let Some(&oldest) = self.disk_order.iter().next() else { break };
+            self.disk_order.remove(&oldest);
+            if let Some(offset) = self.disk_index.remove(&oldest) {
+                // Disk space is not reclaimed in-place; the file grows until drop.
+                // Eviction just removes the index entry so lookups miss.
+                let _ = offset;
+            }
+        }
+        if self.disk_bytes + data.len() as u64 > self.max_disk_bytes { return; }
+
+        // Lazy-open the disk file.
+        if self.disk.is_none() {
+            match File::options().read(true).write(true).create_new(true).open(&self.disk_path) {
+                Ok(f) => self.disk = Some(f),
+                Err(_) => return, // can't open temp file; just drop the page
+            }
+        }
+        let f = self.disk.as_mut().unwrap();
+        if f.write_all(&data).is_ok() {
+            self.disk_index.insert(page_num, self.disk_bytes);
+            self.disk_order.insert(page_num);
+            self.disk_bytes += data.len() as u64;
+        }
+    }
+
+    fn remove(&mut self, page_num: u32) -> Option<Vec<u8>> {
+        if let Some(data) = self.ram.remove(&page_num) {
+            self.ram_order.remove(&page_num);
+            return Some(data);
+        }
+        if let Some(offset) = self.disk_index.remove(&page_num) {
+            self.disk_order.remove(&page_num);
+            let f = self.disk.as_mut()?;
+            let mut data = vec![0u8; self.page_size];
+            f.seek(io::SeekFrom::Start(offset)).ok()?;
+            f.read_exact(&mut data).ok()?;
+            return Some(data);
+        }
+        None
+    }
+}
+
+impl PageLookup for SlidingBuf {
+    fn contains(&self, page_num: u32) -> bool {
+        self.ram.contains_key(&page_num) || self.disk_index.contains_key(&page_num)
+    }
+}
+
+impl Drop for SlidingBuf {
+    fn drop(&mut self) {
+        drop(self.disk.take());
+        std::fs::remove_file(&self.disk_path).ok();
+    }
+}
+
 // ── Page dispatch ─────────────────────────────────────────────────────────────
 
 /// Process one page that is known to be in `target` or `overflow_map`.
 /// Newly discovered page references are checked against `page_buf`;
 /// if found, they are added to `known_buffered` for retroactive processing.
-fn handle_page(
+fn handle_page<B: PageLookup>(
     page_num: u32,
     page: &[u8],
     fhdr: &FileHdr,
     tbl: &TableInfo,
     target: &mut HashSet<u32>,
     overflow_map: &mut HashMap<u32, Pending>,
-    page_buf: &PageBuffer,
+    page_buf: &B,
     known_buffered: &mut HashSet<u32>,
     batch: &mut Vec<(i64, String)>,
 ) {
@@ -466,10 +645,16 @@ fn handle_page(
 
 // ── Extra scan pass (multi-pass recovery) ────────────────────────────────────
 
-/// One additional sequential scan over the zstd file, looking only for pages
-/// that are currently in `target` or `overflow_map`.  No buffering — pages
-/// that are not yet needed are simply skipped.  Returns the number of pages
-/// processed (matched against target/overflow_map).
+/// One additional sequential scan over the zstd file.
+///
+/// Pages currently in `target` or `overflow_map` are processed immediately.
+/// All other pages are kept in a sliding RAM window (`SlidingBuf`) so that
+/// backward overflow-chain references — where the next chain link has a lower
+/// page number than its predecessor — can be resolved retroactively within the
+/// same scan rather than requiring another full re-scan of the file.
+///
+/// Window size defaults to `SCAN_WINDOW_DEFAULT_GIB` GiB and is overridable
+/// via the `COMMONMETA_SCAN_WINDOW_GIB` environment variable.
 fn scan_pass(
     zst_path: &Path,
     fhdr: &FileHdr,
@@ -482,14 +667,22 @@ fn scan_pass(
     out_conn: &rusqlite::Connection,
     limit: usize,
 ) -> Result<usize> {
-    // Extra passes use an always-empty PageBuffer so handle_page never finds
-    // pages in the buffer — pages are only matched from the stream directly.
-    let empty_buf = PageBuffer {
-        ram: HashMap::new(), ram_bytes: 0,
-        disk: None, disk_path: PathBuf::new(),
-        disk_index: HashMap::new(), disk_bytes: 0,
-        page_size: fhdr.page_size,
+    let window_gib = std::env::var("COMMONMETA_SCAN_WINDOW_GIB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or_else(auto_window_gib);
+    let disk_gib = std::env::var("COMMONMETA_SCAN_DISK_GIB")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(SCAN_DISK_DEFAULT_GIB);
+    let max_ram_pages = (window_gib * 1024 * 1024 * 1024) / fhdr.page_size.max(1);
+    let max_disk_bytes = disk_gib * 1024 * 1024 * 1024;
+    let slide_disk_path = {
+        let mut s = zst_path.as_os_str().to_os_string();
+        s.push(format!(".scanpass-{}.pagebuf", std::process::id()));
+        PathBuf::from(s)
     };
+    let mut slide = SlidingBuf::new(max_ram_pages, max_disk_bytes, fhdr.page_size, slide_disk_path);
 
     let src = File::open(zst_path)
         .map_err(|e| Error::Parse(format!("open {}: {e}", zst_path.display())))?;
@@ -505,8 +698,21 @@ fn scan_pass(
     let mut page_num: u32 = 2;
     let mut matched = 0usize;
 
-    loop {
+    'scan: loop {
         if limit > 0 && *written >= limit { break; }
+
+        // Retroactively process any backward-chain pages now in the window.
+        while let Some(&pnum) = known_buffered.iter().next() {
+            known_buffered.remove(&pnum);
+            if let Some(data) = slide.remove(pnum) {
+                handle_page(pnum, &data, fhdr, tbl, target, overflow_map,
+                            &slide, known_buffered, batch);
+                flush_batch(batch, written, out_conn, limit)?;
+                matched += 1;
+                if limit > 0 && *written >= limit { break 'scan; }
+            }
+        }
+
         match dec.read_exact(&mut page_raw) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
@@ -515,15 +721,25 @@ fn scan_pass(
 
         if overflow_map.contains_key(&page_num) || target.contains(&page_num) {
             handle_page(page_num, &page_raw, fhdr, tbl, target, overflow_map,
-                        &empty_buf, known_buffered, batch);
-            // known_buffered will only be populated by overflow chains found
-            // inline in this pass; clear it since empty_buf has nothing.
-            known_buffered.clear();
+                        &slide, known_buffered, batch);
             flush_batch(batch, written, out_conn, limit)?;
             matched += 1;
+        } else {
+            slide.store(page_num, page_raw.clone());
         }
 
         page_num += 1;
+    }
+
+    // Drain any remaining known_buffered pages after the stream ends.
+    while let Some(&pnum) = known_buffered.iter().next() {
+        known_buffered.remove(&pnum);
+        if let Some(data) = slide.remove(pnum) {
+            handle_page(pnum, &data, fhdr, tbl, target, overflow_map,
+                        &slide, known_buffered, batch);
+            flush_batch(batch, written, out_conn, limit)?;
+            matched += 1;
+        }
     }
 
     Ok(matched)
@@ -625,7 +841,6 @@ pub fn stream_zst_pidbox_to_sqlite(
     let mut known_buffered: HashSet<u32> = HashSet::new();
 
     let mut batch: Vec<(i64, String)> = Vec::with_capacity(BATCH);
-    let mut found = 0usize;   // raw records pushed to batch (pre-conversion)
     let mut written = 0usize;
     let mut page_num: u32 = 2;
 
@@ -646,10 +861,8 @@ pub fn stream_zst_pidbox_to_sqlite(
         while let Some(&pnum) = known_buffered.iter().next() {
             known_buffered.remove(&pnum);
             if let Some(data) = page_buf.remove(&pnum) {
-                let before = batch.len();
                 handle_page(pnum, &data, &fhdr, &tbl, &mut target, &mut overflow_map,
                             &page_buf, &mut known_buffered, &mut batch);
-                found += batch.len().saturating_sub(before);
                 flush_batch(&mut batch, &mut written, &out_conn, limit)?;
                 if limit > 0 && written >= limit { break 'stream; }
             }
@@ -663,10 +876,8 @@ pub fn stream_zst_pidbox_to_sqlite(
         }
 
         if overflow_map.contains_key(&page_num) || target.contains(&page_num) {
-            let before = batch.len();
             handle_page(page_num, &page_raw, &fhdr, &tbl, &mut target, &mut overflow_map,
                         &page_buf, &mut known_buffered, &mut batch);
-            found += batch.len().saturating_sub(before);
             flush_batch(&mut batch, &mut written, &out_conn, limit)?;
         } else {
             // Page not yet known to be relevant — buffer it.
@@ -680,10 +891,8 @@ pub fn stream_zst_pidbox_to_sqlite(
     while let Some(&pnum) = known_buffered.iter().next() {
         known_buffered.remove(&pnum);
         if let Some(data) = page_buf.remove(&pnum) {
-            let before = batch.len();
             handle_page(pnum, &data, &fhdr, &tbl, &mut target, &mut overflow_map,
                         &page_buf, &mut known_buffered, &mut batch);
-            found += batch.len().saturating_sub(before);
         }
     }
 
@@ -715,19 +924,19 @@ pub fn stream_zst_pidbox_to_sqlite(
             zst_total / (1024 * 1024 * 1024).max(1),
         );
 
-        let before_found = found;
         let matched = scan_pass(
             zst_path, &fhdr, &tbl,
             &mut target, &mut overflow_map, &mut known_buffered,
             &mut batch, &mut written, &out_conn, limit,
         )?;
-        found += batch.len(); // rough; exact count is tracked inside scan_pass indirectly
 
-        if matched == 0 {
-            eprintln!("  pass {}: no new pages found — stopping", pass + 1);
+        if matched < CONVERGENCE_THRESHOLD {
+            eprintln!(
+                "  pass {}: {} pages matched — converged, stopping",
+                pass + 1, matched
+            );
             break;
         }
-        let _ = before_found; // suppress unused-variable warning
     }
 
     // ── Flush tail batch ───────────────────────────────────────────────

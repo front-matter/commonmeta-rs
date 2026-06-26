@@ -2,6 +2,7 @@ pub mod convert;
 pub mod decode;
 pub mod dump;
 pub mod encode;
+pub mod import;
 pub mod install;
 pub mod list;
 pub mod r#match;

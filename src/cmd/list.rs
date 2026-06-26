@@ -25,7 +25,7 @@ fn temp_dir() -> PathBuf {
 /// In upsert mode `total` is the post-write row count of the whole file;
 /// when it differs from `written` (the records added/replaced this run)
 /// both numbers are shown so the caller can see cumulative progress.
-fn fmt_wrote_sqlite(path: &str, written: usize, total: Option<usize>) -> String {
+pub(crate) fn fmt_wrote_sqlite(path: &str, written: usize, total: Option<usize>) -> String {
     match total {
         Some(t) if t != written => {
             format!("wrote {} ({} added, {} total)", path, written, t)
@@ -34,7 +34,7 @@ fn fmt_wrote_sqlite(path: &str, written: usize, total: Option<usize>) -> String 
     }
 }
 
-use crate::cmd::VRAIX_CACHE_TTL;
+use crate::cmd::{resolve_db_path, VRAIX_CACHE_TTL};
 
 pub fn command() -> Command {
     Command::new("list")
@@ -121,6 +121,15 @@ pub fn command() -> Command {
         )
         .arg(Arg::new("orcid").long("orcid").help("Filter by ORCID"))
         .arg(Arg::new("ror").long("ror").help("Filter by ROR"))
+        .arg(Arg::new("affiliation").long("affiliation").help("Affiliation name filter"))
+        .arg(Arg::new("country").long("country").help("Country code filter"))
+        .arg(Arg::new("date-updated").long("date-updated").help("Filter by date updated (YYYY-MM-DD)"))
+        .arg(Arg::new("from-host").long("from-host").help("InvenioRDM source host"))
+        .arg(Arg::new("from-token").long("from-token").help("InvenioRDM source API token"))
+        .arg(Arg::new("community").long("community").help("InvenioRDM community slug"))
+        .arg(Arg::new("subject").long("subject").help("Subject area filter"))
+        .arg(Arg::new("depositor").long("depositor").help("Crossref depositor name"))
+        .arg(Arg::new("registrant").long("registrant").help("Crossref registrant name"))
         .arg(
             Arg::new("email")
                 .long("email")
@@ -181,6 +190,25 @@ pub fn command() -> Command {
                 .action(ArgAction::SetTrue),
         )
         .arg(
+            Arg::new("is-archived")
+                .long("is-archived")
+                .help("Filter for archived records")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("vocabulary")
+                .long("vocabulary")
+                .help("Output as vocabulary (e.g. InvenioRDM affiliations YAML)")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("match")
+                .long("match")
+                .help("Enable ROR affiliation matching when reading crossref and datacite records")
+                .default_value("true")
+                .value_parser(clap::value_parser!(bool)),
+        )
+        .arg(
             Arg::new("file")
                 .long("file")
                 .help("Write output to file instead of stdout"),
@@ -206,13 +234,32 @@ pub fn command() -> Command {
                 .long("locale")
                 .help("BCP 47 locale for --to citation output (e.g. de-DE)"),
         )
+        .arg(
+            Arg::new("no-network")
+                .long("no-network")
+                .help("Disable all outbound network requests; fails if no local input file is provided")
+                .action(ArgAction::SetTrue),
+        )
 }
 
 pub fn execute(matches: &ArgMatches) -> Result<(), String> {
-    let from = matches
+    let from_explicit = matches
         .get_one::<String>("from")
         .map(String::as_str)
         .unwrap_or("commonmeta");
+
+    // When a source-specific flag is provided but --from is not explicitly set,
+    // auto-select the matching source so users don't have to type --from crossref etc.
+    let from = if from_explicit == "commonmeta" {
+        let has_member = matches.get_one::<String>("member").map(|s| !s.is_empty()).unwrap_or(false);
+        let has_client = matches.get_one::<String>("client").map(|s| !s.is_empty()).unwrap_or(false);
+        if has_member { "crossref" }
+        else if has_client { "datacite" }
+        else { from_explicit }
+    } else {
+        from_explicit
+    };
+
     let to = matches
         .get_one::<String>("to")
         .map(String::as_str)
@@ -234,16 +281,58 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         return Err(format!("list: unsupported --to format: {}", to));
     }
 
+    let no_network = matches.get_flag("no-network");
     let number = *matches.get_one::<usize>("number").unwrap_or(&10);
-    let input_path = matches.get_one::<String>("input").map(String::as_str);
+    let explicit_input = matches.get_one::<String>("input").map(String::as_str);
+
+    // When --no-network is set and no explicit input path is given, fall back to
+    // the local commonmeta database so offline queries on already-imported records work.
+    let db_fallback: Option<String> = if no_network && explicit_input.is_none() {
+        let path = resolve_db_path(None);
+        if !std::path::Path::new(&path).exists() {
+            return Err(format!(
+                "local database not found at '{}'; \
+                import records first with 'commonmeta import' or remove --no-network",
+                path
+            ));
+        }
+        Some(path)
+    } else {
+        None
+    };
+    let input_path: Option<&str> = db_fallback.as_deref().or(explicit_input);
+
     // A `.sqlite3`/`.sqlite3.zst` input is treated as a VRAIX dump when
-    // `--from crossref` or `--from datacite` is given, and as a commonmeta
-    // SQLite dump (written by `--file *.sqlite3`) when `--from commonmeta`
-    // (or the default) is given. Detect by extension first; `from` decides
-    // which reader is used.
+    // `--from crossref` or `--from datacite` is given, or when the filename
+    // matches the VRAIX dump pattern `{crossref|datacite}-{date}.sqlite3`.
+    // Otherwise it is treated as a commonmeta SQLite dump (written by
+    // `--file *.sqlite3`) when `--from commonmeta` (or the default) is given.
     let is_sqlite_input = input_path
         .map(|p| file_utils::get_extension(p, ".json").1 == ".sqlite3")
         .unwrap_or(false);
+
+    // Infer the VRAIX source from the input filename when --from was not
+    // explicitly set to "crossref" or "datacite".
+    let filename_source: Option<&'static str> = if is_sqlite_input && !matches!(from, "crossref" | "datacite") {
+        input_path
+            .and_then(|p| std::path::Path::new(p).file_stem()?.to_str())
+            .and_then(|stem| {
+                if stem.starts_with("crossref-") { Some("crossref") }
+                else if stem.starts_with("datacite-") { Some("datacite") }
+                else { None }
+            })
+    } else {
+        None
+    };
+    // Use the inferred source when the filename pattern matched.
+    // When the local DB fallback is active, treat the source as commonmeta
+    // regardless of what --from was set to (the DB stores converted records).
+    let from: &str = if db_fallback.is_some() {
+        "commonmeta"
+    } else {
+        filename_source.unwrap_or(from)
+    };
+
     let is_vraix_sqlite_input = is_sqlite_input && matches!(from, "crossref" | "datacite");
 
     // Fast path: VRAIX SQLite → commonmeta SQLite (optionally compressed)
@@ -393,7 +482,10 @@ pub fn execute(matches: &ArgMatches) -> Result<(), String> {
         load_vraix_list_for_date(date.unwrap_or(""), input_path, from, matches, timers)?
     } else if let Some(input_path) = input_path {
         let read_start = Instant::now();
-        let d = load_list_from_file(input_path, from)?;
+        let page = *matches.get_one::<usize>("page").unwrap_or(&1);
+        let file_limit = if number == 0 { None } else { Some(number) };
+        let file_offset = page.saturating_sub(1).saturating_mul(number);
+        let d = load_list_from_file(input_path, from, file_limit, file_offset)?;
         if timers {
             eprintln!(
                 "list: read from file took {:.2?} ({} records)",
@@ -739,45 +831,324 @@ pub(crate) fn fetch_list_from_api(matches: &ArgMatches, from: &str) -> Result<Ve
     let number = *matches.get_one::<usize>("number").unwrap_or(&10);
     let page = *matches.get_one::<usize>("page").unwrap_or(&1);
 
+    if number == 0 {
+        return fetch_all_pages(matches, from, page);
+    }
+
     match from {
-        "crossref" => commonmeta::crossref::fetch_all(
-            number,
-            page,
-            matches
-                .get_one::<String>("member")
-                .map(String::as_str)
-                .unwrap_or(""),
-            matches
-                .get_one::<String>("type")
-                .map(String::as_str)
-                .unwrap_or(""),
-            matches.get_flag("sample"),
-            matches
-                .get_one::<String>("year")
-                .map(String::as_str)
-                .unwrap_or(""),
-            matches
-                .get_one::<String>("ror")
-                .map(String::as_str)
-                .unwrap_or(""),
-            matches
-                .get_one::<String>("orcid")
-                .map(String::as_str)
-                .unwrap_or(""),
-            matches.get_flag("has-orcid"),
-            matches.get_flag("has-ror-id"),
-            matches.get_flag("has-references"),
-            matches.get_flag("has-relation"),
-            matches.get_flag("has-abstract"),
-            matches.get_flag("has-award"),
-            matches.get_flag("has-license"),
-            matches.get_flag("has-archive"),
-        )
-        .map_err(|e| e.to_string()),
+        "crossref" => fetch_crossref_page(matches, number, page),
         "datacite" => fetch_datacite_list(matches, number, page),
         "openalex" => fetch_openalex_list(matches, number, page),
         _ => Err(format!("unsupported source: {from}")),
     }
+}
+
+/// Maximum records per API request for each source.
+fn api_batch_size(from: &str) -> usize {
+    match from {
+        "openalex" => 200,
+        _ => 1000, // Crossref, DataCite
+    }
+}
+
+/// Polite inter-request delay, in milliseconds.
+/// All three APIs allow higher rates with a mailto User-Agent, but 500 ms
+/// (2 req/s) keeps us well clear of rate-limit responses without being too slow.
+const API_RATE_DELAY_MS: u64 = 500;
+
+/// Paginate through all results from an API source when --number 0 is given.
+/// Uses cursor-based pagination for every source to avoid the 10,000-record
+/// offset limit imposed by Crossref, DataCite, and OpenAlex (all backed by
+/// Elasticsearch/OpenSearch).
+fn fetch_all_pages(matches: &ArgMatches, from: &str, _start_page: usize) -> Result<Vec<Data>, String> {
+    let batch = api_batch_size(from);
+    let delay = std::time::Duration::from_millis(API_RATE_DELAY_MS);
+    let mut all: Vec<Data> = Vec::new();
+
+    match from {
+        "crossref" => {
+            let mut cursor = "*".to_string();
+            let mut page = 1usize;
+            loop {
+                let (got, next) = fetch_crossref_page_with_cursor(matches, batch, &cursor)?;
+                let n = got.len();
+                all.extend(got);
+                eprintln!("fetched {} records from crossref (page {}, {} total)", n, page, all.len());
+                if n < batch || next.is_none() {
+                    break;
+                }
+                cursor = next.unwrap();
+                page += 1;
+                std::thread::sleep(delay);
+            }
+        }
+        "datacite" => {
+            let mut cursor: Option<String> = None; // None = first page (page[cursor]=1)
+            let mut page = 1usize;
+            loop {
+                let (got, next) = fetch_datacite_page_with_cursor(matches, batch, cursor.as_deref())?;
+                let n = got.len();
+                all.extend(got);
+                eprintln!("fetched {} records from datacite (page {}, {} total)", n, page, all.len());
+                if n < batch || next.is_none() {
+                    break;
+                }
+                cursor = next;
+                page += 1;
+                std::thread::sleep(delay);
+            }
+        }
+        "openalex" => {
+            let mut cursor = "*".to_string();
+            let mut page = 1usize;
+            loop {
+                let (got, next) = fetch_openalex_page_with_cursor(matches, batch, &cursor)?;
+                let n = got.len();
+                all.extend(got);
+                eprintln!("fetched {} records from openalex (page {}, {} total)", n, page, all.len());
+                if n < batch || next.is_none() {
+                    break;
+                }
+                cursor = next.unwrap();
+                page += 1;
+                std::thread::sleep(delay);
+            }
+        }
+        _ => return Err(format!("unsupported source: {from}")),
+    }
+    Ok(all)
+}
+
+fn fetch_crossref_page_with_cursor(
+    matches: &ArgMatches,
+    number: usize,
+    cursor: &str,
+) -> Result<(Vec<Data>, Option<String>), String> {
+    commonmeta::crossref_fetch_page_with_cursor(
+        cursor,
+        number,
+        matches.get_one::<String>("member").map(String::as_str).unwrap_or(""),
+        matches.get_one::<String>("type").map(String::as_str).unwrap_or(""),
+        matches.get_one::<String>("year").map(String::as_str).unwrap_or(""),
+        matches.get_one::<String>("ror").map(String::as_str).unwrap_or(""),
+        matches.get_one::<String>("orcid").map(String::as_str).unwrap_or(""),
+        matches.get_flag("has-orcid"),
+        matches.get_flag("has-ror-id"),
+        matches.get_flag("has-references"),
+        matches.get_flag("has-relation"),
+        matches.get_flag("has-abstract"),
+        matches.get_flag("has-award"),
+        matches.get_flag("has-license"),
+        matches.get_flag("has-archive"),
+        *matches.get_one::<bool>("match").unwrap_or(&true),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Fetch one page of DataCite records using cursor-based pagination.
+/// Pass `cursor = None` for the first page (uses `page[cursor]=1`); on
+/// subsequent pages pass the cursor value from the previous `meta.next` field.
+/// Returns `(records, next_cursor)`.
+fn fetch_datacite_page_with_cursor(
+    matches: &ArgMatches,
+    number: usize,
+    cursor: Option<&str>,
+) -> Result<(Vec<Data>, Option<String>), String> {
+    let mut url =
+        Url::parse("https://api.datacite.org/dois").map_err(|e| format!("invalid URL: {}", e))?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("page[size]", &number.clamp(1, 1000).to_string());
+        // cursor=None → first page uses page[cursor]=1; subsequent pages use the returned cursor
+        query.append_pair("page[cursor]", cursor.unwrap_or("1"));
+        query.append_pair("affiliation", "true");
+
+        if let Some(client_id) = matches.get_one::<String>("client")
+            && !client_id.is_empty()
+        {
+            query.append_pair("client-id", client_id);
+        }
+
+        let mut search_terms: Vec<String> = Vec::new();
+        if let Some(type_) = matches.get_one::<String>("type")
+            && !type_.is_empty()
+        {
+            search_terms.push(format!("types.resourceTypeGeneral:{}", type_));
+        }
+        if let Some(year) = matches.get_one::<String>("year")
+            && !year.is_empty()
+        {
+            search_terms.push(format!("publicationYear:{}", year));
+        }
+        if let Some(language) = matches.get_one::<String>("language")
+            && !language.is_empty()
+        {
+            search_terms.push(format!("language:{}", language));
+        }
+        if let Some(orcid) = matches.get_one::<String>("orcid")
+            && !orcid.is_empty()
+        {
+            search_terms.push(format!("creators.nameIdentifiers.nameIdentifier:{}", orcid));
+        }
+        if let Some(ror) = matches.get_one::<String>("ror")
+            && !ror.is_empty()
+        {
+            search_terms.push(format!(
+                "creators.affiliation.affiliationIdentifier:{}",
+                ror
+            ));
+        }
+        if !search_terms.is_empty() {
+            query.append_pair("query", &search_terms.join(" "));
+        }
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(format!(
+            "commonmeta-rs/{} (https://github.com/front-matter/commonmeta-rs; mailto:info@front-matter.de)",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .build()
+        .map_err(|e| format!("http client build failed: {}", e))?;
+
+    let text = client
+        .get(url.as_str())
+        .send()
+        .map_err(|e| format!("http request failed: {}", e))?
+        .error_for_status()
+        .map_err(|e| format!("http status error: {}", e))?
+        .text()
+        .map_err(|e| format!("failed to read response: {}", e))?;
+
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("invalid DataCite response: {}", e))?;
+    let next_cursor = value
+        .get("meta")
+        .and_then(|m| m.get("next"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let items = value
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "DataCite response missing data array".to_string())?;
+
+    let mut out: Vec<Data> = Vec::with_capacity(items.len());
+    for item in items {
+        out.push(convert_datacite_item(item)?);
+    }
+    Ok((out, next_cursor))
+}
+
+/// Fetch one page of OpenAlex works using cursor-based pagination.
+/// Pass `cursor = "*"` for the first page; use `meta.next_cursor` from the
+/// previous response for subsequent pages. Returns `(records, next_cursor)`.
+fn fetch_openalex_page_with_cursor(
+    matches: &ArgMatches,
+    number: usize,
+    cursor: &str,
+) -> Result<(Vec<Data>, Option<String>), String> {
+    let mut url =
+        Url::parse("https://api.openalex.org/works").map_err(|e| format!("invalid URL: {}", e))?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("per-page", &number.clamp(1, 200).to_string());
+        query.append_pair("cursor", cursor);
+        if let Some(email) = matches.get_one::<String>("email")
+            && !email.is_empty()
+        {
+            query.append_pair("mailto", email);
+        }
+
+        let mut filters: Vec<String> = Vec::new();
+        if let Some(type_) = matches.get_one::<String>("type")
+            && !type_.is_empty()
+        {
+            filters.push(format!("type_crossref:{}", type_));
+        }
+        if let Some(year) = matches.get_one::<String>("year")
+            && !year.is_empty()
+        {
+            filters.push(format!("from_publication_date:{}-01-01", year));
+            filters.push(format!("to_publication_date:{}-12-31", year));
+        }
+        if let Some(orcid) = matches.get_one::<String>("orcid")
+            && !orcid.is_empty()
+        {
+            filters.push(format!("author.orcid:{}", orcid));
+        }
+        if let Some(ror) = matches.get_one::<String>("ror")
+            && !ror.is_empty()
+        {
+            filters.push(format!("institutions.ror:{}", ror));
+        }
+        if matches.get_flag("has-abstract") {
+            filters.push("has_abstract:true".to_string());
+        }
+        if matches.get_flag("has-references") {
+            filters.push("referenced_works_count:>0".to_string());
+        }
+        if !filters.is_empty() {
+            query.append_pair("filter", &filters.join(","));
+        }
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(format!(
+            "commonmeta-rs/{} (https://github.com/front-matter/commonmeta-rs; mailto:info@front-matter.de)",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .build()
+        .map_err(|e| format!("http client build failed: {}", e))?;
+
+    let text = client
+        .get(url.as_str())
+        .send()
+        .map_err(|e| format!("http request failed: {}", e))?
+        .error_for_status()
+        .map_err(|e| format!("http status error: {}", e))?
+        .text()
+        .map_err(|e| format!("failed to read response: {}", e))?;
+
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("invalid OpenAlex response: {}", e))?;
+    let next_cursor = value
+        .get("meta")
+        .and_then(|m| m.get("next_cursor"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let items = value
+        .get("results")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "OpenAlex response missing results array".to_string())?;
+
+    let mut out: Vec<Data> = Vec::with_capacity(items.len());
+    for item in items {
+        out.push(convert_openalex_item(item)?);
+    }
+    Ok((out, next_cursor))
+}
+
+fn fetch_crossref_page(matches: &ArgMatches, number: usize, page: usize) -> Result<Vec<Data>, String> {
+    commonmeta::crossref::fetch_all(
+        number,
+        page,
+        matches.get_one::<String>("member").map(String::as_str).unwrap_or(""),
+        matches.get_one::<String>("type").map(String::as_str).unwrap_or(""),
+        matches.get_flag("sample"),
+        matches.get_one::<String>("year").map(String::as_str).unwrap_or(""),
+        matches.get_one::<String>("ror").map(String::as_str).unwrap_or(""),
+        matches.get_one::<String>("orcid").map(String::as_str).unwrap_or(""),
+        matches.get_flag("has-orcid"),
+        matches.get_flag("has-ror-id"),
+        matches.get_flag("has-references"),
+        matches.get_flag("has-relation"),
+        matches.get_flag("has-abstract"),
+        matches.get_flag("has-award"),
+        matches.get_flag("has-license"),
+        matches.get_flag("has-archive"),
+        *matches.get_one::<bool>("match").unwrap_or(&true),
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn fetch_datacite_list(
@@ -945,14 +1316,19 @@ fn fetch_openalex_list(
     Ok(out)
 }
 
-pub(crate) fn load_list_from_file(path: &str, from: &str) -> Result<Vec<Data>, String> {
+pub(crate) fn load_list_from_file(
+    path: &str,
+    from: &str,
+    limit: Option<usize>,
+    offset: usize,
+) -> Result<Vec<Data>, String> {
     // Detect by extension first so the caller doesn't need to specify --from.
     let (_base, extension, compress) = file_utils::get_extension(path, ".json");
     if extension == ".parquet" {
         return load_commonmeta_list_from_parquet(path);
     }
     if extension == ".sqlite3" {
-        return load_commonmeta_list_from_sqlite(path, &compress);
+        return load_commonmeta_list_from_sqlite(path, &compress, limit, offset);
     }
 
     match from {
@@ -969,7 +1345,12 @@ pub(crate) fn load_list_from_file(path: &str, from: &str) -> Result<Vec<Data>, S
 
 /// Read a commonmeta SQLite database (optionally zstd-compressed) written by
 /// `--file *.sqlite3` back into a list of records.
-fn load_commonmeta_list_from_sqlite(path: &str, compress: &str) -> Result<Vec<Data>, String> {
+fn load_commonmeta_list_from_sqlite(
+    path: &str,
+    compress: &str,
+    limit: Option<usize>,
+    offset: usize,
+) -> Result<Vec<Data>, String> {
     let sqlite_path = if compress == "zst" {
         // Stream-decompress to a temp file (avoids loading multi-GB into RAM).
         let tmp = temp_dir().join(format!(
@@ -991,7 +1372,7 @@ fn load_commonmeta_list_from_sqlite(path: &str, compress: &str) -> Result<Vec<Da
         std::path::PathBuf::from(path)
     };
 
-    let result = commonmeta::read_sqlite_commonmeta(&sqlite_path, None, 0)
+    let result = commonmeta::read_sqlite_commonmeta(&sqlite_path, limit, offset)
         .map_err(|e| e.to_string());
 
     if compress == "zst" {
@@ -1314,6 +1695,39 @@ fn load_vraix_list_for_date(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_args(args: &[&str]) -> clap::ArgMatches {
+        command().try_get_matches_from(args).expect("arg parse failed")
+    }
+
+    #[test]
+    fn test_no_network_without_input_falls_back_to_local_db() {
+        // With --no-network and no explicit input, the command should fall back to
+        // the local database rather than erroring with "--no-network requires...".
+        // If the local DB exists this may succeed; if not, it should report the DB
+        // path not found — either way the error must NOT say "--no-network requires".
+        let m = parse_args(&["list", "--no-network", "--from", "crossref"]);
+        match execute(&m) {
+            Ok(()) => {}
+            Err(e) => assert!(
+                !e.contains("--no-network requires"),
+                "should fall back to local DB rather than refusing; got: {e}"
+            ),
+        }
+    }
+
+    #[test]
+    fn test_no_network_with_local_file_passes_guard() {
+        // Passes the --no-network guard (input_path is Some); fails later because
+        // the path does not exist. The error must NOT mention "--no-network requires".
+        let m = parse_args(&["list", "--no-network", "nonexistent.sqlite3"]);
+        let err = execute(&m).unwrap_err();
+        assert!(
+            !err.contains("--no-network requires"),
+            "should not fail at network guard when input file is given, got: {err}"
+        );
+    }
+
     fn sample_data(id: &str) -> Data {
         Data {
             id: id.to_string(),
