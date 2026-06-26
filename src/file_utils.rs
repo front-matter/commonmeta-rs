@@ -581,6 +581,12 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
                 None => offset + CHUNK - 1,
             };
             req = req.header("Range", format!("bytes={offset}-{end}"));
+        } else if offset > 0 {
+            // Non-Range fallback, but retrying after an error at a non-zero
+            // offset. Try a Range request anyway: if the server returns 206 we
+            // get a true resume; if it returns 200 (full body) we skip the
+            // first `offset` bytes. Either is faster than restarting from 0.
+            req = req.header("Range", format!("bytes={offset}-"));
         }
         let resp = req.send();
 
@@ -606,14 +612,6 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
                     MAX_RETRIES,
                     fmt_duration_short(wait)
                 );
-                // Without Range support a new request always delivers the full
-                // body from byte 0, so we must reset the write position to 0
-                // before retrying to avoid corrupting the file.
-                if !effective_supports_range {
-                    offset = 0;
-                    file.seek(io::SeekFrom::Start(0))?;
-                    file.set_len(0)?;
-                }
                 std::thread::sleep(wait);
                 continue;
             }
@@ -633,19 +631,69 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
             });
         }
 
-        // When we sent a Range header but got 200, the server ignored it.
-        // We can't use the partial .part bytes — restart from 0 and remember
-        // that this server doesn't support Range for future chunks.
+        // When we sent a Range header in true Range mode but got 200, the
+        // server stopped honouring Range. Fall through with offset=0 so the
+        // full-body response is written from the start of the file.
         if effective_supports_range && status.as_u16() == 200 && offset > 0 {
             eprintln!("download: server ignores Range header, restarting from 0");
             effective_supports_range = false;
             offset = 0;
             file.seek(io::SeekFrom::Start(0))?;
             file.set_len(0)?;
+            // Fall through: the 200 body is the full file from byte 0, which
+            // is exactly what we need at offset 0.
         }
 
-        // For non-Range requests the full body is one chunk; use content-length
-        // as the bound (or u64::MAX to stream until EOF).
+        // Skip-ahead resume: we sent Range bytes={offset}- in non-Range mode
+        // and the server returned 200 (full body). Skip the first `offset`
+        // bytes so the write position stays aligned with the file cursor.
+        // If the server returned 206 the body already starts at `offset` — no
+        // skipping needed.
+        if !effective_supports_range && offset > 0 && status.as_u16() == 200 {
+            let mut to_skip = offset;
+            eprintln!(
+                "download: server returned 200 to Range request; skipping {} to resume",
+                fmt_bytes(to_skip)
+            );
+            let mut skip_buf = vec![0u8; READ_BUF];
+            loop {
+                match resp.read(&mut skip_buf[..READ_BUF.min(to_skip as usize)]) {
+                    Ok(0) => {
+                        // Server sent fewer bytes than we need to skip — full restart.
+                        eprintln!(
+                            "download: skip hit EOF at {}; restarting from 0",
+                            fmt_bytes(offset - to_skip)
+                        );
+                        retries += 1;
+                        offset = 0;
+                        file.seek(io::SeekFrom::Start(0))?;
+                        file.set_len(0)?;
+                        continue 'outer;
+                    }
+                    Ok(n) => {
+                        to_skip -= n as u64;
+                        if to_skip == 0 {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "download: skip error ({}); restarting from 0",
+                            error_chain(&e)
+                        );
+                        retries += 1;
+                        offset = 0;
+                        file.seek(io::SeekFrom::Start(0))?;
+                        file.set_len(0)?;
+                        continue 'outer;
+                    }
+                }
+            }
+        }
+
+        // Bytes remaining in this response. In Range mode each request covers
+        // exactly one CHUNK. In non-Range mode (including after a skip) we read
+        // the tail — everything from `offset` to EOF.
         let mut chunk_remaining: u64 = if effective_supports_range {
             let end = match total {
                 Some(t) => (offset + CHUNK - 1).min(t - 1),
@@ -653,7 +701,7 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
             };
             end - offset + 1
         } else {
-            total.unwrap_or(u64::MAX)
+            total.map(|t| t.saturating_sub(offset)).unwrap_or(u64::MAX)
         };
         let mut buf = vec![0u8; READ_BUF];
         let mut reached_eof = false;
@@ -687,13 +735,8 @@ fn download_to_path_resumable(url: &str, dest: &Path) -> Result<u64> {
                         MAX_RETRIES,
                         fmt_duration_short(wait)
                     );
-                    // Without Range support a new request delivers the full body
-                    // from byte 0, so the file must be reset before retrying.
-                    if !effective_supports_range {
-                        offset = 0;
-                        file.seek(io::SeekFrom::Start(0))?;
-                        file.set_len(0)?;
-                    }
+                    // Next outer-loop iteration will retry with Range: bytes={offset}-
+                    // which either resumes cleanly (206) or skips ahead (200).
                     std::thread::sleep(wait);
                     continue 'outer;
                 }
