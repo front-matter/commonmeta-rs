@@ -220,7 +220,11 @@
               "award_number": { "type": "string" },
               "asserted_by": { "$ref": "#/definitions/provider" }
             },
-            "required": ["funder_name"]
+            "anyOf": [
+              { "required": ["funder_name"] },
+              { "required": ["funder_id"] },
+              { "required": ["award_number"] }
+            ]
           }
         },
         "geo_locations": {
